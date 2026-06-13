@@ -58,3 +58,11 @@ soroban contract deploy \
 ## License
 
 MIT
+
+## Deployed Contract
+
+| Network | Contract ID |
+|---|---|
+| Testnet | `CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3` |
+
+Explorer: `https://stellar.expert/explorer/testnet/contract/CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3`
