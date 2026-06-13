@@ -1,48 +1,58 @@
-# Project Context - June 12, 2026
+# Project Context - June 13, 2026
 
 ## Today's Achievements
 
 ### ✅ Completed:
-1. **Project Setup** - Created a Soroban smart contract workspace in `escrow-contract/`
-2. **Milestone Escrow Contract** - Implemented a full-featured milestone escrow contract with:
-   - Job initialization (client, freelancer, arbiter, token, milestone amounts)
-   - Client funding
-   - Freelancer milestone delivery
-   - Client milestone approval & fund release
-   - Dispute raising by either party
-   - Arbiter dispute resolution
-3. **Test Suite** - Added 5 comprehensive test cases, all passing:
-   - `test_full_happy_path`
-   - `test_dispute_release_to_freelancer`
-   - `test_dispute_refund_to_client`
-   - `test_double_initialize_fails`
-   - `test_unauthorized_fund_fails`
-4. **Project Configuration** - Added proper Cargo.toml files (workspace + contract)
-5. **Git Repository** - Initialized git repo and pushed to GitHub with 3 commits:
-   - `2140829`: feat: add milestone escrow contract with 5 passing tests
-   - `d7bdfab`: chore: add .gitignore for target and build artifacts
-   - `c92134c`: docs: add README with contract overview and usage
+1. **Frontend Setup** - Created a Next.js + Tailwind CSS frontend in `escrow-frontend/`
+2. **Contract Utility Functions** - Added `app/lib/contract.ts` with Soroban RPC integration
+3. **Wallet Integration** - Built `app/context/WalletContext.tsx` using Freighter browser extension API
+4. **Navbar Component** - Implemented `app/components/Navbar.tsx` with wallet connect/disconnect
+5. **Home Page** - Updated `app/page.tsx` with landing content and call-to-action
+6. **Dev Server** - Successfully running on http://localhost:3001
 
 ### 📁 Project Structure:
 ```
-escrow-contract/
-├── Cargo.toml                  # Workspace configuration
-├── Cargo.lock
-├── .gitignore                  # Ignores target/, .env, *.wasm
-├── README.md                   # Project documentation
-└── contracts/
-    └── milestone-escrow/
-        ├── Cargo.toml          # Contract package config
-        ├── src/
-        │   ├── lib.rs          # Main contract implementation
-        │   └── test.rs         # Test suite
-        └── test_snapshots/     # Test snapshots
+Milesto/
+├── escrow-contract/            # Soroban smart contract
+│   ├── Cargo.toml
+│   ├── Cargo.lock
+│   ├── .gitignore
+│   ├── README.md
+│   ├── context.md
+│   └── contracts/
+│       └── milestone-escrow/
+│           ├── Cargo.toml
+│           ├── src/
+│           │   ├── lib.rs
+│           │   └── test.rs
+│           └── test_snapshots/
+│
+└── escrow-frontend/            # Next.js frontend
+    ├── package.json
+    ├── package-lock.json
+    ├── tsconfig.json
+    ├── next.config.ts
+    ├── tailwind.config.ts
+    ├── postcss.config.mjs
+    ├── .gitignore
+    ├── .env.local
+    ├── app/
+    │   ├── layout.tsx
+    │   ├── page.tsx
+    │   ├── globals.css
+    │   ├── lib/
+    │   │   └── contract.ts
+    │   ├── context/
+    │   │   └── WalletContext.tsx
+    │   └── components/
+    │       └── Navbar.tsx
+    └── public/
 ```
 
 ### 🎯 Next Steps (Potential Ideas):
+- Create "Create Job" page to initialize contracts
+- Add contract deployment workflow
+- Implement job detail page to view and interact with active jobs
+- Deploy contract to Stellar testnet
 - Add more test cases for edge scenarios
-- Implement contract upgrades or versioning
-- Add a frontend to interact with the contract
-- Deploy to testnet and verify
-- Add more documentation about contract interactions
-- Audit the contract for security issues
+- Audit contract for security issues
