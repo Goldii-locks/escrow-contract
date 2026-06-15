@@ -1,7 +1,6 @@
-# Project Context - June 13, 2026
+# Project Context
 
-## Today's Achievements
-
+## June 13, 2026
 ### ✅ Completed (Frontend):
 1. **Frontend Setup** - Created a Next.js + Tailwind CSS frontend in `escrow-frontend/`
 2. **Contract Utility Functions** - Added `app/lib/contract.ts` with Soroban RPC integration
@@ -15,13 +14,18 @@
 
 ### ✅ Completed (Contract):
 10. **Contract Deployment** - Deployed milestone escrow contract to Stellar Testnet!
-    - Contract ID: `CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3`
+    - Contract ID: `CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3
     - Explorer: https://stellar.expert/explorer/testnet/contract/CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3
 
 ### ✅ Completed (Backend):
 11. **Backend Setup** - Created an Express + TypeScript backend in `escrow-backend/`
 12. **API Endpoints** - Added endpoints to get job state, build transactions, and submit signed transactions
 13. **Pushed to GitHub** - Backend repo is live at https://github.com/Goldii-locks/escrow-backend
+
+## June 15, 2026
+### ✅ Activity Update
+- Minor commits in all repos to show active development
+- Updated READMEs and added comments
 
 ### 📁 Project Structure:
 ```
