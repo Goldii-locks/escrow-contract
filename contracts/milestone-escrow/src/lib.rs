@@ -49,6 +49,42 @@ pub enum DataKey {
     Job,
 }
 
+#[contracttype]
+pub struct InitializedEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub arbiter: Address,
+    pub token: Address,
+    pub milestone_amounts: Vec<i128>,
+}
+
+#[contracttype]
+pub struct FundedEvent {
+    pub total_amount: i128,
+}
+
+#[contracttype]
+pub struct DeliveredEvent {
+    pub milestone_index: u32,
+}
+
+#[contracttype]
+pub struct ApprovedEvent {
+    pub milestone_index: u32,
+    pub amount: i128,
+}
+
+#[contracttype]
+pub struct DisputeRaisedEvent {
+    pub milestone_index: u32,
+}
+
+#[contracttype]
+pub struct DisputeResolvedEvent {
+    pub milestone_index: u32,
+    pub released_to_freelancer: bool,
+}
+
 #[contract]
 pub struct MilestoneEscrow;
 
