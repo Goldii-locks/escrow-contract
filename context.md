@@ -29,6 +29,13 @@
 - **Frontend**: Wired Create Job form to backend
 - All changes pushed to GitHub!
 
+## June 16, 2026
+### ✅ Activity Update
+- **Contract**: Added CONTRIBUTING.md file with contributor guidelines
+- **Frontend**: Added loading skeleton to dashboard for better UX
+- **Backend**: Added GET /api/jobs/by-wallet/:address endpoint (closes issue #1)
+- All changes pushed to GitHub!
+
 ### 📁 Project Structure:
 ```
 Milesto/
