@@ -14,7 +14,7 @@
 
 ### ✅ Completed (Contract):
 10. **Contract Deployment** - Deployed milestone escrow contract to Stellar Testnet!
-    - Contract ID: `CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3
+    - Contract ID: `CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3`
     - Explorer: https://stellar.expert/explorer/testnet/contract/CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3
 
 ### ✅ Completed (Backend):
@@ -37,7 +37,15 @@
 - **Fix**: Fixed type error in dashboard useState
 - All changes pushed to GitHub!
 
-### 📁 Project Structure:
+## June 17, 2026
+### ✅ Activity Update (Major Progress!)
+- **Contract**: Added 10+ edge case tests (closes issue #3) - now total 15 tests!
+  - Tests for invalid milestone index, wrong status, unauthorized access, etc.
+- **Frontend**: Added CONTRIBUTING.md; wired dashboard to fetch real job data via backend
+- **Backend**: Added CONTRIBUTING.md; updated job endpoints to parse contract response; added Jest integration test setup (closes issue #3)
+- All changes committed and pushed!
+
+### 📁 Updated Project Structure:
 ```
 Milesto/
 ├── escrow-contract/            # Soroban smart contract
@@ -45,6 +53,7 @@ Milesto/
 │   ├── Cargo.lock
 │   ├── .gitignore
 │   ├── README.md
+│   ├── CONTRIBUTING.md
 │   ├── context.md
 │   └── contracts/
 │       └── milestone-escrow/
@@ -65,6 +74,7 @@ Milesto/
 │   ├── .env.local
 │   ├── .env.local.example
 │   ├── README.md
+│   ├── CONTRIBUTING.md
 │   ├── app/
 │   │   ├── layout.tsx
 │   │   ├── page.tsx
@@ -75,7 +85,8 @@ Milesto/
 │   │   │   └── WalletContext.tsx
 │   │   ├── components/
 │   │   │   ├── Navbar.tsx
-│   │   │   └── MilestoneCard.tsx
+│   │   │   ├── MilestoneCard.tsx
+│   │   │   └── LoadingSkeleton.tsx
 │   │   ├── create/
 │   │   │   └── page.tsx
 │   │   └── dashboard/
@@ -86,13 +97,16 @@ Milesto/
     ├── package.json
     ├── package-lock.json
     ├── tsconfig.json
+    ├── jest.config.ts
     ├── .gitignore
     ├── .env.example
     ├── .env
     ├── README.md
+    ├── CONTRIBUTING.md
+    ├── __tests__/
+    │   └── jobs.test.ts
     └── src/
         ├── index.ts
-        ├── middleware/
         └── routes/
             └── jobs.ts
 ```
@@ -100,5 +114,5 @@ Milesto/
 ### 🎯 Next Steps (Potential Ideas):
 - Wire up other contract functions (fund, deliver, approve, dispute, resolve) to frontend
 - Add support for multiple jobs in contract
-- Add more test cases for edge scenarios
+- Add more comprehensive integration tests for backend
 - Audit contract for security issues
