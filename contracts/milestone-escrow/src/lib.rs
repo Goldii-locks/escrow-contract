@@ -14,6 +14,7 @@ pub enum Error {
     TokenNotWhitelisted = 8,
     TokenAlreadyWhitelisted = 9,
     InvalidAmount = 10,
+    DeadlineNotPassed = 11,
 }
 
 #[contracttype]
@@ -33,6 +34,7 @@ pub struct Milestone {
     pub amount: i128,
     pub released_amount: i128,
     pub status: MilestoneStatus,
+    pub delivered_at: u64,
 }
 
 #[contracttype]
@@ -44,6 +46,7 @@ pub struct Job {
     pub token: Address,
     pub milestones: Vec<Milestone>,
     pub funded: bool,
+    pub auto_release_seconds: u64,
 }
 
 #[contracttype]
@@ -101,6 +104,7 @@ impl MilestoneEscrow {
         freelancer: Address,
         arbiter: Address,
         token: Address,
+        auto_release_seconds: u64,
         milestone_amounts: Vec<i128>,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Job) {
@@ -121,6 +125,7 @@ impl MilestoneEscrow {
                 amount,
                 released_amount: 0,
                 status: MilestoneStatus::Pending,
+                delivered_at: 0,
             });
         }
 
@@ -131,6 +136,7 @@ impl MilestoneEscrow {
             token,
             milestones,
             funded: false,
+            auto_release_seconds,
         };
 
         env.storage().instance().set(&DataKey::Job, &job);
@@ -269,9 +275,60 @@ impl MilestoneEscrow {
         }
 
         milestone.status = MilestoneStatus::Delivered;
+        milestone.delivered_at = env.ledger().timestamp();
         job.milestones.set(milestone_index, milestone);
         env.storage().instance().set(&DataKey::Job, &job);
         Ok(())
+    }
+
+    pub fn claim_auto_release(
+        env: Env,
+        freelancer: Address,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        freelancer.require_auth();
+        let mut job: Job = env
+            .storage()
+            .instance()
+            .get(&DataKey::Job)
+            .ok_or(Error::NotInitialized)?;
+
+        if job.freelancer != freelancer {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut milestone = job
+            .milestones
+            .get(milestone_index)
+            .ok_or(Error::InvalidMilestone)?;
+
+        if milestone.status != MilestoneStatus::Delivered {
+            return Err(Error::InvalidStatus);
+        }
+
+        let deadline = milestone.delivered_at + job.auto_release_seconds;
+        let current = env.ledger().timestamp();
+        if current < deadline {
+            return Err(Error::DeadlineNotPassed);
+        }
+
+        let remaining = milestone.amount - milestone.released_amount;
+        let token_client = token::Client::new(&env, &job.token);
+        token_client.transfer(&env.current_contract_address(), &job.freelancer, &remaining);
+
+        milestone.released_amount = milestone.amount;
+        milestone.status = MilestoneStatus::Released;
+        job.milestones.set(milestone_index, milestone);
+        env.storage().instance().set(&DataKey::Job, &job);
+        Ok(())
+    }
+
+    pub fn time_until_auto_release(env: Env, milestone_index: u32) -> i64 {
+        let job: Job = env.storage().instance().get(&DataKey::Job).unwrap();
+        let milestone = job.milestones.get(milestone_index).unwrap();
+        let deadline = milestone.delivered_at + job.auto_release_seconds;
+        let current = env.ledger().timestamp();
+        (deadline as i64) - (current as i64)
     }
 
     pub fn approve_partial(

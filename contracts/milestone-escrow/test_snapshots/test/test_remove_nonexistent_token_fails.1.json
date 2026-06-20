@@ -233,6 +233,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "auto_release_seconds"
+                              },
+                              "val": {
+                                "u64": 604800
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "client"
                               },
                               "val": {
@@ -272,6 +280,14 @@
                                             "hi": 0,
                                             "lo": 1000
                                           }
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "delivered_at"
+                                        },
+                                        "val": {
+                                          "u64": 0
                                         }
                                       },
                                       {
