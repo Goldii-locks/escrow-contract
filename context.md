@@ -45,6 +45,23 @@
 - **Backend**: Added CONTRIBUTING.md; updated job endpoints to parse contract response; added Jest integration test setup (closes issue #3)
 - All changes committed and pushed!
 
+## June 18, 2026
+### ✅ Partial/Installment Milestone Releases (Major Feature!)
+- **Contract**: Added `released_amount` field to Milestone struct; added `approve_partial` function; updated all existing functions to handle partial releases; added comprehensive tests
+- **All tests passed!** (19 total tests)
+- **Committed and pushed!**
+
+## June 20, 2026
+### ✅ Time-Locked Auto-Release (Major Feature!)
+- **Contract**: Added `delivered_at: u64` to Milestone struct; added `auto_release_seconds: u64` to Job struct; updated `initialize()` signature to accept `auto_release_seconds`; updated `mark_delivered()` to set `delivered_at`; added `claim_auto_release()` public function; added `time_until_auto_release()` public function; added `DeadlineNotPassed` error variant; fixed all token client calls to use &Address; added 5+ new tests (total tests 32)
+- **All tests passed!** ✅
+- **Frontend**: Updated Create Job form to:
+  - Add "Response Deadline (days)" input
+  - Pass correct args to `initialize()` (admin, client, freelancer, arbiter, token, auto_release_seconds, milestone_amounts)
+  - Fixed BigInt compatibility issue
+- **Backend**: Updated build-tx endpoint to handle `u64` type (for auto_release_seconds)
+- **All repos committed and pushed!**
+
 ### 📁 Updated Project Structure:
 ```
 Milesto/
