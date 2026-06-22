@@ -128,6 +128,94 @@ Milesto/
             └── jobs.ts
 ```
 
+## June 22, 2026
+### ✅ Backend Milestone Features & Event Indexer (Huge Progress!)
+- **Issue #4 (Closed)**: Added GET /api/jobs/:contractId/whitelist endpoint to fetch whitelisted tokens with graceful NotInitialized error handling
+- **Issue #5 (Closed)**: Updated build-tx endpoint to support admin whitelist management actions (add_whitelisted_token / remove_whitelisted_token) with validation
+- **Issue #6 (Closed)**: Added POST /api/jobs/:contractId/milestones/:index/partial-release endpoint to build approve_partial transactions
+- **Issue #7 (Closed)**: Added GET /api/jobs/:contractId/milestones/:index/time-remaining endpoint to fetch time left for auto-release
+- **Issue #8 (Closed)**: Added POST /api/jobs/:contractId/milestones/:index/claim-auto-release endpoint to build claim_auto_release transactions
+- **Event Indexer Service (New Feature!)**:
+  - Added SQLite database integration (better-sqlite3 dependency)
+  - Implemented db.ts with schema initialization, last_ledger tracking, event insertion (with UNIQUE constraint to avoid duplicates), and address-filtered querying
+  - Implemented poller.ts that periodically fetches events from Soroban RPC, processes them, and stores in database
+  - Updated index.ts to initialize indexer schema and start polling on server start
+  - Added comprehensive tests for indexer database functionality
+  - All 4 tests passed!
+- **All TypeScript checks passed! npm run build is clean!**
+- **All issues closed with manual comments (no auto-close keywords!)**
+- **CI is green! All commits pushed to GitHub!**
+
+### 📁 Updated Project Structure:
+```
+Milesto/
+├── escrow-contract/            # Soroban smart contract
+│   ├── Cargo.toml
+│   ├── Cargo.lock
+│   ├── .gitignore
+│   ├── README.md
+│   ├── CONTRIBUTING.md
+│   ├── context.md
+│   └── contracts/
+│       └── milestone-escrow/
+│           ├── Cargo.toml
+│           ├── src/
+│           │   ├── lib.rs
+│           │   └── test.rs
+│           └── test_snapshots/
+
+├── escrow-frontend/            # Next.js frontend
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── tsconfig.json
+│   ├── next.config.ts
+│   ├── tailwind.config.ts
+│   ├── postcss.config.mjs
+│   ├── .gitignore
+│   ├── .env.local
+│   ├── .env.local.example
+│   ├── README.md
+│   ├── CONTRIBUTING.md
+│   ├── app/
+│   │   ├── layout.tsx
+│   │   ├── page.tsx
+│   │   ├── globals.css
+│   │   ├── lib/
+│   │   │   └── contract.ts
+│   │   ├── context/
+│   │   │   └── WalletContext.tsx
+│   │   ├── components/
+│   │   │   ├── Navbar.tsx
+│   │   │   ├── MilestoneCard.tsx
+│   │   │   └── LoadingSkeleton.tsx
+│   │   ├── create/
+│   │   │   └── page.tsx
+│   │   └── dashboard/
+│   │       └── page.tsx
+│   └── public/
+
+└── escrow-backend/             # Express backend
+    ├── package.json
+    ├── package-lock.json
+    ├── tsconfig.json
+    ├── jest.config.ts
+    ├── .gitignore
+    ├── .env.example
+    ├── .env
+    ├── README.md
+    ├── CONTRIBUTING.md
+    ├── __tests__/
+    │   ├── jobs.test.ts
+    │   └── indexer.test.ts
+    └── src/
+        ├── index.ts
+        ├── indexer/
+        │   ├── db.ts
+        │   └── poller.ts
+        └── routes/
+            └── jobs.ts
+```
+
 ### 🎯 Next Steps (Potential Ideas):
 - Wire up other contract functions (fund, deliver, approve, dispute, resolve) to frontend
 - Add support for multiple jobs in contract
