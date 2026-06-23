@@ -308,9 +308,12 @@ impl MilestoneEscrow {
 
         let deadline = milestone.delivered_at + job.auto_release_seconds;
         let current = env.ledger().timestamp();
+        // Deadline semantics: `current == deadline` is allowed to claim.
+        // This is important at the interaction boundary with client `approve_partial`.
         if current < deadline {
             return Err(Error::DeadlineNotPassed);
         }
+
 
         let remaining = milestone.amount - milestone.released_amount;
         let token_client = token::Client::new(&env, &job.token);

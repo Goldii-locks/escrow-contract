@@ -1065,6 +1065,184 @@ fn test_claim_auto_release_after_deadline_succeeds() {
 }
 
 #[test]
+fn test_partial_release_at_deadline_boundary_then_claim_auto_release_releases_remaining() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    let auto_release_seconds: u64 = 100;
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &auto_release_seconds,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Move ledger to exactly the deadline boundary.
+    env.ledger().with_mut(|li| {
+        li.timestamp += auto_release_seconds;
+    });
+
+    // Client partially releases at the deadline boundary.
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    // Freelancer should still be able to claim auto-release at (current == deadline).
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    assert_eq!(token.balance(&freelancer_addr), 10_000);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.released_amount, 10_000);
+    assert_eq!(milestone.status, MilestoneStatus::Released);
+}
+
+#[test]
+fn test_partial_release_before_deadline_then_claim_auto_release_fails_until_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    let auto_release_seconds: u64 = 100;
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &auto_release_seconds,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Move to just before deadline.
+    env.ledger().with_mut(|li| {
+        li.timestamp += auto_release_seconds - 1;
+    });
+
+    // Client partially releases right before deadline.
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    // Claim auto-release should fail because deadline hasn't passed.
+    let result = client.try_claim_auto_release(&freelancer_addr, &0u32);
+    assert!(result.is_err());
+
+    // Ensure no additional funds were released.
+    assert_eq!(token.balance(&freelancer_addr), 4_000);
+
+    // Move to deadline boundary and succeed.
+    env.ledger().with_mut(|li| {
+        li.timestamp += 1;
+    });
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    assert_eq!(token.balance(&freelancer_addr), 10_000);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_claim_auto_release_after_partial_release_releases_only_remaining_not_full() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    let auto_release_seconds: u64 = 100;
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &auto_release_seconds,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Partial release before deadline.
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.released_amount, 4_000);
+    assert_eq!(milestone.status, MilestoneStatus::PartiallyReleased);
+
+    // Move to after deadline.
+    env.ledger().with_mut(|li| {
+        li.timestamp += auto_release_seconds + 10;
+    });
+
+    // Freelancer claims auto-release; should only release remaining (6_000).
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    assert_eq!(token.balance(&freelancer_addr), 10_000);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.released_amount, 10_000);
+    assert_eq!(milestone.status, MilestoneStatus::Released);
+}
+
+
+#[test]
 fn test_claim_auto_release_wrong_status_fails() {
     let env = Env::default();
     env.mock_all_auths();
