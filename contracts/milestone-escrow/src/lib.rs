@@ -50,8 +50,22 @@ pub struct Job {
 }
 
 #[contracttype]
+#[derive(Clone, Debug)]
+struct JobMeta {
+    client: Address,
+    freelancer: Address,
+    arbiter: Address,
+    token: Address,
+    funded: bool,
+    auto_release_seconds: u64,
+    milestone_count: u32,
+    total_amount: i128,
+}
+
+#[contracttype]
 pub enum DataKey {
     Job,
+    Milestone(u32),
     Admin,
     WhitelistedTokens,
 }
@@ -97,6 +111,47 @@ pub struct MilestoneEscrow;
 
 #[contractimpl]
 impl MilestoneEscrow {
+    fn load_job_meta(env: &Env) -> Result<JobMeta, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Job)
+            .ok_or(Error::NotInitialized)
+    }
+
+    fn store_job_meta(env: &Env, meta: &JobMeta) {
+        env.storage().instance().set(&DataKey::Job, meta);
+    }
+
+    fn load_milestone(env: &Env, index: u32) -> Result<Milestone, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Milestone(index))
+            .ok_or(Error::InvalidMilestone)
+    }
+
+    fn store_milestone(env: &Env, index: u32, milestone: &Milestone) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(index), milestone);
+    }
+
+    fn assemble_job(env: &Env, meta: &JobMeta) -> Result<Job, Error> {
+        let mut milestones = Vec::new(env);
+        for i in 0..meta.milestone_count {
+            milestones.push_back(Self::load_milestone(env, i)?);
+        }
+        Ok(Job {
+            client: meta.client.clone(),
+            freelancer: meta.freelancer.clone(),
+            arbiter: meta.arbiter.clone(),
+            token: meta.token.clone(),
+            milestones,
+            funded: meta.funded,
+            auto_release_seconds: meta.auto_release_seconds,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -119,27 +174,34 @@ impl MilestoneEscrow {
             .instance()
             .set(&DataKey::WhitelistedTokens, &whitelist);
 
-        let mut milestones: Vec<Milestone> = Vec::new(&env);
-        for amount in milestone_amounts.iter() {
-            milestones.push_back(Milestone {
-                amount,
-                released_amount: 0,
-                status: MilestoneStatus::Pending,
-                delivered_at: 0,
-            });
+        let milestone_count = milestone_amounts.len();
+        let mut total_amount: i128 = 0;
+        for (index, amount) in milestone_amounts.iter().enumerate() {
+            total_amount += amount;
+            Self::store_milestone(
+                &env,
+                index as u32,
+                &Milestone {
+                    amount,
+                    released_amount: 0,
+                    status: MilestoneStatus::Pending,
+                    delivered_at: 0,
+                },
+            );
         }
 
-        let job = Job {
+        let meta = JobMeta {
             client,
             freelancer,
             arbiter,
             token,
-            milestones,
             funded: false,
             auto_release_seconds,
+            milestone_count,
+            total_amount,
         };
 
-        env.storage().instance().set(&DataKey::Job, &job);
+        Self::store_job_meta(&env, &meta);
         Ok(())
     }
 
@@ -224,25 +286,20 @@ impl MilestoneEscrow {
 
     pub fn fund(env: Env, client: Address) -> Result<(), Error> {
         client.require_auth();
-        let mut job: Job = env
-            .storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)?;
+        let mut meta = Self::load_job_meta(&env)?;
 
-        if job.funded {
+        if meta.funded {
             return Err(Error::AlreadyFunded);
         }
-        if job.client != client {
+        if meta.client != client {
             return Err(Error::Unauthorized);
         }
 
-        let total: i128 = job.milestones.iter().map(|m| m.amount).sum();
-        let token_client = token::Client::new(&env, &job.token);
-        token_client.transfer(&client, &env.current_contract_address(), &total);
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(&client, &env.current_contract_address(), &meta.total_amount);
 
-        job.funded = true;
-        env.storage().instance().set(&DataKey::Job, &job);
+        meta.funded = true;
+        Self::store_job_meta(&env, &meta);
         Ok(())
     }
 
@@ -252,32 +309,30 @@ impl MilestoneEscrow {
         milestone_index: u32,
     ) -> Result<(), Error> {
         freelancer.require_auth();
-        let mut job: Job = env
-            .storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)?;
 
-        if job.freelancer != freelancer {
+        let meta = Self::load_job_meta(&env)?;
+
+        if meta.freelancer != freelancer {
             return Err(Error::Unauthorized);
         }
-        if !job.funded {
+        if !meta.funded {
             return Err(Error::NotFunded);
         }
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
 
-        let mut milestone = job
-            .milestones
-            .get(milestone_index)
-            .ok_or(Error::InvalidMilestone)?;
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Pending {
             return Err(Error::InvalidStatus);
         }
 
+        let delivered_at = env.ledger().timestamp();
         milestone.status = MilestoneStatus::Delivered;
-        milestone.delivered_at = env.ledger().timestamp();
-        job.milestones.set(milestone_index, milestone);
-        env.storage().instance().set(&DataKey::Job, &job);
+        milestone.delivered_at = delivered_at;
+        Self::store_milestone(&env, milestone_index, &milestone);
+
         Ok(())
     }
 
@@ -287,46 +342,42 @@ impl MilestoneEscrow {
         milestone_index: u32,
     ) -> Result<(), Error> {
         freelancer.require_auth();
-        let mut job: Job = env
-            .storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)?;
+        let meta = Self::load_job_meta(&env)?;
 
-        if job.freelancer != freelancer {
+        if meta.freelancer != freelancer {
             return Err(Error::Unauthorized);
         }
 
-        let mut milestone = job
-            .milestones
-            .get(milestone_index)
-            .ok_or(Error::InvalidMilestone)?;
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Delivered {
             return Err(Error::InvalidStatus);
         }
 
-        let deadline = milestone.delivered_at + job.auto_release_seconds;
+        let deadline = milestone.delivered_at + meta.auto_release_seconds;
         let current = env.ledger().timestamp();
         if current < deadline {
             return Err(Error::DeadlineNotPassed);
         }
 
         let remaining = milestone.amount - milestone.released_amount;
-        let token_client = token::Client::new(&env, &job.token);
-        token_client.transfer(&env.current_contract_address(), &job.freelancer, &remaining);
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &meta.freelancer,
+            &remaining,
+        );
 
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
-        job.milestones.set(milestone_index, milestone);
-        env.storage().instance().set(&DataKey::Job, &job);
+        Self::store_milestone(&env, milestone_index, &milestone);
         Ok(())
     }
 
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> i64 {
-        let job: Job = env.storage().instance().get(&DataKey::Job).unwrap();
-        let milestone = job.milestones.get(milestone_index).unwrap();
-        let deadline = milestone.delivered_at + job.auto_release_seconds;
+        let meta = Self::load_job_meta(&env).unwrap();
+        let milestone = Self::load_milestone(&env, milestone_index).unwrap();
+        let deadline = milestone.delivered_at + meta.auto_release_seconds;
         let current = env.ledger().timestamp();
         (deadline as i64) - (current as i64)
     }
@@ -338,20 +389,13 @@ impl MilestoneEscrow {
         amount: i128,
     ) -> Result<(), Error> {
         client.require_auth();
-        let mut job: Job = env
-            .storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)?;
+        let meta = Self::load_job_meta(&env)?;
 
-        if job.client != client {
+        if meta.client != client {
             return Err(Error::Unauthorized);
         }
 
-        let mut milestone = job
-            .milestones
-            .get(milestone_index)
-            .ok_or(Error::InvalidMilestone)?;
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Delivered
             && milestone.status != MilestoneStatus::PartiallyReleased
@@ -368,8 +412,8 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        let token_client = token::Client::new(&env, &job.token);
-        token_client.transfer(&env.current_contract_address(), &job.freelancer, &amount);
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(&env.current_contract_address(), &meta.freelancer, &amount);
 
         milestone.released_amount += amount;
 
@@ -379,27 +423,19 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::PartiallyReleased;
         }
 
-        job.milestones.set(milestone_index, milestone);
-        env.storage().instance().set(&DataKey::Job, &job);
+        Self::store_milestone(&env, milestone_index, &milestone);
         Ok(())
     }
 
     pub fn approve_milestone(env: Env, client: Address, milestone_index: u32) -> Result<(), Error> {
         client.require_auth();
-        let mut job: Job = env
-            .storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)?;
+        let meta = Self::load_job_meta(&env)?;
 
-        if job.client != client {
+        if meta.client != client {
             return Err(Error::Unauthorized);
         }
 
-        let mut milestone = job
-            .milestones
-            .get(milestone_index)
-            .ok_or(Error::InvalidMilestone)?;
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Delivered
             && milestone.status != MilestoneStatus::PartiallyReleased
@@ -409,33 +445,29 @@ impl MilestoneEscrow {
 
         let remaining = milestone.amount - milestone.released_amount;
         if remaining > 0 {
-            let token_client = token::Client::new(&env, &job.token);
-            token_client.transfer(&env.current_contract_address(), &job.freelancer, &remaining);
+            let token_client = token::Client::new(&env, &meta.token);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &meta.freelancer,
+                &remaining,
+            );
             milestone.released_amount = milestone.amount;
         }
 
         milestone.status = MilestoneStatus::Released;
-        job.milestones.set(milestone_index, milestone);
-        env.storage().instance().set(&DataKey::Job, &job);
+        Self::store_milestone(&env, milestone_index, &milestone);
         Ok(())
     }
 
     pub fn raise_dispute(env: Env, caller: Address, milestone_index: u32) -> Result<(), Error> {
         caller.require_auth();
-        let mut job: Job = env
-            .storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)?;
+        let meta = Self::load_job_meta(&env)?;
 
-        if job.client != caller && job.freelancer != caller {
+        if meta.client != caller && meta.freelancer != caller {
             return Err(Error::Unauthorized);
         }
 
-        let mut milestone = job
-            .milestones
-            .get(milestone_index)
-            .ok_or(Error::InvalidMilestone)?;
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Pending
             && milestone.status != MilestoneStatus::Delivered
@@ -445,8 +477,7 @@ impl MilestoneEscrow {
         }
 
         milestone.status = MilestoneStatus::Disputed;
-        job.milestones.set(milestone_index, milestone);
-        env.storage().instance().set(&DataKey::Job, &job);
+        Self::store_milestone(&env, milestone_index, &milestone);
         Ok(())
     }
 
@@ -457,50 +488,44 @@ impl MilestoneEscrow {
         release_to_freelancer: bool,
     ) -> Result<(), Error> {
         arbiter.require_auth();
-        let mut job: Job = env
-            .storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)?;
+        let meta = Self::load_job_meta(&env)?;
 
-        if job.arbiter != arbiter {
+        if meta.arbiter != arbiter {
             return Err(Error::Unauthorized);
         }
 
-        let mut milestone = job
-            .milestones
-            .get(milestone_index)
-            .ok_or(Error::InvalidMilestone)?;
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Disputed {
             return Err(Error::InvalidStatus);
         }
 
         let remaining = milestone.amount - milestone.released_amount;
-        let token_client = token::Client::new(&env, &job.token);
+        let token_client = token::Client::new(&env, &meta.token);
         if release_to_freelancer {
             if remaining > 0 {
-                token_client.transfer(&env.current_contract_address(), &job.freelancer, &remaining);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &meta.freelancer,
+                    &remaining,
+                );
                 milestone.released_amount = milestone.amount;
             }
             milestone.status = MilestoneStatus::Released;
         } else {
             if remaining > 0 {
-                token_client.transfer(&env.current_contract_address(), &job.client, &remaining);
+                token_client.transfer(&env.current_contract_address(), &meta.client, &remaining);
             }
             milestone.status = MilestoneStatus::Refunded;
         }
 
-        job.milestones.set(milestone_index, milestone);
-        env.storage().instance().set(&DataKey::Job, &job);
+        Self::store_milestone(&env, milestone_index, &milestone);
         Ok(())
     }
 
     pub fn get_job(env: Env) -> Result<Job, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Job)
-            .ok_or(Error::NotInitialized)
+        let meta = Self::load_job_meta(&env)?;
+        Self::assemble_job(&env, &meta)
     }
 }
 
