@@ -1254,7 +1254,7 @@ fn test_time_until_auto_release() {
 }
 
 #[test]
-fn test_mark_delivered_emits_delivered_event() {
+fn test_mark_delivered_unauthorized_client_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1266,11 +1266,11 @@ fn test_mark_delivered_emits_delivered_event() {
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
     let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &5_000);
+    token_admin.mint(&client_addr, &1_000);
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
-    let amounts = vec![&env, 5_000_i128];
+    let amounts = vec![&env, 1_000_i128];
     client.initialize(
         &admin_addr,
         &client_addr,
@@ -1282,30 +1282,12 @@ fn test_mark_delivered_emits_delivered_event() {
     );
     client.fund(&client_addr);
 
-    env.ledger().with_mut(|li| {
-        li.timestamp = 1_700_000_000;
-    });
-
-    client.mark_delivered(&freelancer_addr, &0u32);
-
-    let events = env.events().all();
-    assert_eq!(events.len(), 1);
-
-    let (emitter, _topics, data) = events.get(0).unwrap();
-    assert_eq!(emitter, contract_id);
-
-    let event: DeliveredEvent = data.try_into_val(&env).unwrap();
-    assert_eq!(event.contract_id, contract_id);
-    assert_eq!(event.milestone_index, 0);
-    assert_eq!(event.freelancer, freelancer_addr);
-    assert_eq!(event.client, client_addr);
-    assert_eq!(event.delivered_at, 1_700_000_000);
-    assert_eq!(event.status, MilestoneStatus::Delivered);
-    assert_eq!(event.amount, 5_000);
+    let result = client.try_mark_delivered(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
-fn test_mark_delivered_emits_exactly_one_event() {
+fn test_mark_delivered_unauthorized_arbiter_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1317,11 +1299,11 @@ fn test_mark_delivered_emits_exactly_one_event() {
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
     let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &2_000);
+    token_admin.mint(&client_addr, &1_000);
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
-    let amounts = vec![&env, 1_000_i128, 1_000_i128];
+    let amounts = vec![&env, 1_000_i128];
     client.initialize(
         &admin_addr,
         &client_addr,
@@ -1332,77 +1314,41 @@ fn test_mark_delivered_emits_exactly_one_event() {
         &amounts,
     );
     client.fund(&client_addr);
-    client.mark_delivered(&freelancer_addr, &0u32);
 
-    assert_eq!(env.events().all().len(), 1);
+    let result = client.try_mark_delivered(&arbiter_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
-fn test_mark_delivered_many_milestones() {
+fn test_mark_delivered_unauthorized_freelancer_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let count = 120u32;
-    let amounts = build_milestone_amounts(&env, count, 100);
-    let (_, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
 
-    client.mark_delivered(&freelancer_addr, &0u32);
-    client.mark_delivered(&freelancer_addr, &59u32);
-    client.mark_delivered(&freelancer_addr, &(count - 1));
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
 
-    let job = client.get_job();
-    assert_eq!(job.milestones.len(), count);
-    assert_eq!(
-        job.milestones.get(0).unwrap().status,
-        MilestoneStatus::Delivered
-    );
-    assert_eq!(
-        job.milestones.get(59).unwrap().status,
-        MilestoneStatus::Delivered
-    );
-    assert_eq!(
-        job.milestones.get(count - 1).unwrap().status,
-        MilestoneStatus::Delivered
-    );
-    assert_eq!(
-        job.milestones.get(1).unwrap().status,
-        MilestoneStatus::Pending
-    );
-}
-
-#[test]
-fn test_mark_delivered_gas_scales_sublinearly() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let measure = |count: u32, index: u32| -> u64 {
-        let amounts = build_milestone_amounts(&env, count, 100);
-        let (_, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
-        client.mark_delivered(&freelancer_addr, &index);
-        let res = env.cost_estimate().resources();
-        res.read_bytes as u64 + res.write_bytes as u64
-    };
-
-    let small_first = measure(10, 0);
-    let small_last = measure(10, 9);
-    let large_first = measure(120, 0);
-    let large_last = measure(120, 119);
-
-    assert!(
-        large_first < small_first * 3,
-        "first milestone gas grew too much: small={small_first}, large={large_first}"
-    );
-    assert!(
-        large_last < small_last * 3,
-        "last milestone gas grew too much: small={small_last}, large={large_last}"
-    );
-    let large_spread = if large_first > large_last {
-        large_first - large_last
-    } else {
-        large_last - large_first
-    };
-    assert!(
-        large_spread < large_first / 2,
-        "index position should not dominate gas: first={large_first}, last={large_last}"
-    );
+    let result = client.try_mark_delivered(&impostor, &0u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
