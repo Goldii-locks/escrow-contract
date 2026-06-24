@@ -1352,3 +1352,127 @@ fn test_mark_delivered_unauthorized_freelancer_fails() {
     let result = client.try_mark_delivered(&impostor, &0u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
+
+#[test]
+fn test_mark_delivered_zero_address_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    let zero_address = Address::from_array(&[0u8; 32]);
+    let result = client.try_mark_delivered(&zero_address, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+#[test]
+fn test_mark_delivered_state_transitions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &2_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // Test 1: Pending → Delivered (should pass)
+    client.mark_delivered(&freelancer_addr, &0u32);
+    let job = client.get_job();
+    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Delivered);
+
+    // Test 2: Delivered → Delivered (should fail)
+    let result = client.try_mark_delivered(&freelancer_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Setup milestone 1 for PartiallyReleased
+    client.mark_delivered(&freelancer_addr, &1u32);
+    client.approve_partial(&client_addr, &1u32, &500_i128);
+    let result = client.try_mark_delivered(&freelancer_addr, &1u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Reset with new environment for remaining states
+    let env2 = Env::default();
+    env2.mock_all_auths();
+    let client_addr2 = Address::generate(&env2);
+    let freelancer_addr2 = Address::generate(&env2);
+    let arbiter_addr2 = Address::generate(&env2);
+    let admin_addr2 = Address::generate(&env2);
+    let token_contract_id2 = env2
+        .register_stellar_asset_contract_v2(admin_addr2.clone())
+        .address();
+    let token_admin2 = token::StellarAssetClient::new(&env2, &token_contract_id2);
+    token_admin2.mint(&client_addr2, &4_000);
+    let contract_id2 = env2.register(MilestoneEscrow, ());
+    let client2 = MilestoneEscrowClient::new(&env2, &contract_id2);
+    let amounts2 = vec![&env2, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128];
+    client2.initialize(
+        &admin_addr2,
+        &client_addr2,
+        &freelancer_addr2,
+        &arbiter_addr2,
+        &token_contract_id2,
+        &604800,
+        &amounts2,
+    );
+    client2.fund(&client_addr2);
+
+    // Released
+    client2.mark_delivered(&freelancer_addr2, &0u32);
+    client2.approve_milestone(&client_addr2, &0u32);
+    let result = client2.try_mark_delivered(&freelancer_addr2, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Disputed
+    client2.mark_delivered(&freelancer_addr2, &1u32);
+    client2.raise_dispute(&client_addr2, &1u32);
+    let result = client2.try_mark_delivered(&freelancer_addr2, &1u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Refunded
+    client2.mark_delivered(&freelancer_addr2, &2u32);
+    client2.raise_dispute(&client_addr2, &2u32);
+    client2.resolve_dispute(&arbiter_addr2, &2u32, &false);
+    let result = client2.try_mark_delivered(&freelancer_addr2, &2u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
