@@ -160,6 +160,23 @@ impl MilestoneEscrow {
         })
     }
 
+    /// Initializes the escrow contract with all job parties and milestone configuration.
+    ///
+    /// Must be called exactly once before any other function. Sets the admin, whitelists
+    /// the token, and creates one [`Milestone`] per entry in `milestone_amounts`.
+    ///
+    /// # Parameters
+    /// - `admin`: Address granted token-whitelist management rights.
+    /// - `client`: Address of the party funding the job and approving milestones.
+    /// - `freelancer`: Address of the party doing the work and receiving payments.
+    /// - `arbiter`: Address empowered to resolve disputes.
+    /// - `token`: SAC token address used for all payments; added to the whitelist automatically.
+    /// - `auto_release_seconds`: Seconds after `mark_delivered` before the freelancer can
+    ///   self-release without client approval via [`claim_auto_release`].
+    /// - `milestone_amounts`: Ordered list of per-milestone payment amounts (in token stroops).
+    ///
+    /// # Errors
+    /// - [`Error::AlreadyInitialized`] if the contract has already been set up.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
@@ -214,6 +231,16 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Adds a token address to the whitelist of accepted payment tokens.
+    ///
+    /// # Parameters
+    /// - `admin`: Must match the admin set during [`initialize`]; requires auth.
+    /// - `token`: Token address to whitelist.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `admin` does not match the stored admin.
+    /// - [`Error::TokenAlreadyWhitelisted`] if the token is already in the whitelist.
     pub fn add_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
 
@@ -244,6 +271,16 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Removes a token address from the whitelist of accepted payment tokens.
+    ///
+    /// # Parameters
+    /// - `admin`: Must match the admin set during [`initialize`]; requires auth.
+    /// - `token`: Token address to remove.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `admin` does not match the stored admin.
+    /// - [`Error::TokenNotWhitelisted`] if the token is not currently in the whitelist.
     pub fn remove_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
 
@@ -274,6 +311,11 @@ impl MilestoneEscrow {
         }
     }
 
+    /// Returns `true` if `token` is in the whitelist, `false` otherwise (including when
+    /// the contract is uninitialized).
+    ///
+    /// # Parameters
+    /// - `token`: Token address to check.
     pub fn is_token_whitelisted(env: Env, token: Address) -> bool {
         if let Some(whitelist) = env
             .storage()
@@ -286,6 +328,10 @@ impl MilestoneEscrow {
         }
     }
 
+    /// Returns the full list of whitelisted token addresses.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
     pub fn get_whitelisted_tokens(env: Env) -> Result<Vec<Address>, Error> {
         env.storage()
             .instance()
@@ -293,6 +339,18 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Transfers the total milestone sum from the client into the contract.
+    ///
+    /// Must be called by the client before any work can be delivered. Requires a token
+    /// approval (allowance) from `client` to the contract address for `total_amount`.
+    ///
+    /// # Parameters
+    /// - `client`: Must match the client set during [`initialize`]; requires auth.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::AlreadyFunded`] if the contract has already been funded.
+    /// - [`Error::Unauthorized`] if `client` does not match the stored client.
     pub fn fund(env: Env, client: Address) -> Result<(), Error> {
         client.require_auth();
         let mut meta = Self::load_job_meta(&env)?;
@@ -312,6 +370,21 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Marks a milestone as delivered, starting the auto-release countdown.
+    ///
+    /// Transitions the milestone from `Pending` → `Delivered` and records
+    /// `delivered_at` from the current ledger timestamp. Emits a `deliver` event.
+    ///
+    /// # Parameters
+    /// - `freelancer`: Must match the freelancer set during [`initialize`]; requires auth.
+    /// - `milestone_index`: Zero-based index of the milestone to mark delivered.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `freelancer` does not match the stored freelancer.
+    /// - [`Error::NotFunded`] if the contract has not been funded yet.
+    /// - [`Error::InvalidMilestone`] if `milestone_index` is out of range.
+    /// - [`Error::InvalidStatus`] if the milestone is not in `Pending` status.
     pub fn mark_delivered(
         env: Env,
         freelancer: Address,
@@ -358,6 +431,22 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Releases a delivered milestone to the freelancer without client approval once the
+    /// auto-release deadline has passed (`delivered_at + auto_release_seconds`).
+    ///
+    /// Transitions the milestone to `Released` and transfers any unreleased amount to the
+    /// freelancer.
+    ///
+    /// # Parameters
+    /// - `freelancer`: Must match the freelancer set during [`initialize`]; requires auth.
+    /// - `milestone_index`: Zero-based index of the milestone to auto-release.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `freelancer` does not match the stored freelancer.
+    /// - [`Error::InvalidMilestone`] if `milestone_index` is out of range.
+    /// - [`Error::InvalidStatus`] if the milestone is not in `Delivered` status.
+    /// - [`Error::DeadlineNotPassed`] if the auto-release deadline has not yet elapsed.
     pub fn claim_auto_release(
         env: Env,
         freelancer: Address,
@@ -396,6 +485,13 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Returns the number of seconds remaining until the auto-release deadline for a milestone.
+    ///
+    /// A negative value means the deadline has already passed and [`claim_auto_release`] can
+    /// be called. Panics if the contract is uninitialized or `milestone_index` is invalid.
+    ///
+    /// # Parameters
+    /// - `milestone_index`: Zero-based index of the milestone to query.
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> i64 {
         let meta = Self::load_job_meta(&env).unwrap();
         let milestone = Self::load_milestone(&env, milestone_index).unwrap();
@@ -404,6 +500,22 @@ impl MilestoneEscrow {
         (deadline as i64) - (current as i64)
     }
 
+    /// Releases a partial amount from a delivered (or partially-released) milestone to the freelancer.
+    ///
+    /// Transitions the milestone to `PartiallyReleased` if funds remain, or `Released` if the
+    /// full amount has now been paid.
+    ///
+    /// # Parameters
+    /// - `client`: Must match the client set during [`initialize`]; requires auth.
+    /// - `milestone_index`: Zero-based index of the milestone to partially approve.
+    /// - `amount`: Token amount (in stroops) to release; must be > 0 and ≤ unreleased remainder.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `client` does not match the stored client.
+    /// - [`Error::InvalidMilestone`] if `milestone_index` is out of range.
+    /// - [`Error::InvalidStatus`] if the milestone is not in `Delivered` or `PartiallyReleased` status.
+    /// - [`Error::InvalidAmount`] if `amount` is ≤ 0 or exceeds the unreleased remainder.
     pub fn approve_partial(
         env: Env,
         client: Address,
@@ -449,6 +561,20 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Releases the full remaining balance of a delivered milestone to the freelancer.
+    ///
+    /// Transitions the milestone to `Released` and transfers all unreleased funds to the
+    /// freelancer in one step.
+    ///
+    /// # Parameters
+    /// - `client`: Must match the client set during [`initialize`]; requires auth.
+    /// - `milestone_index`: Zero-based index of the milestone to approve.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `client` does not match the stored client.
+    /// - [`Error::InvalidMilestone`] if `milestone_index` is out of range.
+    /// - [`Error::InvalidStatus`] if the milestone is not in `Delivered` or `PartiallyReleased` status.
     pub fn approve_milestone(env: Env, client: Address, milestone_index: u32) -> Result<(), Error> {
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -481,6 +607,21 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Freezes a milestone for arbitration by transitioning it to `Disputed` status.
+    ///
+    /// Either the client or freelancer may raise a dispute on a milestone that is
+    /// `Pending`, `Delivered`, or `PartiallyReleased`. Once disputed, only the arbiter
+    /// can unblock it via [`resolve_dispute`].
+    ///
+    /// # Parameters
+    /// - `caller`: Must be either the client or freelancer; requires auth.
+    /// - `milestone_index`: Zero-based index of the milestone to dispute.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `caller` is neither the client nor the freelancer.
+    /// - [`Error::InvalidMilestone`] if `milestone_index` is out of range.
+    /// - [`Error::InvalidStatus`] if the milestone is already `Released`, `Refunded`, or `Disputed`.
     pub fn raise_dispute(env: Env, caller: Address, milestone_index: u32) -> Result<(), Error> {
         caller.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -503,6 +644,23 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Resolves a disputed milestone, releasing funds to either the freelancer or the client.
+    ///
+    /// Only callable by the arbiter. If `release_to_freelancer` is `true`, the remaining
+    /// balance is sent to the freelancer and the milestone transitions to `Released`.
+    /// Otherwise, the remaining balance is returned to the client and the milestone
+    /// transitions to `Refunded`.
+    ///
+    /// # Parameters
+    /// - `arbiter`: Must match the arbiter set during [`initialize`]; requires auth.
+    /// - `milestone_index`: Zero-based index of the disputed milestone to resolve.
+    /// - `release_to_freelancer`: `true` to pay the freelancer; `false` to refund the client.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
+    /// - [`Error::Unauthorized`] if `arbiter` does not match the stored arbiter.
+    /// - [`Error::InvalidMilestone`] if `milestone_index` is out of range.
+    /// - [`Error::InvalidStatus`] if the milestone is not in `Disputed` status.
     pub fn resolve_dispute(
         env: Env,
         arbiter: Address,
@@ -545,6 +703,10 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Returns the full [`Job`] state, including all milestones and their current statuses.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] if the contract has not been initialized.
     pub fn get_job(env: Env) -> Result<Job, Error> {
         let meta = Self::load_job_meta(&env)?;
         Self::assemble_job(&env, &meta)
