@@ -1614,3 +1614,148 @@ fn test_mark_delivered_state_transitions() {
     let result = client2.try_mark_delivered(&freelancer_addr2, &2u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
+
+// ── EVENT TESTS ──────────────────────────────────────────────
+
+#[test]
+fn test_add_whitelisted_token_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    client.add_whitelisted_token(&admin_addr, &token2);
+
+    let events = env.events().all();
+    let expected_event = (
+        contract_id.clone(),
+        (symbol_short!("whitelist"), symbol_short!("add")).into_val(&env),
+        token2.into_val(&env),
+    );
+    assert!(events.contains(&expected_event));
+}
+
+#[test]
+fn test_remove_whitelisted_token_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+    client.add_whitelisted_token(&admin_addr, &token2);
+    client.remove_whitelisted_token(&admin_addr, &token2);
+
+    let events = env.events().all();
+    let expected_event = (
+        contract_id.clone(),
+        (symbol_short!("whitelist"), symbol_short!("remove")).into_val(&env),
+        token2.into_val(&env),
+    );
+    assert!(events.contains(&expected_event));
+}
+
+#[test]
+fn test_approve_partial_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (
+        client_addr,
+        freelancer_addr,
+        arbiter_addr,
+        admin_addr,
+        token_contract_id,
+        contract_id,
+        client,
+    ) = setup_funded_escrow(&env, vec![&env, 10_000_i128]);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    let events = env.events().all();
+    let expected_event = (
+        contract_id.clone(),
+        (symbol_short!("partial"), symbol_short!("approve")).into_val(&env),
+        (0u32, 4_000_i128).into_val(&env),
+    );
+    assert!(events.contains(&expected_event));
+}
+
+#[test]
+fn test_claim_auto_release_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (
+        client_addr,
+        freelancer_addr,
+        arbiter_addr,
+        admin_addr,
+        token_contract_id,
+        contract_id,
+        client,
+    ) = setup_funded_escrow(&env, vec![&env, 10_000_i128]);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp += 604_900; // past auto_release_seconds
+    });
+
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    let events = env.events().all();
+    let expected_event = (
+        contract_id.clone(),
+        (symbol_short!("auto_release"), symbol_short!("claim")).into_val(&env),
+        (0u32, 10_000_i128).into_val(&env),
+    );
+    assert!(events.contains(&expected_event));
+}

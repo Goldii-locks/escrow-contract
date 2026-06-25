@@ -116,6 +116,30 @@ pub struct DisputeResolvedEvent {
     pub released_to_freelancer: bool,
 }
 
+// ── NEW EVENTS ─────────────────────────────────────────────
+
+#[contracttype]
+pub struct WhitelistedTokenAddedEvent {
+    pub token: Address,
+}
+
+#[contracttype]
+pub struct WhitelistedTokenRemovedEvent {
+    pub token: Address,
+}
+
+#[contracttype]
+pub struct PartialReleaseApprovedEvent {
+    pub milestone_index: u32,
+    pub amount: i128,
+}
+
+#[contracttype]
+pub struct AutoReleaseClaimedEvent {
+    pub milestone_index: u32,
+    pub amount: i128,
+}
+
 #[contract]
 pub struct MilestoneEscrow;
 
@@ -238,10 +262,17 @@ impl MilestoneEscrow {
             return Err(Error::TokenAlreadyWhitelisted);
         }
 
-        whitelist.push_back(token);
+        whitelist.push_back(token.clone());
         env.storage()
             .instance()
             .set(&DataKey::WhitelistedTokens, &whitelist);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("whitelist"), symbol_short!("add")),
+            WhitelistedTokenAddedEvent { token },
+        );
+
         Ok(())
     }
 
@@ -269,6 +300,13 @@ impl MilestoneEscrow {
             env.storage()
                 .instance()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
+
+            // Emit event
+            env.events().publish(
+                (symbol_short!("whitelist"), symbol_short!("remove")),
+                WhitelistedTokenRemovedEvent { token },
+            );
+
             Ok(())
         } else {
             Err(Error::TokenNotWhitelisted)
@@ -401,6 +439,16 @@ impl MilestoneEscrow {
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("auto_release"), symbol_short!("claim")),
+            AutoReleaseClaimedEvent {
+                milestone_index,
+                amount: remaining,
+            },
+        );
+
         Ok(())
     }
 
@@ -455,6 +503,16 @@ impl MilestoneEscrow {
         }
 
         Self::store_milestone(&env, milestone_index, &updated_milestone);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("partial"), symbol_short!("approve")),
+            PartialReleaseApprovedEvent {
+                milestone_index,
+                amount,
+            },
+        );
+
         Ok(())
     }
 
