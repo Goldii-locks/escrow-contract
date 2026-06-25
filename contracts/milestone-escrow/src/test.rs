@@ -1,7 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Ledger, vec, Address, Env,
+    testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env, IntoVal,
+    Symbol, Val,
 };
 
 fn setup_funded_escrow(
@@ -1208,6 +1209,108 @@ fn test_approve_partial_state_transitions() {
     // Verify token balances
     assert_eq!(token.balance(&freelancer_addr), 10000);
     assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_approve_partial_emits_approved_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    let events = env.events().all();
+    let approve_topic: Symbol = symbol_short!("approve");
+    let approve_topic_val: Val = approve_topic.into_val(&env);
+    let mut approve_count = 0u32;
+    for e in events.iter() {
+        if let Some(topic) = e.1.get(0) {
+            if topic.get_payload() == approve_topic_val.get_payload() {
+                assert_eq!(e.1.len(), 1);
+                approve_count += 1;
+            }
+        }
+    }
+    assert_eq!(approve_count, 1);
+}
+
+#[test]
+fn test_approve_partial_emits_exactly_one_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    let approve_topic: Symbol = symbol_short!("approve");
+    let approve_topic_val: Val = approve_topic.into_val(&env);
+    let approve_count = env
+        .events()
+        .all()
+        .iter()
+        .fold(0u32, |acc, e| {
+            if let Some(topic) = e.1.get(0) {
+                if topic.get_payload() == approve_topic_val.get_payload() {
+                    return acc + 1;
+                }
+            }
+            acc
+        });
+
+    assert_eq!(approve_count, 1);
 }
 
 #[test]

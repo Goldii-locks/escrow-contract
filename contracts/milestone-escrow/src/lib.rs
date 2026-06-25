@@ -99,9 +99,17 @@ pub struct DeliveredEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApprovedEvent {
+    pub contract_id: Address,
     pub milestone_index: u32,
+    pub client: Address,
+    pub freelancer: Address,
+    pub token: Address,
     pub amount: i128,
+    pub released_amount: i128,
+    pub remaining: i128,
+    pub status: MilestoneStatus,
 }
 
 #[contracttype]
@@ -447,6 +455,22 @@ impl MilestoneEscrow {
         }
 
         Self::store_milestone(&env, milestone_index, &updated_milestone);
+
+        env.events().publish(
+            (symbol_short!("approve"),),
+            ApprovedEvent {
+                contract_id: env.current_contract_address(),
+                milestone_index,
+                client: meta.client,
+                freelancer: meta.freelancer,
+                token: meta.token,
+                amount,
+                released_amount: updated_milestone.released_amount,
+                remaining: updated_milestone.amount - updated_milestone.released_amount,
+                status: updated_milestone.status.clone(),
+            },
+        );
+
         Ok(())
     }
 
