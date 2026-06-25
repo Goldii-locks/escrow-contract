@@ -417,7 +417,7 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
-        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        let milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Delivered
             && milestone.status != MilestoneStatus::PartiallyReleased
@@ -437,15 +437,16 @@ impl MilestoneEscrow {
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &meta.freelancer, &amount);
 
-        milestone.released_amount += amount;
+        let mut updated_milestone = milestone;
+        updated_milestone.released_amount += amount;
 
-        if milestone.released_amount == milestone.amount {
-            milestone.status = MilestoneStatus::Released;
+        if updated_milestone.released_amount == updated_milestone.amount {
+            updated_milestone.status = MilestoneStatus::Released;
         } else {
-            milestone.status = MilestoneStatus::PartiallyReleased;
+            updated_milestone.status = MilestoneStatus::PartiallyReleased;
         }
 
-        Self::store_milestone(&env, milestone_index, &milestone);
+        Self::store_milestone(&env, milestone_index, &updated_milestone);
         Ok(())
     }
 

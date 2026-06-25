@@ -1,16 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env, TryIntoVal,
+    testutils::Address as _, testutils::Ledger, vec, Address, Env,
 };
-
-fn build_milestone_amounts(env: &Env, count: u32, amount_per: i128) -> soroban_sdk::Vec<i128> {
-    let mut amounts = vec![env];
-    for _ in 0..count {
-        amounts.push_back(amount_per);
-    }
-    amounts
-}
 
 fn setup_funded_escrow(
     env: &Env,
@@ -1001,7 +993,123 @@ fn test_release_on_wrong_status_fails() {
 }
 
 #[test]
-fn test_unauthorized_partial_release_fails() {
+fn test_approve_partial_wrong_status_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // Try to approve partial on Pending status
+    let result = client.try_approve_partial(&client_addr, &0u32, &4000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Mark delivered and approve fully
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_milestone(&client_addr, &0u32);
+
+    // Try to approve partial on Released status
+    let result = client.try_approve_partial(&client_addr, &0u32, &1000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_approve_partial_invalid_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Try to approve partial on non-existent milestone
+    let result = client.try_approve_partial(&client_addr, &1u32, &4000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidMilestone)));
+}
+
+#[test]
+fn test_approve_partial_before_funded_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    // Try to approve partial on Pending status (before mark_delivered)
+    let result = client.try_approve_partial(&client_addr, &0u32, &4000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_approve_partial_unauthorized_partial_release_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1036,6 +1144,70 @@ fn test_unauthorized_partial_release_fails() {
 
     let result = client.try_approve_partial(&bad_actor, &0u32, &4000_i128);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_approve_partial_state_transitions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // Test 1: Pending → InvalidStatus (should fail)
+    let result = client.try_approve_partial(&client_addr, &0u32, &4000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Test 2: Delivered → PartiallyReleased (should pass)
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_partial(&client_addr, &0u32, &4000_i128);
+    let job = client.get_job();
+    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::PartiallyReleased);
+    assert_eq!(job.milestones.get(0).unwrap().released_amount, 4000);
+
+    // Test 3: PartiallyReleased → PartiallyReleased (should pass)
+    client.approve_partial(&client_addr, &0u32, &3000_i128);
+    let job = client.get_job();
+    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::PartiallyReleased);
+    assert_eq!(job.milestones.get(0).unwrap().released_amount, 7000);
+
+    // Test 4: PartiallyReleased → Released (should pass)
+    client.approve_partial(&client_addr, &0u32, &3000_i128);
+    let job = client.get_job();
+    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Released);
+    assert_eq!(job.milestones.get(0).unwrap().released_amount, 10000);
+
+    // Test 5: Released → InvalidStatus (should fail)
+    let result = client.try_approve_partial(&client_addr, &0u32, &1000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Verify token balances
+    assert_eq!(token.balance(&freelancer_addr), 10000);
+    assert_eq!(token.balance(&contract_id), 0);
 }
 
 #[test]
