@@ -17,6 +17,7 @@ pub enum Error {
     TokenAlreadyWhitelisted = 9,
     InvalidAmount = 10,
     DeadlineNotPassed = 11,
+    InvalidAddress = 12,
 }
 
 #[contracttype]
@@ -317,6 +318,13 @@ impl MilestoneEscrow {
         freelancer: Address,
         milestone_index: u32,
     ) -> Result<(), Error> {
+        // Check for zero addresses (both account and contract types)
+        let zero_account = Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+        let zero_contract = Address::from_str(&env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4");
+
+        if freelancer == zero_account || freelancer == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
         freelancer.require_auth();
 
         let meta = Self::load_job_meta(&env)?;
