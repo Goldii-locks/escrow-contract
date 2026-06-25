@@ -1,8 +1,6 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{
-    testutils::Address as _, testutils::Ledger, vec, Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger, vec, Address, Env};
 
 fn setup_funded_escrow(
     env: &Env,
@@ -1186,19 +1184,28 @@ fn test_approve_partial_state_transitions() {
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_partial(&client_addr, &0u32, &4000_i128);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::PartiallyReleased);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::PartiallyReleased
+    );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 4000);
 
     // Test 3: PartiallyReleased → PartiallyReleased (should pass)
     client.approve_partial(&client_addr, &0u32, &3000_i128);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::PartiallyReleased);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::PartiallyReleased
+    );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 7000);
 
     // Test 4: PartiallyReleased → Released (should pass)
     client.approve_partial(&client_addr, &0u32, &3000_i128);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Released);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Released
+    );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 10000);
 
     // Test 5: Released → InvalidStatus (should fail)
@@ -1557,7 +1564,10 @@ fn test_mark_delivered_state_transitions() {
     // Test 1: Pending → Delivered (should pass)
     client.mark_delivered(&freelancer_addr, &0u32);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Delivered);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Delivered
+    );
 
     // Test 2: Delivered → Delivered (should fail)
     let result = client.try_mark_delivered(&freelancer_addr, &0u32);
