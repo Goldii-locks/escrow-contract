@@ -402,16 +402,15 @@ fn test_approve_milestone_zero_amount_fails() {
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
-    let token = token::Client::new(&env, &token_contract_id);
     let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
     token_admin.mint(&client_addr, &10_000);
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    // Milestone with zero amount
+    // Milestone with zero amount should be rejected before state is written.
     let amounts = vec![&env, 0_i128];
-    client.initialize(
+    let result = client.try_initialize(
         &admin_addr,
         &client_addr,
         &freelancer_addr,
@@ -420,15 +419,8 @@ fn test_approve_milestone_zero_amount_fails() {
         &604800,
         &amounts,
     );
-    client.fund(&client_addr);
-    client.mark_delivered(&freelancer_addr, &0u32);
-
-    // Try to approve milestone with zero amount
-    let result = client.try_approve_milestone(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
-
-
 
 #[test]
 fn test_raise_dispute_unauthorized_fails() {
@@ -1265,19 +1257,28 @@ fn test_approve_partial_state_transitions() {
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_partial(&client_addr, &0u32, &4000_i128);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::PartiallyReleased);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::PartiallyReleased
+    );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 4000);
 
     // Test 3: PartiallyReleased → PartiallyReleased (should pass)
     client.approve_partial(&client_addr, &0u32, &3000_i128);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::PartiallyReleased);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::PartiallyReleased
+    );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 7000);
 
     // Test 4: PartiallyReleased → Released (should pass)
     client.approve_partial(&client_addr, &0u32, &3000_i128);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Released);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Released
+    );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 10000);
 
     // Test 5: Released → InvalidStatus (should fail)
@@ -1375,18 +1376,14 @@ fn test_approve_partial_emits_exactly_one_event() {
 
     let approve_topic: Symbol = symbol_short!("approve");
     let approve_topic_val: Val = approve_topic.into_val(&env);
-    let approve_count = env
-        .events()
-        .all()
-        .iter()
-        .fold(0u32, |acc, e| {
-            if let Some(topic) = e.1.get(0) {
-                if topic.get_payload() == approve_topic_val.get_payload() {
-                    return acc + 1;
-                }
+    let approve_count = env.events().all().iter().fold(0u32, |acc, e| {
+        if let Some(topic) = e.1.get(0) {
+            if topic.get_payload() == approve_topic_val.get_payload() {
+                return acc + 1;
             }
-            acc
-        });
+        }
+        acc
+    });
 
     assert_eq!(approve_count, 1);
 }
@@ -1885,7 +1882,10 @@ fn test_mark_delivered_state_transitions() {
     // Test 1: Pending → Delivered (should pass)
     client.mark_delivered(&freelancer_addr, &0u32);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Delivered);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Delivered
+    );
 
     // Test 2: Delivered → Delivered (should fail)
     let result = client.try_mark_delivered(&freelancer_addr, &0u32);
@@ -2032,8 +2032,7 @@ fn test_approve_partial_on_disputed_milestone_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, _, _, escrow) =
-        setup_delivered_single(&env, 10_000);
+    let (client_addr, _, _, _, _, escrow) = setup_delivered_single(&env, 10_000);
 
     // Move the milestone into Disputed state (client may raise after delivery).
     escrow.raise_dispute(&client_addr, &0u32);
@@ -2050,8 +2049,7 @@ fn test_approve_partial_on_refunded_milestone_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, arbiter_addr, _, _, escrow) =
-        setup_delivered_single(&env, 10_000);
+    let (client_addr, _, arbiter_addr, _, _, escrow) = setup_delivered_single(&env, 10_000);
 
     // Dispute then resolve in favour of the client → status = Refunded.
     escrow.raise_dispute(&client_addr, &0u32);
