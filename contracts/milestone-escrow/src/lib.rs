@@ -116,6 +116,20 @@ pub struct DisputeResolvedEvent {
     pub released_to_freelancer: bool,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutoReleasedEvent {
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub freelancer: Address,
+    pub client: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub delivered_at: u64,
+    pub released_at: u64,
+    pub auto_release_seconds: u64,
+}
+
 #[contract]
 pub struct MilestoneEscrow;
 
@@ -401,6 +415,23 @@ impl MilestoneEscrow {
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        let released_at = env.ledger().timestamp();
+        env.events().publish(
+            (symbol_short!("auto_rel"),),
+            AutoReleasedEvent {
+                contract_id: env.current_contract_address(),
+                milestone_index,
+                freelancer: meta.freelancer.clone(),
+                client: meta.client.clone(),
+                token: meta.token.clone(),
+                amount: remaining,
+                delivered_at: milestone.delivered_at,
+                released_at,
+                auto_release_seconds: meta.auto_release_seconds,
+            },
+        );
+
         Ok(())
     }
 

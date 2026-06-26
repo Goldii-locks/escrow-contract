@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Ledger, vec, Address, Env,
+    testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env,
 };
 
 fn setup_funded_escrow(
@@ -1613,4 +1613,62 @@ fn test_mark_delivered_state_transitions() {
     client2.resolve_dispute(&arbiter_addr2, &2u32, &false);
     let result = client2.try_mark_delivered(&freelancer_addr2, &2u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_claim_auto_release_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    let delivered_at = env.ledger().timestamp();
+
+    env.ledger().with_mut(|li| {
+        li.timestamp += 200;
+    });
+
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    let released_at = env.ledger().timestamp();
+
+    let events = env.events().all();
+    let auto_rel_event = events.last().unwrap();
+    let data: AutoReleasedEvent = soroban_sdk::FromVal::from_val(&env, &auto_rel_event.2);
+
+    assert_eq!(data.milestone_index, 0u32);
+    assert_eq!(data.freelancer, freelancer_addr);
+    assert_eq!(data.client, client_addr);
+    assert_eq!(data.token, token_contract_id);
+    assert_eq!(data.amount, 10_000);
+    assert_eq!(data.delivered_at, delivered_at);
+    assert_eq!(data.released_at, released_at);
+    assert_eq!(data.auto_release_seconds, 100);
+    assert_eq!(data.contract_id, contract_id);
 }
