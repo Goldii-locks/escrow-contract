@@ -100,9 +100,17 @@ pub struct DeliveredEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApprovedEvent {
+    pub contract_id: Address,
     pub milestone_index: u32,
+    pub client: Address,
+    pub freelancer: Address,
+    pub token: Address,
     pub amount: i128,
+    pub released_amount: i128,
+    pub remaining: i128,
+    pub status: MilestoneStatus,
 }
 
 #[contracttype]
@@ -473,6 +481,10 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
         let milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Delivered
@@ -504,12 +516,18 @@ impl MilestoneEscrow {
 
         Self::store_milestone(&env, milestone_index, &updated_milestone);
 
-        // Emit event
         env.events().publish(
-            (symbol_short!("partial"), symbol_short!("approve")),
-            PartialReleaseApprovedEvent {
+            (symbol_short!("approve"),),
+            ApprovedEvent {
+                contract_id: env.current_contract_address(),
                 milestone_index,
+                client: meta.client,
+                freelancer: meta.freelancer,
+                token: meta.token,
                 amount,
+                released_amount: updated_milestone.released_amount,
+                remaining: updated_milestone.amount - updated_milestone.released_amount,
+                status: updated_milestone.status.clone(),
             },
         );
 
@@ -524,7 +542,15 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
+
+        if milestone.amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
 
         if milestone.status != MilestoneStatus::Delivered
             && milestone.status != MilestoneStatus::PartiallyReleased
@@ -533,15 +559,17 @@ impl MilestoneEscrow {
         }
 
         let remaining = milestone.amount - milestone.released_amount;
-        if remaining > 0 {
-            let token_client = token::Client::new(&env, &meta.token);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &meta.freelancer,
-                &remaining,
-            );
-            milestone.released_amount = milestone.amount;
+        if remaining <= 0 {
+            return Err(Error::InvalidAmount);
         }
+
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &meta.freelancer,
+            &remaining,
+        );
+        milestone.released_amount = milestone.amount;
 
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
