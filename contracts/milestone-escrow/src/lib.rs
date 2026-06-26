@@ -433,6 +433,10 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
         let milestone = Self::load_milestone(&env, milestone_index)?;
 
         if milestone.status != MilestoneStatus::Delivered
