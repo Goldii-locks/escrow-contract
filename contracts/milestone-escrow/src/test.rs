@@ -2337,3 +2337,76 @@ fn test_approve_milestone_after_partial_release() {
     let result = client.try_approve_milestone(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
+
+#[test]
+fn test_approve_milestone_on_disputed_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+
+    let result = client.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_approve_milestone_on_refunded_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+    client.resolve_dispute(&arbiter_addr, &0u32, &false);
+
+    let result = client.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
