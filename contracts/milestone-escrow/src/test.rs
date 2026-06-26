@@ -331,13 +331,14 @@ fn test_approve_milestone_wrong_status_fails() {
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
     let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &1_000);
+    token_admin.mint(&client_addr, &10_000);
 
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 10_000_i128];
 
-    let amounts = vec![&env, 1_000_i128];
-    client.initialize(
+    // Test Pending status
+    let contract_id1 = env.register(MilestoneEscrow, ());
+    let client1 = MilestoneEscrowClient::new(&env, &contract_id1);
+    client1.initialize(
         &admin_addr,
         &client_addr,
         &freelancer_addr,
@@ -346,9 +347,63 @@ fn test_approve_milestone_wrong_status_fails() {
         &604800,
         &amounts,
     );
-    client.fund(&client_addr);
+    client1.fund(&client_addr);
+    let result = client1.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    let result = client.try_approve_milestone(&client_addr, &0u32);
+    // Test Disputed status
+    let contract_id2 = env.register(MilestoneEscrow, ());
+    let client2 = MilestoneEscrowClient::new(&env, &contract_id2);
+    client2.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client2.fund(&client_addr);
+    client2.mark_delivered(&freelancer_addr, &0u32);
+    client2.raise_dispute(&client_addr, &0u32);
+    let result = client2.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Test Refunded status
+    let contract_id3 = env.register(MilestoneEscrow, ());
+    let client3 = MilestoneEscrowClient::new(&env, &contract_id3);
+    client3.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client3.fund(&client_addr);
+    client3.mark_delivered(&freelancer_addr, &0u32);
+    client3.raise_dispute(&client_addr, &0u32);
+    client3.resolve_dispute(&arbiter_addr, &0u32, &false);
+    let result = client3.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Test Released status
+    let contract_id4 = env.register(MilestoneEscrow, ());
+    let client4 = MilestoneEscrowClient::new(&env, &contract_id4);
+    client4.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client4.fund(&client_addr);
+    client4.mark_delivered(&freelancer_addr, &0u32);
+    client4.approve_milestone(&client_addr, &0u32);
+    let result = client4.try_approve_milestone(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
@@ -1079,11 +1134,12 @@ fn test_approve_partial_wrong_status_fails() {
     let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
     token_admin.mint(&client_addr, &10_000);
 
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
-
     let amounts = vec![&env, 10_000_i128];
-    client.initialize(
+
+    // Test Pending status
+    let contract_id1 = env.register(MilestoneEscrow, ());
+    let client1 = MilestoneEscrowClient::new(&env, &contract_id1);
+    client1.initialize(
         &admin_addr,
         &client_addr,
         &freelancer_addr,
@@ -1092,18 +1148,63 @@ fn test_approve_partial_wrong_status_fails() {
         &604800,
         &amounts,
     );
-    client.fund(&client_addr);
-
-    // Try to approve partial on Pending status
-    let result = client.try_approve_partial(&client_addr, &0u32, &4000_i128);
+    client1.fund(&client_addr);
+    let result = client1.try_approve_partial(&client_addr, &0u32, &4000_i128);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Mark delivered and approve fully
-    client.mark_delivered(&freelancer_addr, &0u32);
-    client.approve_milestone(&client_addr, &0u32);
+    // Test Disputed status
+    let contract_id2 = env.register(MilestoneEscrow, ());
+    let client2 = MilestoneEscrowClient::new(&env, &contract_id2);
+    client2.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client2.fund(&client_addr);
+    client2.mark_delivered(&freelancer_addr, &0u32);
+    client2.raise_dispute(&client_addr, &0u32);
+    let result = client2.try_approve_partial(&client_addr, &0u32, &4000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Try to approve partial on Released status
-    let result = client.try_approve_partial(&client_addr, &0u32, &1000_i128);
+    // Test Refunded status
+    let contract_id3 = env.register(MilestoneEscrow, ());
+    let client3 = MilestoneEscrowClient::new(&env, &contract_id3);
+    client3.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client3.fund(&client_addr);
+    client3.mark_delivered(&freelancer_addr, &0u32);
+    client3.raise_dispute(&client_addr, &0u32);
+    client3.resolve_dispute(&arbiter_addr, &0u32, &false);
+    let result = client3.try_approve_partial(&client_addr, &0u32, &4000_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Test Released status
+    let contract_id4 = env.register(MilestoneEscrow, ());
+    let client4 = MilestoneEscrowClient::new(&env, &contract_id4);
+    client4.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client4.fund(&client_addr);
+    client4.mark_delivered(&freelancer_addr, &0u32);
+    client4.approve_milestone(&client_addr, &0u32);
+    let result = client4.try_approve_partial(&client_addr, &0u32, &1000_i128);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
