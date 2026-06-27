@@ -3598,3 +3598,141 @@ fn test_claim_auto_release_double_execution_reverts() {
     assert_eq!(token.balance(&freelancer_addr), 10_000);
     assert_eq!(token.balance(&contract_id), 0);
 }
+
+// ============================================================================
+// claim_auto_release — strict identity authorization tests
+// ============================================================================
+
+/// Auth test 1 — NO SIGNATURE PROVIDED (require_auth enforcement):
+/// Calling `claim_auto_release` with no mocked auth at all means the Soroban
+/// host receives zero authorization entries for the caller.  `require_auth()`
+/// fires before any contract logic and the host rejects the invocation.
+/// `try_` surfaces this as `Err(Err(_))` (host-level error, not a contract
+/// error variant), proving `require_auth()` is the outermost guard.
+#[test]
+fn test_claim_auto_release_no_auth_provided_fails() {
+    let env = Env::default();
+    // Deliberately omit env.mock_all_auths() so the host enforces real auth.
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    // Use mock_all_auths only for the setup calls so the contract reaches a
+    // funded+delivered state without touching the auth path under test.
+    env.mock_all_auths();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100u64,
+        &amounts,
+    );
+    escrow.fund(&client_addr);
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp += 200;
+    });
+
+    // Disable mocking so the next call goes through real auth enforcement.
+    // set_auths([]) clears all mocks without installing any new entries.
+    env.set_auths(&[]);
+
+    // No auth entry exists for freelancer_addr → require_auth() in
+    // claim_auto_release panics at the host level.  try_ captures that as
+    // Err(Err(_)).
+    let result = escrow.try_claim_auto_release(&freelancer_addr, &0u32);
+    assert!(result.is_err());
+    // Confirm the outer Result is the host-error arm, not a contract error.
+    assert!(matches!(result, Err(Err(_))));
+}
+
+/// Auth test 2 — WRONG IDENTITY (identity-check enforcement):
+/// An impostor provides a valid signature for their *own* address but passes
+/// `freelancer_addr` as the argument.  `require_auth()` passes for the
+/// impostor's own address, but the subsequent identity comparison
+/// (`meta.freelancer != freelancer`) catches the mismatch and returns the
+/// explicit `Error::Unauthorized` contract error variant.
+///
+/// `mock_auths` is used here to grant a real auth entry scoped to the
+/// impostor's address, exercising the selective-auth path so both the SDK
+/// framework check and the contract-level identity check are verified.
+#[test]
+fn test_claim_auto_release_wrong_identity_unauthorized() {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100u64,
+        &amounts,
+    );
+    escrow.fund(&client_addr);
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp += 200;
+    });
+
+    // Grant a selective auth entry for `impostor` calling `claim_auto_release`
+    // with `impostor` as the freelancer argument.  This means require_auth()
+    // passes (impostor signed), but the identity check
+    // (meta.freelancer != impostor) returns Error::Unauthorized.
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &impostor,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "claim_auto_release",
+                args: (&impostor, 0u32).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_claim_auto_release(&impostor, &0u32);
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // Milestone must still be in Delivered state — no state mutation occurred.
+    let job = escrow.get_job();
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Delivered
+    );
+}
