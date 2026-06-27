@@ -647,6 +647,12 @@ impl MilestoneEscrow {
         milestone_index: u32,
         amount: i128,
     ) -> Result<(), Error> {
+        let zero_1 = Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+        let zero_2 = Address::from_str(&env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4");
+        if client == zero_1 || client == zero_2 || client == env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
