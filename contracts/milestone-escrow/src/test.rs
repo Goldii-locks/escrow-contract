@@ -280,7 +280,90 @@ fn test_invalid_milestone_index_fails() {
     client.fund(&client_addr);
 
     let result = client.try_mark_delivered(&freelancer_addr, &1u32);
-    assert!(result.is_err());
+    assert_eq!(result, Err(Ok(Error::InvalidMilestone)));
+}
+
+#[test]
+fn test_mark_delivered_zero_address_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    let zero_account = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let result = client.try_mark_delivered(&zero_account, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+#[test]
+fn test_mark_delivered_invalid_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // Mock storage to change milestone amount to 0
+    let milestone = Milestone {
+        amount: 0,
+        released_amount: 0,
+        status: MilestoneStatus::Pending,
+        delivered_at: 0,
+    };
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    let result = client.try_mark_delivered(&freelancer_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]

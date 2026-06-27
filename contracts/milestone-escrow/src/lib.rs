@@ -505,6 +505,10 @@ impl MilestoneEscrow {
 
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
+        if milestone.amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
         if milestone.status != MilestoneStatus::Pending {
             return Err(Error::InvalidStatus);
         }
