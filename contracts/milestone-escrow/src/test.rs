@@ -2704,3 +2704,101 @@ fn test_approve_milestone_on_refunded_milestone_fails() {
     let result = client.try_approve_milestone(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
+
+/// Boundary-value test: verify that `approve_milestone` with a milestone
+/// amount of `i128::MAX` does not panic and that the checked arithmetic in
+/// the `remaining` event field handles the post-release state gracefully.
+/// After a successful full approval `released_amount == milestone.amount`, so
+/// `checked_sub` yields `0` — confirming no overflow or underflow can occur.
+#[test]
+fn test_approve_milestone_max_i128_checked_math_no_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    // Mint i128::MAX tokens to the client so the transfer can succeed.
+    token_admin.mint(&client_addr, &i128::MAX);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // Single milestone worth i128::MAX.
+    let amounts = vec![&env, i128::MAX];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // approve_milestone must not panic; checked_sub on (MAX - MAX) == 0.
+    client.approve_milestone(&client_addr, &0u32);
+
+    let job = client.get_job();
+    let ms = job.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Released);
+    assert_eq!(ms.released_amount, i128::MAX);
+    assert_eq!(token.balance(&freelancer_addr), i128::MAX);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+/// Boundary-value test: `approve_partial` must reject an `amount` argument
+/// of `i128::MAX` when even a single token has already been released, because
+/// `released_amount + i128::MAX` would overflow.  The checked addition inside
+/// the function must catch this and return `Error::InvalidAmount` rather than
+/// panicking.
+#[test]
+fn test_approve_milestone_overflow_checked_math_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    // Mint i128::MAX so the escrow can be funded.
+    token_admin.mint(&client_addr, &i128::MAX);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, i128::MAX];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Release 1 token so released_amount == 1; remaining == i128::MAX - 1.
+    client.approve_partial(&client_addr, &0u32, &1_i128);
+
+    // Now attempt to release i128::MAX — this would overflow released_amount.
+    // The checked_add inside approve_partial must catch it and return InvalidAmount.
+    let result = client.try_approve_partial(&client_addr, &0u32, &i128::MAX);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}

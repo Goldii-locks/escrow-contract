@@ -605,6 +605,11 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
 
+        let event_remaining = milestone
+            .amount
+            .checked_sub(milestone.released_amount)
+            .ok_or(Error::InvalidAmount)?;
+
         env.events().publish(
             (symbol_short!("approve"),),
             ApprovedEvent {
@@ -615,7 +620,7 @@ impl MilestoneEscrow {
                 token: meta.token,
                 amount: remaining,
                 released_amount: milestone.released_amount,
-                remaining: milestone.amount - milestone.released_amount,
+                remaining: event_remaining,
                 status: milestone.status.clone(),
             },
         );
