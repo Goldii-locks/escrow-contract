@@ -2926,3 +2926,152 @@ fn test_time_until_auto_release_reads_temporary_storage() {
     let remaining3 = client.time_until_auto_release(&0u32);
     assert!(remaining3 < 0);
 }
+
+/// Storage-layout optimisation test for `approve_milestone`: verify that after
+/// a full approval, the `MilestoneReleased(u32)` temporary flag is written and
+/// readable via the contract's internal storage tier, and that the milestone
+/// state on persistent storage is correctly set to `Released`.
+///
+/// This exercises the optimised code path end-to-end:
+///   mark_delivered  → persists Milestone(0) with status=Delivered
+///   approve_milestone → transfers tokens, persists Milestone(0) with
+///                       status=Released, writes MilestoneReleased(0) to
+///                       temporary storage as a cheap completion signal
+#[test]
+fn test_approve_milestone_writes_temporary_released_flag() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &8_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 8_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Before approval the temporary released flag must not be set.
+    let flag_before: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .get(&DataKey::MilestoneReleased(0u32))
+    });
+    assert_eq!(flag_before, None);
+
+    // Execute the full approval.
+    client.approve_milestone(&client_addr, &0u32);
+
+    // After approval the temporary released flag must be true.
+    let flag_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .get(&DataKey::MilestoneReleased(0u32))
+    });
+    assert_eq!(flag_after, Some(true));
+
+    // Persistent Milestone state must be Released with full released_amount.
+    let job = client.get_job();
+    let ms = job.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Released);
+    assert_eq!(ms.released_amount, 8_000);
+
+    // Token balances must reflect full transfer.
+    assert_eq!(token.balance(&freelancer_addr), 8_000);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // A second approval must be rejected — the persistent status is Released.
+    let result = client.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+/// Storage-layout optimisation test: verify that `approve_milestone` also
+/// writes the temporary `MilestoneReleased` flag when approving a milestone
+/// that was previously partially released (PartiallyReleased → Released path).
+#[test]
+fn test_approve_milestone_after_partial_writes_temporary_released_flag() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Partial release first: 4 000 out of 10 000.
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    let job_partial = client.get_job();
+    assert_eq!(
+        job_partial.milestones.get(0).unwrap().status,
+        MilestoneStatus::PartiallyReleased
+    );
+
+    // The released flag must not be set after only a partial release.
+    let flag_partial: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .get(&DataKey::MilestoneReleased(0u32))
+    });
+    assert_eq!(flag_partial, None);
+
+    // Full approval of the remaining 6 000.
+    client.approve_milestone(&client_addr, &0u32);
+
+    // The temporary released flag must now be true.
+    let flag_full: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .get(&DataKey::MilestoneReleased(0u32))
+    });
+    assert_eq!(flag_full, Some(true));
+
+    let job_final = client.get_job();
+    let ms = job_final.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Released);
+    assert_eq!(ms.released_amount, 10_000);
+    assert_eq!(token.balance(&freelancer_addr), 10_000);
+    assert_eq!(token.balance(&contract_id), 0);
+}
