@@ -369,7 +369,7 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
-        let total_amount = Self::checked_job_total(&env, &meta)?;
+        let total_amount = meta.total_amount;
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&client, &env.current_contract_address(), &total_amount);
 
