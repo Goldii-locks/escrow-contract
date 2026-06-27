@@ -438,44 +438,57 @@ impl MilestoneEscrow {
     }
 
     pub fn claim_auto_release(
-        env: Env,
-        freelancer: Address,
-        milestone_index: u32,
-    ) -> Result<(), Error> {
-        freelancer.require_auth();
-        let meta = Self::load_job_meta(&env)?;
+    env: Env,
+    freelancer: Address,
+    milestone_index: u32,
+) -> Result<(), Error> {
+    freelancer.require_auth();
+    let meta = Self::load_job_meta(&env)?;
 
-        if meta.freelancer != freelancer {
-            return Err(Error::Unauthorized);
-        }
-
-        let mut milestone = Self::load_milestone(&env, milestone_index)?;
-
-        if milestone.status != MilestoneStatus::Delivered
-            && milestone.status != MilestoneStatus::PartiallyReleased
-        {
-            return Err(Error::InvalidStatus);
-        }
-
-        let deadline = milestone.delivered_at + meta.auto_release_seconds;
-        let current = env.ledger().timestamp();
-        if current < deadline {
-            return Err(Error::DeadlineNotPassed);
-        }
-
-        let remaining = milestone.amount - milestone.released_amount;
-        let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &meta.freelancer,
-            &remaining,
-        );
-
-        milestone.released_amount = milestone.amount;
-        milestone.status = MilestoneStatus::Released;
-        Self::store_milestone(&env, milestone_index, &milestone);
-        Ok(())
+    if meta.freelancer != freelancer {
+        return Err(Error::Unauthorized);
     }
+
+    // 1. Validate index boundary
+    if milestone_index >= meta.milestone_count {
+        return Err(Error::InvalidMilestone);
+    }
+
+    let mut milestone = Self::load_milestone(&env, milestone_index)?;
+
+    if milestone.status != MilestoneStatus::Delivered {
+        return Err(Error::InvalidStatus);
+    }
+
+    // 2. Validate auto_release_seconds is non-zero
+    if meta.auto_release_seconds == 0 {
+        return Err(Error::InvalidAmount);
+    }
+
+    let deadline = milestone.delivered_at + meta.auto_release_seconds;
+    let current = env.ledger().timestamp();
+    if current < deadline {
+        return Err(Error::DeadlineNotPassed);
+    }
+
+    // 3. Validate there is a positive remaining amount to release
+    let remaining = milestone.amount - milestone.released_amount;
+    if remaining <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+
+    let token_client = token::Client::new(&env, &meta.token);
+    token_client.transfer(
+        &env.current_contract_address(),
+        &meta.freelancer,
+        &remaining,
+    );
+
+    milestone.released_amount = milestone.amount;
+    milestone.status = MilestoneStatus::Released;
+    Self::store_milestone(&env, milestone_index, &milestone);
+    Ok(())
+}
 
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> i64 {
         let meta = Self::load_job_meta(&env).unwrap();
@@ -590,6 +603,22 @@ impl MilestoneEscrow {
 
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        env.events().publish(
+            (symbol_short!("approve"),),
+            ApprovedEvent {
+                contract_id: env.current_contract_address(),
+                milestone_index,
+                client: meta.client,
+                freelancer: meta.freelancer,
+                token: meta.token,
+                amount: remaining,
+                released_amount: milestone.released_amount,
+                remaining: milestone.amount - milestone.released_amount,
+                status: milestone.status.clone(),
+            },
+        );
+
         Ok(())
     }
 
