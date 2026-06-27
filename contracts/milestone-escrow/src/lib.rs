@@ -77,6 +77,14 @@ pub enum DataKey {
     /// storage because it is single-use, deadline-scoped workflow state whose
     /// ledger footprint cost should not persist beyond the auto-release window.
     DeliveredAt(u32),
+    /// Temporary key: written by `approve_milestone` when a milestone reaches
+    /// the terminal `Released` state via a full approval.  Acts as a cheap
+    /// short-lived completion signal so callers can confirm terminal state
+    /// without loading the full persistent `Milestone` entry.  Uses temporary
+    /// storage because the signal is transient: once the milestone is released,
+    /// the approval workflow for that milestone is permanently closed and this
+    /// flag has no further use.
+    MilestoneReleased(u32),
 }
 
 #[contracttype]
@@ -175,6 +183,29 @@ impl MilestoneEscrow {
         env.storage()
             .temporary()
             .get(&DataKey::DeliveredAt(index))
+    }
+
+    /// Write the terminal approval flag to temporary storage.  This is a
+    /// cheap, short-lived signal that the milestone at `index` has been fully
+    /// released via `approve_milestone`.  Callers that only need to verify
+    /// completion can read this temporary key rather than fetching the full
+    /// persistent `Milestone` entry, reducing ledger footprint rent on the
+    /// hot read path.
+    fn store_milestone_released(env: &Env, index: u32) {
+        env.storage()
+            .temporary()
+            .set(&DataKey::MilestoneReleased(index), &true);
+    }
+
+    /// Check whether `approve_milestone` has marked the given milestone index
+    /// as fully released via the temporary completion flag.  Returns `false`
+    /// if the flag was never written or has been evicted.
+    #[allow(dead_code)]
+    fn is_milestone_released_flag(env: &Env, index: u32) -> bool {
+        env.storage()
+            .temporary()
+            .get::<_, bool>(&DataKey::MilestoneReleased(index))
+            .unwrap_or(false)
     }
 
     fn checked_add_amount(total: i128, amount: i128) -> Result<i128, Error> {
@@ -645,6 +676,14 @@ impl MilestoneEscrow {
 
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        // Write a short-lived completion flag to temporary storage.  This is
+        // transient workflow state: the milestone approval window is now
+        // permanently closed, so this signal does not need to survive beyond
+        // the TTL of the ledger entry.  Using temporary storage avoids the
+        // higher rent cost of a persistent or instance entry for data that has
+        // no long-term value.
+        Self::store_milestone_released(&env, milestone_index);
 
         let event_remaining = milestone
             .amount
