@@ -114,6 +114,24 @@ pub struct ApprovedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneApprovedEvent {
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub client: Address,
+    pub freelancer: Address,
+    pub token: Address,
+    pub milestone_amount: i128,
+    pub approved_amount: i128,
+    pub previously_released_amount: i128,
+    pub released_amount: i128,
+    pub remaining: i128,
+    pub previous_status: MilestoneStatus,
+    pub status: MilestoneStatus,
+    pub approved_at: u64,
+}
+
+#[contracttype]
 pub struct DisputeRaisedEvent {
     pub milestone_index: u32,
 }
@@ -588,6 +606,8 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        let previous_status = milestone.status.clone();
+        let previously_released_amount = milestone.released_amount;
         let remaining = milestone.amount - milestone.released_amount;
         if remaining <= 0 {
             return Err(Error::InvalidAmount);
@@ -604,18 +624,42 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
 
+        let contract_id = env.current_contract_address();
+        let approved_at = env.ledger().timestamp();
+        let released_amount = milestone.released_amount;
+        let post_release_remaining = milestone.amount - milestone.released_amount;
+
         env.events().publish(
             (symbol_short!("approve"),),
             ApprovedEvent {
-                contract_id: env.current_contract_address(),
+                contract_id: contract_id.clone(),
+                milestone_index,
+                client: meta.client.clone(),
+                freelancer: meta.freelancer.clone(),
+                token: meta.token.clone(),
+                amount: remaining,
+                released_amount,
+                remaining: post_release_remaining,
+                status: milestone.status.clone(),
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("appr_mile"),),
+            MilestoneApprovedEvent {
+                contract_id,
                 milestone_index,
                 client: meta.client,
                 freelancer: meta.freelancer,
                 token: meta.token,
-                amount: remaining,
-                released_amount: milestone.released_amount,
-                remaining: milestone.amount - milestone.released_amount,
-                status: milestone.status.clone(),
+                milestone_amount: milestone.amount,
+                approved_amount: remaining,
+                previously_released_amount,
+                released_amount,
+                remaining: post_release_remaining,
+                previous_status,
+                status: milestone.status,
+                approved_at,
             },
         );
 
