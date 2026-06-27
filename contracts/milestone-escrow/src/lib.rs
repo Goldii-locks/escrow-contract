@@ -3,6 +3,12 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
 };
 
+/// Maximum number of tokens that may be held in the whitelist at any one time.
+/// `add_whitelisted_token` enforces this cap before calling `push_back` so
+/// that the internal `u32` length counter of the Soroban `Vec` can never
+/// overflow regardless of how many times the function is invoked.
+const MAX_WHITELIST_SIZE: u32 = 50;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -354,6 +360,13 @@ impl MilestoneEscrow {
 
         if whitelist.contains(&token) {
             return Err(Error::TokenAlreadyWhitelisted);
+        }
+
+        // Guard against integer overflow on the Vec's internal u32 length
+        // counter.  If the whitelist is already at capacity, reject the
+        // addition with InvalidAmount rather than letting push_back overflow.
+        if whitelist.len() >= MAX_WHITELIST_SIZE {
+            return Err(Error::InvalidAmount);
         }
 
         whitelist.push_back(token);

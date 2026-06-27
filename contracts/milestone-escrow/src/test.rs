@@ -4076,3 +4076,283 @@ fn test_initialize_auto_release_seconds_zero_succeeds_claim_fails() {
     let claim_result = escrow.try_claim_auto_release(&freelancer_addr, &0u32);
     assert_eq!(claim_result, Err(Ok(Error::InvalidAmount)));
 }
+
+// ============================================================================
+// add_whitelisted_token — integer overflow protection test suite (#20)
+// ============================================================================
+
+/// Overflow-protection test 1 — CAPACITY CAP BOUNDARY (exactly at cap):
+/// Adding tokens one-by-one until the whitelist reaches MAX_WHITELIST_SIZE (50)
+/// must succeed for every addition up to and including the 50th token.  The
+/// 51st addition must be rejected with `Error::InvalidAmount`, proving that
+/// the `u32` length counter can never overflow through this call path.
+#[test]
+fn test_add_whitelisted_token_at_capacity_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    // The whitelist already contains token1 (added during initialize).
+    // Add 49 more unique tokens to reach the cap of 50.
+    for _ in 0..49u32 {
+        let extra_token = env
+            .register_stellar_asset_contract_v2(admin_addr.clone())
+            .address();
+        client.add_whitelisted_token(&admin_addr, &extra_token);
+    }
+
+    // Whitelist is now full (50 entries).
+    let whitelist = client.get_whitelisted_tokens();
+    assert_eq!(whitelist.len(), 50);
+
+    // One more addition must be rejected with InvalidAmount (overflow guard).
+    let overflow_token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let result = client.try_add_whitelisted_token(&admin_addr, &overflow_token);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // Whitelist length must be unchanged — no mutation on rejected call.
+    assert_eq!(client.get_whitelisted_tokens().len(), 50);
+}
+
+/// Overflow-protection test 2 — ONE BELOW CAP SUCCEEDS:
+/// Adding the 50th token (index 49, i.e. exactly at MAX_WHITELIST_SIZE − 1
+/// before the call) must succeed, confirming the boundary is inclusive of the
+/// last valid slot and the guard fires only when the list is already full.
+#[test]
+fn test_add_whitelisted_token_one_below_cap_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    // Add 48 more to reach 49 total (one slot still available).
+    for _ in 0..48u32 {
+        let extra_token = env
+            .register_stellar_asset_contract_v2(admin_addr.clone())
+            .address();
+        client.add_whitelisted_token(&admin_addr, &extra_token);
+    }
+
+    assert_eq!(client.get_whitelisted_tokens().len(), 49);
+
+    // The 50th addition (filling the last slot) must succeed.
+    let last_token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let result = client.try_add_whitelisted_token(&admin_addr, &last_token);
+    assert!(result.is_ok(), "adding the 50th token should succeed");
+    assert_eq!(client.get_whitelisted_tokens().len(), 50);
+}
+
+/// Overflow-protection test 3 — IMMEDIATE OVERFLOW AFTER REMOVE:
+/// After removing a token from a full whitelist, one slot becomes available and
+/// the next `add_whitelisted_token` must succeed.  A subsequent addition to the
+/// now-full list must again be rejected.  Verifies that the cap interacts
+/// correctly with `remove_whitelisted_token`.
+#[test]
+fn test_add_whitelisted_token_cap_resets_after_remove() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    // Fill whitelist to cap (50 entries).
+    for _ in 0..49u32 {
+        let extra_token = env
+            .register_stellar_asset_contract_v2(admin_addr.clone())
+            .address();
+        client.add_whitelisted_token(&admin_addr, &extra_token);
+    }
+    assert_eq!(client.get_whitelisted_tokens().len(), 50);
+
+    // Confirm cap is enforced.
+    let overflow_token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let cap_result = client.try_add_whitelisted_token(&admin_addr, &overflow_token);
+    assert_eq!(cap_result, Err(Ok(Error::InvalidAmount)));
+
+    // Remove one token to free a slot.
+    client.remove_whitelisted_token(&admin_addr, &token1);
+    assert_eq!(client.get_whitelisted_tokens().len(), 49);
+
+    // Now the addition must succeed (one slot available).
+    let new_token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let result = client.try_add_whitelisted_token(&admin_addr, &new_token);
+    assert!(result.is_ok(), "adding after remove should succeed");
+    assert_eq!(client.get_whitelisted_tokens().len(), 50);
+
+    // Cap is enforced again after filling the freed slot.
+    let yet_another = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let result2 = client.try_add_whitelisted_token(&admin_addr, &yet_another);
+    assert_eq!(result2, Err(Ok(Error::InvalidAmount)));
+}
+
+/// Overflow-protection test 4 — DUPLICATE BEFORE OVERFLOW CHECK:
+/// When a duplicate token is submitted and the whitelist is also at capacity,
+/// the duplicate check (`TokenAlreadyWhitelisted`) must fire before the
+/// overflow guard (`InvalidAmount`) — preserving the logical ordering of
+/// checks: auth → admin identity → duplicate → capacity.
+#[test]
+fn test_add_whitelisted_token_duplicate_checked_before_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    // Fill whitelist to cap (50 entries).
+    for _ in 0..49u32 {
+        let extra_token = env
+            .register_stellar_asset_contract_v2(admin_addr.clone())
+            .address();
+        client.add_whitelisted_token(&admin_addr, &extra_token);
+    }
+    assert_eq!(client.get_whitelisted_tokens().len(), 50);
+
+    // Submitting an already-whitelisted token while also at cap must return
+    // TokenAlreadyWhitelisted, not InvalidAmount.
+    let result = client.try_add_whitelisted_token(&admin_addr, &token1);
+    assert_eq!(result, Err(Ok(Error::TokenAlreadyWhitelisted)));
+}
+
+/// Overflow-protection test 5 — UNAUTHORIZED CALLER BEFORE CAPACITY CHECK:
+/// An unauthorised caller must be rejected before the overflow guard is
+/// evaluated, preserving the existing auth → admin-identity → capacity
+/// check ordering.
+#[test]
+fn test_add_whitelisted_token_unauthorized_before_cap_check() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    // Fill whitelist to cap.
+    for _ in 0..49u32 {
+        let extra_token = env
+            .register_stellar_asset_contract_v2(admin_addr.clone())
+            .address();
+        client.add_whitelisted_token(&admin_addr, &extra_token);
+    }
+    assert_eq!(client.get_whitelisted_tokens().len(), 50);
+
+    // bad_actor tries to add a token while the list is at capacity.
+    // The Unauthorized error must fire, not InvalidAmount.
+    let new_token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let result = client.try_add_whitelisted_token(&bad_actor, &new_token);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
