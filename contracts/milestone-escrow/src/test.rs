@@ -5,6 +5,54 @@ use soroban_sdk::{
     Symbol, Val,
 };
 
+fn setup_funded_escrow(
+    env: &Env,
+    milestone_amounts: soroban_sdk::Vec<i128>,
+) -> (
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    soroban_sdk::Address,
+    MilestoneEscrowClient<'_>,
+) {
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter_addr = Address::generate(env);
+    let admin_addr = Address::generate(env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(env, &token_contract_id);
+    let total: i128 = milestone_amounts.iter().sum();
+    token_admin.mint(&client_addr, &total);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &milestone_amounts,
+    );
+    client.fund(&client_addr);
+
+    (
+        client_addr,
+        freelancer_addr,
+        arbiter_addr,
+        admin_addr,
+        token_contract_id,
+        contract_id,
+        client,
+    )
+}
 
 #[test]
 fn test_full_happy_path() {
@@ -2072,8 +2120,9 @@ fn test_mark_delivered_state_transitions() {
     client2.resolve_dispute(&arbiter_addr2, &2u32, &false);
     let result = client2.try_mark_delivered(&freelancer_addr2, &2u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
 
-    #[test]
+#[test]
 fn test_claim_auto_release_out_of_bounds_index_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2183,7 +2232,6 @@ fn test_claim_auto_release_zero_remaining_amount_fails() {
         result,
         Err(Ok(Error::InvalidStatus)) // Released status caught before amount check
     );
-}
 }
 
 // ============================================================================
@@ -2451,7 +2499,6 @@ fn test_approve_milestone_state_transitions() {
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
-    let token = token::Client::new(&env, &token_contract_id);
     let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
     token_admin.mint(&client_addr, &60_000);
 
