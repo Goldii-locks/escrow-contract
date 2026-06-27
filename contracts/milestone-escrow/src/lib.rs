@@ -508,25 +508,29 @@ impl MilestoneEscrow {
         return Err(Error::Unauthorized);
     }
 
-    // 1. Validate index boundary
+    // CHECK 1: Validate index boundary.
     if milestone_index >= meta.milestone_count {
         return Err(Error::InvalidMilestone);
     }
 
     let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
+    // CHECK 2: Milestone must be in the Delivered state.  Any other status —
+    // including Released (double-claim), Disputed, Refunded, Pending, or
+    // PartiallyReleased — is rejected here, making the guard the sole
+    // gatekeeper against double-execution and out-of-sequence calls.
     if milestone.status != MilestoneStatus::Delivered {
         return Err(Error::InvalidStatus);
     }
 
-    // 2. Validate auto_release_seconds is non-zero
+    // CHECK 3: Validate auto_release_seconds is non-zero.
     if meta.auto_release_seconds == 0 {
         return Err(Error::InvalidAmount);
     }
 
-    // 3. Read the delivery timestamp from temporary storage first (optimised
-    //    ledger-footprint path).  Fall back to the value stored on the
-    //    persistent Milestone entry so that entries written before this
+    // CHECK 4: Read the delivery timestamp from temporary storage first
+    //    (optimised ledger-footprint path).  Fall back to the value stored on
+    //    the persistent Milestone entry so that entries written before this
     //    migration remain fully functional.
     let delivered_at = Self::load_delivered_at(&env, milestone_index)
         .unwrap_or(milestone.delivered_at);
@@ -539,10 +543,9 @@ impl MilestoneEscrow {
         return Err(Error::DeadlineNotPassed);
     }
 
-    // 4. Compute remaining using checked subtraction so that corrupted or
-    //    adversarially-crafted storage values (released_amount > amount) never
-    //    produce a silent underflow.  ok_or maps the None overflow sentinel to
-    //    the existing InvalidAmount variant, keeping the error surface minimal.
+    // CHECK 5: Compute remaining using checked subtraction so that corrupted
+    //    or adversarially-crafted storage values (released_amount > amount)
+    //    never produce a silent underflow.
     let remaining = milestone
         .amount
         .checked_sub(milestone.released_amount)
@@ -551,6 +554,17 @@ impl MilestoneEscrow {
         return Err(Error::InvalidAmount);
     }
 
+    // EFFECT: Commit the terminal state to persistent storage BEFORE any
+    //    external call (Checks-Effects-Interactions pattern).  Setting the
+    //    status to Released here means a re-entrant or duplicate invocation
+    //    will hit the `InvalidStatus` guard above on its next CHECK 2 and
+    //    be rejected before it can touch the token contract.
+    milestone.released_amount = milestone.amount;
+    milestone.status = MilestoneStatus::Released;
+    Self::store_milestone(&env, milestone_index, &milestone);
+
+    // INTERACTION: Token transfer is the sole external call and executes only
+    //    after all state mutations have been durably persisted.
     let token_client = token::Client::new(&env, &meta.token);
     token_client.transfer(
         &env.current_contract_address(),
@@ -558,9 +572,6 @@ impl MilestoneEscrow {
         &remaining,
     );
 
-    milestone.released_amount = milestone.amount;
-    milestone.status = MilestoneStatus::Released;
-    Self::store_milestone(&env, milestone_index, &milestone);
     Ok(())
 }
 

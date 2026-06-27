@@ -3537,3 +3537,64 @@ fn test_claim_auto_release_overflow_checked_math_returns_error() {
     let result = client.try_claim_auto_release(&freelancer_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
+
+// ============================================================================
+// claim_auto_release — double-execution / reentrancy guard tests
+// ============================================================================
+
+/// Double-execution test: invoking `claim_auto_release` a second time in the
+/// same environment — after a successful first call — must be rejected with
+/// `Error::InvalidStatus` because the first call committed `Released` to
+/// storage before executing the token transfer (CEI pattern).  No tokens must
+/// be transferred on the second attempt.
+#[test]
+fn test_claim_auto_release_double_execution_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100u64,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Advance past the auto-release deadline.
+    env.ledger().with_mut(|li| {
+        li.timestamp += 200;
+    });
+
+    // First call must succeed and release all tokens.
+    client.claim_auto_release(&freelancer_addr, &0u32);
+    assert_eq!(token.balance(&freelancer_addr), 10_000);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // Milestone status is now Released — a second call must be rejected.
+    let result = client.try_claim_auto_release(&freelancer_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Token balances must be unchanged after the rejected second attempt.
+    assert_eq!(token.balance(&freelancer_addr), 10_000);
+    assert_eq!(token.balance(&contract_id), 0);
+}
