@@ -951,7 +951,7 @@ fn test_non_admin_add_token_fails() {
     );
 
     let result = client.try_add_whitelisted_token(&bad_actor, &token2);
-    assert!(result.is_err());
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
@@ -1026,7 +1026,7 @@ fn test_non_admin_remove_token_fails() {
     client.add_whitelisted_token(&admin_addr, &token2);
 
     let result = client.try_remove_whitelisted_token(&bad_actor, &token2);
-    assert!(result.is_err());
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
