@@ -2316,11 +2316,13 @@ fn test_approve_milestone_state_transitions() {
     let freelancer_addr = Address::generate(&env);
     let arbiter_addr = Address::generate(&env);
     let admin_addr = Address::generate(&env);
+
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
+    let token = token::Client::new(&env, &token_contract_id);
     let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &10_000);
+    token_admin.mint(&client_addr, &60_000);
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
