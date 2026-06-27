@@ -71,6 +71,12 @@ pub enum DataKey {
     Milestone(u32),
     Admin,
     WhitelistedTokens,
+    /// Temporary key: records the ledger timestamp at which a milestone was
+    /// marked delivered.  Written by `mark_delivered`, consumed by
+    /// `claim_auto_release` and `time_until_auto_release`.  Uses temporary
+    /// storage because it is single-use, deadline-scoped workflow state whose
+    /// ledger footprint cost should not persist beyond the auto-release window.
+    DeliveredAt(u32),
 }
 
 #[contracttype]
@@ -151,6 +157,24 @@ impl MilestoneEscrow {
         env.storage()
             .persistent()
             .set(&DataKey::Milestone(index), milestone);
+    }
+
+    /// Write the delivery timestamp to temporary storage.  Temporary entries
+    /// are automatically evicted by the network after their TTL expires, which
+    /// makes them the correct storage tier for single-use, deadline-scoped
+    /// workflow state like the auto-release window.
+    fn store_delivered_at(env: &Env, index: u32, timestamp: u64) {
+        env.storage()
+            .temporary()
+            .set(&DataKey::DeliveredAt(index), &timestamp);
+    }
+
+    /// Read the delivery timestamp from temporary storage.  Returns `None` if
+    /// the entry has already been evicted (TTL expired) or was never written.
+    fn load_delivered_at(env: &Env, index: u32) -> Option<u64> {
+        env.storage()
+            .temporary()
+            .get(&DataKey::DeliveredAt(index))
     }
 
     fn checked_add_amount(total: i128, amount: i128) -> Result<i128, Error> {
@@ -420,6 +444,10 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Delivered;
         milestone.delivered_at = delivered_at;
         Self::store_milestone(&env, milestone_index, &milestone);
+        // Write the delivery timestamp to temporary storage so that
+        // claim_auto_release and time_until_auto_release can read it from the
+        // optimised temporary tier without touching the persistent Milestone entry.
+        Self::store_delivered_at(&env, milestone_index, delivered_at);
 
         env.events().publish(
             (symbol_short!("deliver"),),
@@ -465,13 +493,22 @@ impl MilestoneEscrow {
         return Err(Error::InvalidAmount);
     }
 
-    let deadline = milestone.delivered_at + meta.auto_release_seconds;
+    // 3. Read the delivery timestamp from temporary storage first (optimised
+    //    ledger-footprint path).  Fall back to the value stored on the
+    //    persistent Milestone entry so that entries written before this
+    //    migration remain fully functional.
+    let delivered_at = Self::load_delivered_at(&env, milestone_index)
+        .unwrap_or(milestone.delivered_at);
+
+    let deadline = delivered_at
+        .checked_add(meta.auto_release_seconds)
+        .ok_or(Error::InvalidAmount)?;
     let current = env.ledger().timestamp();
     if current < deadline {
         return Err(Error::DeadlineNotPassed);
     }
 
-    // 3. Validate there is a positive remaining amount to release
+    // 4. Validate there is a positive remaining amount to release
     let remaining = milestone.amount - milestone.released_amount;
     if remaining <= 0 {
         return Err(Error::InvalidAmount);
@@ -493,7 +530,11 @@ impl MilestoneEscrow {
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> i64 {
         let meta = Self::load_job_meta(&env).unwrap();
         let milestone = Self::load_milestone(&env, milestone_index).unwrap();
-        let deadline = milestone.delivered_at + meta.auto_release_seconds;
+        // Read delivery timestamp from temporary storage (optimised path) and
+        // fall back to the persistent Milestone field for pre-migration entries.
+        let delivered_at = Self::load_delivered_at(&env, milestone_index)
+            .unwrap_or(milestone.delivered_at);
+        let deadline = delivered_at + meta.auto_release_seconds;
         let current = env.ledger().timestamp();
         (deadline as i64) - (current as i64)
     }

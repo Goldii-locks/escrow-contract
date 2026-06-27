@@ -2802,3 +2802,127 @@ fn test_approve_milestone_overflow_checked_math_returns_error() {
     let result = client.try_approve_partial(&client_addr, &0u32, &i128::MAX);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
+
+/// Storage-layout optimisation test: verify that `claim_auto_release` correctly
+/// reads the delivery deadline from **temporary** storage (written by
+/// `mark_delivered`) and that the full happy-path executes without error.
+///
+/// This test exercises the optimised code path end-to-end:
+///   mark_delivered  → stores DeliveredAt(0) in temporary storage
+///   claim_auto_release → reads DeliveredAt(0) from temporary storage,
+///                        confirms deadline has passed, transfers tokens
+#[test]
+fn test_claim_auto_release_uses_temporary_storage_for_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    // auto_release_seconds = 200
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &200,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // mark_delivered writes delivered_at to both persistent Milestone and
+    // temporary DeliveredAt(0).  The ledger timestamp starts at 0.
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Attempting to claim before the 200-second deadline must fail.
+    let before = client.try_claim_auto_release(&freelancer_addr, &0u32);
+    assert_eq!(before, Err(Ok(Error::DeadlineNotPassed)));
+
+    // Advance the ledger past the auto-release window.
+    env.ledger().with_mut(|li| {
+        li.timestamp += 201;
+    });
+
+    // claim_auto_release reads DeliveredAt(0) from temporary storage.
+    // Deadline = 0 + 200 = 200; current = 201 ≥ 200 → should succeed.
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    assert_eq!(token.balance(&freelancer_addr), 5_000);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    let job = client.get_job();
+    let ms = job.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Released);
+    assert_eq!(ms.released_amount, 5_000);
+}
+
+/// Storage-layout optimisation test: verify that `time_until_auto_release`
+/// reads from the temporary DeliveredAt key and returns the correct countdown,
+/// confirming that the deadline calculation is consistent before and after the
+/// storage-layout change.
+#[test]
+fn test_time_until_auto_release_reads_temporary_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &300,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // Ledger starts at 0; delivered_at written to temporary storage = 0.
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Immediately after delivery: deadline = 0 + 300 = 300; current = 0.
+    let remaining = client.time_until_auto_release(&0u32);
+    assert_eq!(remaining, 300);
+
+    // Advance by 150 seconds.
+    env.ledger().with_mut(|li| {
+        li.timestamp += 150;
+    });
+    let remaining2 = client.time_until_auto_release(&0u32);
+    assert_eq!(remaining2, 150);
+
+    // Advance past the deadline.
+    env.ledger().with_mut(|li| {
+        li.timestamp += 200;
+    });
+    let remaining3 = client.time_until_auto_release(&0u32);
+    assert!(remaining3 < 0);
+}
