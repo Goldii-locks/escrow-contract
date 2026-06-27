@@ -103,8 +103,17 @@ pub struct InitializedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FundedEvent {
+    pub contract_id: Address,
+    pub client: Address,
+    pub freelancer: Address,
+    pub arbiter: Address,
+    pub token: Address,
     pub total_amount: i128,
+    pub milestone_count: u32,
+    pub auto_release_seconds: u64,
+    pub funded: bool,
 }
 
 #[contracttype]
@@ -443,6 +452,22 @@ impl MilestoneEscrow {
 
         meta.funded = true;
         Self::store_job_meta(&env, &meta);
+
+        env.events().publish(
+            (symbol_short!("fund"),),
+            FundedEvent {
+                contract_id: env.current_contract_address(),
+                client,
+                freelancer: meta.freelancer,
+                arbiter: meta.arbiter,
+                token: meta.token,
+                total_amount,
+                milestone_count: meta.milestone_count,
+                auto_release_seconds: meta.auto_release_seconds,
+                funded: meta.funded,
+            },
+        );
+
         Ok(())
     }
 

@@ -1,8 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env, IntoVal,
-    Symbol, Val,
+    testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env, FromVal,
+    IntoVal, Symbol, Val,
 };
 
 fn setup_funded_escrow(
@@ -608,6 +608,107 @@ fn test_double_fund_fails() {
 
     let result = client.try_fund(&client_addr);
     assert_eq!(result, Err(Ok(Error::AlreadyFunded)));
+}
+
+#[test]
+fn test_fund_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &3_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    let fund_topic_val: Val = symbol_short!("fund").into_val(&env);
+    let mut fund_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == fund_topic_val.get_payload() {
+                fund_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    FundedEvent::from_val(&env, &event.2),
+                    FundedEvent {
+                        contract_id: contract_id.clone(),
+                        client: client_addr.clone(),
+                        freelancer: freelancer_addr.clone(),
+                        arbiter: arbiter_addr.clone(),
+                        token: token_contract_id.clone(),
+                        total_amount: 3_000,
+                        milestone_count: 2,
+                        auto_release_seconds: 604800,
+                        funded: true,
+                    }
+                );
+            }
+        }
+    }
+
+    assert_eq!(fund_events, 1);
+}
+
+#[test]
+fn test_failed_fund_does_not_emit_fund_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let wrong_client = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_fund(&wrong_client);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let fund_topic_val: Val = symbol_short!("fund").into_val(&env);
+    let fund_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == fund_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(fund_events, 0);
 }
 
 #[test]
