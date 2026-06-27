@@ -423,6 +423,105 @@ fn test_approve_milestone_zero_amount_fails() {
 }
 
 #[test]
+fn test_initialize_total_amount_overflow_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, i128::MAX, 1_i128];
+    let result = client.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let fund_result = client.try_fund(&client_addr);
+    assert_eq!(fund_result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_initialize_min_i128_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, i128::MIN];
+    let result = client.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let fund_result = client.try_fund(&client_addr);
+    assert_eq!(fund_result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_initialize_empty_milestones_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env];
+    let result = client.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let fund_result = client.try_fund(&client_addr);
+    assert_eq!(fund_result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
 fn test_raise_dispute_unauthorized_fails() {
     let env = Env::default();
     env.mock_all_auths();
