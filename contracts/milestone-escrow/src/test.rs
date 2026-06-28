@@ -2,7 +2,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env, FromVal,
-    IntoVal, Symbol, Val,
+    IntoVal, Symbol, TryFromVal, Val,
 };
 
 fn setup_funded_escrow(
@@ -4770,4 +4770,105 @@ fn test_remove_whitelisted_token_rejects_zero_contract_address() {
     );
     let result = client.try_remove_whitelisted_token(&admin_addr, &zero_contract);
     assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+#[test]
+fn test_initialize_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128, 2_000_i128, 3_000_i128];
+    let auto_release = 604800u64;
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &auto_release,
+        &amounts,
+    );
+
+    let all_events = env.events().all();
+    assert!(!all_events.is_empty(), "expected at least one event after initialize");
+
+    let init_symbol = Symbol::new(&env, "init");
+    let init_event = all_events.iter().find(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = soroban_sdk::Vec::from_val(&env, topics);
+        if topic_vec.is_empty() { return false; }
+        let first: Val = topic_vec.get(0).unwrap();
+        if let Ok(s) = Symbol::try_from_val(&env, &first) { s == init_symbol } else { false }
+    });
+
+    assert!(init_event.is_some(), "initialize must emit an 'init' event");
+    let (_, _, data) = init_event.unwrap();
+    let event: InitializedEvent = InitializedEvent::from_val(&env, &data);
+
+    assert_eq!(event.client, client_addr);
+    assert_eq!(event.freelancer, freelancer_addr);
+    assert_eq!(event.arbiter, arbiter_addr);
+    assert_eq!(event.token, token_contract_id);
+    assert_eq!(event.auto_release_seconds, auto_release);
+    assert_eq!(event.total_amount, 6_000_i128);
+    assert_eq!(event.milestone_count, 3u32);
+    assert_eq!(event.milestone_amounts, amounts);
+}
+
+#[test]
+fn test_initialize_event_matches_single_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &0u64,
+        &amounts,
+    );
+
+    let all_events = env.events().all();
+    let init_symbol = Symbol::new(&env, "init");
+    let init_event = all_events.iter().find(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = soroban_sdk::Vec::from_val(&env, topics);
+        if topic_vec.is_empty() { return false; }
+        let first: Val = topic_vec.get(0).unwrap();
+        if let Ok(s) = Symbol::try_from_val(&env, &first) { s == init_symbol } else { false }
+    });
+
+    assert!(init_event.is_some());
+    let (_, _, data) = init_event.unwrap();
+    let event: InitializedEvent = InitializedEvent::from_val(&env, &data);
+
+    assert_eq!(event.total_amount, 5_000_i128);
+    assert_eq!(event.milestone_count, 1u32);
+    assert_eq!(event.auto_release_seconds, 0u64);
 }
