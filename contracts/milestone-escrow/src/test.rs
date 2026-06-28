@@ -1385,7 +1385,10 @@ fn test_mark_delivered_state_transitions() {
     // Test 1: Pending → Delivered (should pass)
     client.mark_delivered(&freelancer_addr, &0u32);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Delivered);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Delivered
+    );
 
     // Test 2: Delivered → Delivered (should fail)
     let result = client.try_mark_delivered(&freelancer_addr, &0u32);
@@ -1441,4 +1444,57 @@ fn test_mark_delivered_state_transitions() {
     client2.resolve_dispute(&arbiter_addr2, &2u32, &false);
     let result = client2.try_mark_delivered(&freelancer_addr2, &2u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_whitelist_state_transitions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token1);
+    token_admin.mint(&client_addr, &1000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // Initialize the contract
+    let amounts = vec![&env, 1000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    // Test 1: Add token when job is not funded (should pass)
+    client.add_whitelisted_token(&admin_addr, &token2);
+    assert!(client.is_token_whitelisted(&token2));
+
+    // Test 2: Remove token when job is not funded (should pass)
+    client.remove_whitelisted_token(&admin_addr, &token2);
+    assert!(!client.is_token_whitelisted(&token2));
+
+    // Fund the job
+    client.fund(&client_addr);
+
+    // Test 3: Add token when job is funded (should fail)
+    let result = client.try_add_whitelisted_token(&admin_addr, &token2);
+    assert_eq!(result, Err(Ok(Error::AlreadyFunded)));
+
+    // Test 4: Remove token when job is funded (should fail)
+    let result = client.try_remove_whitelisted_token(&admin_addr, &token1);
+    assert_eq!(result, Err(Ok(Error::AlreadyFunded)));
 }
