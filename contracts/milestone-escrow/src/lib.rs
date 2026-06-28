@@ -761,7 +761,12 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
-        let remaining = milestone.amount.checked_sub(milestone.released_amount).ok_or(Error::InvalidAmount)?;
+        let previous_status = milestone.status.clone();
+        let previously_released_amount = milestone.released_amount;
+        let remaining = milestone
+            .amount
+            .checked_sub(milestone.released_amount)
+            .ok_or(Error::InvalidAmount)?;
         if remaining <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -785,7 +790,10 @@ impl MilestoneEscrow {
         // no long-term value.
         Self::store_milestone_released(&env, milestone_index);
 
-        let event_remaining = milestone
+        let contract_id = env.current_contract_address();
+        let approved_at = env.ledger().timestamp();
+        let released_amount = milestone.released_amount;
+        let post_release_remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
             .ok_or(Error::InvalidAmount)?;
@@ -813,10 +821,14 @@ impl MilestoneEscrow {
                 client: meta.client,
                 freelancer: meta.freelancer,
                 token: meta.token,
-                amount: remaining,
-                released_amount: milestone.released_amount,
-                remaining: event_remaining,
+                milestone_amount: milestone.amount,
+                approved_amount: remaining,
+                previously_released_amount,
+                released_amount,
+                remaining: post_release_remaining,
+                previous_status,
                 status: milestone.status.clone(),
+                approved_at,
             },
         );
 
