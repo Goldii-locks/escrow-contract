@@ -309,12 +309,12 @@ impl MilestoneEscrow {
             total_amount = Self::checked_add_amount(total_amount, amount)?;
         }
 
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().persistent().set(&DataKey::Admin, &admin);
 
         let mut whitelist: Vec<Address> = Vec::new(&env);
         whitelist.push_back(token.clone());
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::WhitelistedTokens, &whitelist);
 
         for (index, amount) in milestone_amounts.iter().enumerate() {
@@ -354,7 +354,7 @@ impl MilestoneEscrow {
 
         let stored_admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
 
@@ -362,7 +362,7 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
         Ok(())
     }
 
@@ -371,7 +371,7 @@ impl MilestoneEscrow {
 
         let stored_admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
 
@@ -381,7 +381,7 @@ impl MilestoneEscrow {
 
         let mut whitelist: Vec<Address> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
@@ -398,7 +398,7 @@ impl MilestoneEscrow {
 
         whitelist.push_back(token);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::WhitelistedTokens, &whitelist);
         Ok(())
     }
@@ -408,7 +408,7 @@ impl MilestoneEscrow {
 
         let stored_admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
 
@@ -418,14 +418,14 @@ impl MilestoneEscrow {
 
         let mut whitelist: Vec<Address> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
         if let Some(index) = whitelist.iter().position(|t| t == token) {
             whitelist.remove(index as u32);
             env.storage()
-                .instance()
+                .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
             Ok(())
         } else {
@@ -436,7 +436,7 @@ impl MilestoneEscrow {
     pub fn is_token_whitelisted(env: Env, token: Address) -> bool {
         if let Some(whitelist) = env
             .storage()
-            .instance()
+            .persistent()
             .get::<_, Vec<Address>>(&DataKey::WhitelistedTokens)
         {
             whitelist.contains(&token)
@@ -447,7 +447,7 @@ impl MilestoneEscrow {
 
     pub fn get_whitelisted_tokens(env: Env) -> Result<Vec<Address>, Error> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)
     }

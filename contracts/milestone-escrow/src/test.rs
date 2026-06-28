@@ -4421,6 +4421,100 @@ fn test_initialize_already_initialized_returns_correct_error() {
     assert_eq!(job.milestones.get(0).unwrap().amount, 1_000);
 }
 
+/// State Machine Transition Matrix for `initialize`:
+/// Validates that `initialize` can only transition from Uninitialized -> Initialized.
+/// Any attempt to initialize the contract from any other state must revert with `Error::AlreadyInitialized`.
+#[test]
+fn test_initialize_state_transition_matrix() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    
+    token_admin.mint(&client_addr, &100_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+
+    // --- Path A: Happy Path ---
+    
+    // State 0: Uninitialized -> Transition to Initialized (Must Succeed)
+    let init_res = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert!(init_res.is_ok(), "Initial transition from Uninitialized to Initialized should succeed");
+
+    // State 1: Initialized -> Must Revert
+    let attempt_init = |escrow: &MilestoneEscrowClient| {
+        escrow.try_initialize(
+            &admin_addr,
+            &client_addr,
+            &freelancer_addr,
+            &arbiter_addr,
+            &token_contract_id,
+            &604800,
+            &amounts,
+        )
+    };
+
+    assert_eq!(attempt_init(&escrow), Err(Ok(Error::AlreadyInitialized)), "Transition from Initialized must revert");
+
+    // State 2: Funded -> Must Revert
+    escrow.fund(&client_addr);
+    assert_eq!(attempt_init(&escrow), Err(Ok(Error::AlreadyInitialized)), "Transition from Funded must revert");
+
+    // State 3: Delivered -> Must Revert
+    escrow.mark_delivered(&freelancer_addr, &0);
+    assert_eq!(attempt_init(&escrow), Err(Ok(Error::AlreadyInitialized)), "Transition from Delivered must revert");
+
+    // State 4: Partially Released -> Must Revert
+    escrow.approve_partial(&client_addr, &0, &500);
+    assert_eq!(attempt_init(&escrow), Err(Ok(Error::AlreadyInitialized)), "Transition from PartiallyReleased must revert");
+
+    // State 5: Released -> Must Revert
+    escrow.approve_milestone(&client_addr, &0);
+    assert_eq!(attempt_init(&escrow), Err(Ok(Error::AlreadyInitialized)), "Transition from Released must revert");
+
+    // --- Path B: Dispute Path ---
+    let contract_id2 = env.register(MilestoneEscrow, ());
+    let escrow2 = MilestoneEscrowClient::new(&env, &contract_id2);
+
+    escrow2.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    escrow2.fund(&client_addr);
+    
+    // State 6: Disputed -> Must Revert
+    escrow2.raise_dispute(&client_addr, &0);
+    assert_eq!(attempt_init(&escrow2), Err(Ok(Error::AlreadyInitialized)), "Transition from Disputed must revert");
+
+    // State 7: Refunded -> Must Revert (Resolve dispute to client)
+    escrow2.resolve_dispute(&arbiter_addr, &0, &false);
+    assert_eq!(attempt_init(&escrow2), Err(Ok(Error::AlreadyInitialized)), "Transition from Refunded must revert");
+}
+
 /// Boundary test 7 — AUTO_RELEASE_SECONDS ZERO:
 /// `initialize` does not reject `auto_release_seconds = 0`.  Documenting this
 /// as an explicit test ensures any future validation addition is a deliberate
