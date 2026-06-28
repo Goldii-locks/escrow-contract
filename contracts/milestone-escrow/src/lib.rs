@@ -162,6 +162,7 @@ pub struct MilestoneApprovedEvent {
     pub remaining: i128,
     pub previous_status: MilestoneStatus,
     pub status: MilestoneStatus,
+    pub delivered_at: u64,
     pub approved_at: u64,
 }
 
@@ -838,6 +839,7 @@ impl MilestoneEscrow {
                 remaining: post_release_remaining,
                 previous_status,
                 status: milestone.status.clone(),
+                delivered_at: milestone.delivered_at,
                 approved_at,
             },
         );

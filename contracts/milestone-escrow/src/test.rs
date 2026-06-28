@@ -3023,6 +3023,7 @@ fn test_approve_milestone_emits_detailed_event_payload() {
         remaining: 0,
         previous_status: MilestoneStatus::Delivered,
         status: MilestoneStatus::Released,
+        delivered_at: 123_456,
         approved_at: 123_456,
     }
     .into_val(&env);
@@ -3101,6 +3102,7 @@ fn test_approve_milestone_detailed_event_after_partial_release() {
         remaining: 0,
         previous_status: MilestoneStatus::PartiallyReleased,
         status: MilestoneStatus::Released,
+        delivered_at: 222_000,
         approved_at: 222_111,
     }
     .into_val(&env);
