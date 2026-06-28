@@ -4783,7 +4783,7 @@ fn test_remove_whitelisted_token_state_whitelisted_to_not_whitelisted() {
 
     // Post-condition: token2 is NotWhitelisted
     assert!(!client.is_token_whitelisted(&token2));
-    let tokens = client.get_whitelisted_tokens().unwrap();
+    let tokens = client.get_whitelisted_tokens();
     assert!(!tokens.contains(&token2));
 }
 
@@ -5039,7 +5039,7 @@ fn test_remove_whitelisted_token_does_not_affect_siblings() {
     client.add_whitelisted_token(&admin_addr, &token3);
 
     // Whitelist: [token1, token2, token3]
-    assert_eq!(client.get_whitelisted_tokens().unwrap().len(), 3);
+    assert_eq!(client.get_whitelisted_tokens().len(), 3);
 
     // Remove only token2
     client.remove_whitelisted_token(&admin_addr, &token2);
@@ -5058,7 +5058,7 @@ fn test_remove_whitelisted_token_does_not_affect_siblings() {
     );
 
     // Total count must be 2
-    assert_eq!(client.get_whitelisted_tokens().unwrap().len(), 2);
+    assert_eq!(client.get_whitelisted_tokens().len(), 2);
 }
 
 /// Matrix row 8 — Remove the escrow job token itself
@@ -5104,5 +5104,5 @@ fn test_remove_whitelisted_token_can_remove_escrow_job_token() {
         "should be able to remove the escrow job token from whitelist"
     );
     assert!(!client.is_token_whitelisted(&token1));
-    assert_eq!(client.get_whitelisted_tokens().unwrap().len(), 0);
+    assert_eq!(client.get_whitelisted_tokens().len(), 0);
 }
