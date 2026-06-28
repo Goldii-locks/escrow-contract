@@ -143,6 +143,29 @@ pub struct ApprovedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneApprovedEvent {
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub client: Address,
+    pub freelancer: Address,
+    pub arbiter: Address,
+    pub token: Address,
+    pub funded: bool,
+    pub auto_release_seconds: u64,
+    pub milestone_count: u32,
+    pub total_amount: i128,
+    pub milestone_amount: i128,
+    pub approved_amount: i128,
+    pub previously_released_amount: i128,
+    pub released_amount: i128,
+    pub remaining: i128,
+    pub previous_status: MilestoneStatus,
+    pub status: MilestoneStatus,
+    pub approved_at: u64,
+}
+
+#[contracttype]
 pub struct DisputeRaisedEvent {
     pub milestone_index: u32,
 }
@@ -765,7 +788,12 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
-        let remaining = milestone.amount.checked_sub(milestone.released_amount).ok_or(Error::InvalidAmount)?;
+        let previous_status = milestone.status.clone();
+        let previously_released_amount = milestone.released_amount;
+        let remaining = milestone
+            .amount
+            .checked_sub(milestone.released_amount)
+            .ok_or(Error::InvalidAmount)?;
         if remaining <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -789,7 +817,10 @@ impl MilestoneEscrow {
         // no long-term value.
         Self::store_milestone_released(&env, milestone_index);
 
-        let event_remaining = milestone
+        let contract_id = env.current_contract_address();
+        let approved_at = env.ledger().timestamp();
+        let released_amount = milestone.released_amount;
+        let post_release_remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
             .ok_or(Error::InvalidAmount)?;
@@ -797,15 +828,39 @@ impl MilestoneEscrow {
         env.events().publish(
             (symbol_short!("approve"),),
             ApprovedEvent {
-                contract_id: env.current_contract_address(),
+                contract_id: contract_id.clone(),
+                milestone_index,
+                client: meta.client.clone(),
+                freelancer: meta.freelancer.clone(),
+                token: meta.token.clone(),
+                amount: remaining,
+                released_amount,
+                remaining: post_release_remaining,
+                status: milestone.status.clone(),
+            },
+        );
+
+        env.events().publish(
+            (symbol_short!("appr_mile"),),
+            MilestoneApprovedEvent {
+                contract_id,
                 milestone_index,
                 client: meta.client,
                 freelancer: meta.freelancer,
+                arbiter: meta.arbiter,
                 token: meta.token,
-                amount: remaining,
-                released_amount: milestone.released_amount,
-                remaining: event_remaining,
+                funded: meta.funded,
+                auto_release_seconds: meta.auto_release_seconds,
+                milestone_count: meta.milestone_count,
+                total_amount: meta.total_amount,
+                milestone_amount: milestone.amount,
+                approved_amount: remaining,
+                previously_released_amount,
+                released_amount,
+                remaining: post_release_remaining,
+                previous_status,
                 status: milestone.status.clone(),
+                approved_at,
             },
         );
 
