@@ -153,6 +153,14 @@ pub struct DisputeResolvedEvent {
     pub released_to_freelancer: bool,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenRemovedEvent {
+    pub admin: Address,
+    pub token: Address,
+    pub remaining_count: u32,
+}
+
 #[contract]
 pub struct MilestoneEscrow;
 
@@ -442,9 +450,20 @@ impl MilestoneEscrow {
                 whitelist.set(index as u32, last_elem);
             }
             whitelist.pop_back();
+            let remaining_count = whitelist.len();
             env.storage()
                 .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
+
+            env.events().publish(
+                (symbol_short!("tk_rm"),),
+                TokenRemovedEvent {
+                    admin,
+                    token,
+                    remaining_count,
+                },
+            );
+
             Ok(())
         } else {
             Err(Error::TokenNotWhitelisted)
