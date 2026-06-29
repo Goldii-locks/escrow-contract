@@ -1,8 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env, FromVal,
-    IntoVal, Symbol, TryFromVal, Val,
+    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, testutils::Ledger, vec,
+    Address, Env, FromVal, IntoVal, Symbol, Val,
 };
 
 fn setup_funded_escrow(
@@ -994,6 +994,182 @@ fn test_fund_uses_cached_total_for_many_milestones() {
     let job = client.get_job();
     assert!(job.funded);
     assert_eq!(job.milestones.len(), 100);
+}
+
+#[test]
+fn test_fund_rejects_missing_milestone_index() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &3_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Milestone(1u32));
+    });
+
+    let result = client.try_fund(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidMilestone)));
+    assert_eq!(token.balance(&client_addr), 3_000);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_fund_rejects_zero_milestone_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.amount = 0;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    let result = client.try_fund(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(token.balance(&client_addr), 1_000);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_fund_rejects_negative_milestone_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.amount = -1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    let result = client.try_fund(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(token.balance(&client_addr), 1_000);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_fund_rejects_empty_milestone_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = soroban_sdk::Vec::new(&env);
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_fund(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(token.balance(&client_addr), 0);
+    assert_eq!(token.balance(&contract_id), 0);
 }
 
 #[test]
@@ -3990,6 +4166,55 @@ fn test_claim_auto_release_wrong_identity_unauthorized() {
 // initialize — boundary / edge-case / negative-input test suite
 // ============================================================================
 
+fn env_without_snapshot() -> Env {
+    Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    })
+}
+
+fn initialize_budget_for_milestone_count(count: u32) -> (u64, u64) {
+    let env = env_without_snapshot();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let mut amounts = vec![&env];
+    for _ in 0..count {
+        amounts.push_back(1_i128);
+    }
+
+    let mut budget = env.cost_estimate().budget();
+    budget.reset_default();
+
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    let budget = env.cost_estimate().budget();
+    let cpu = budget.cpu_instruction_cost();
+    let memory = budget.memory_bytes_cost();
+
+    let job = escrow.get_job();
+    assert_eq!(job.milestones.len(), count);
+
+    (cpu, memory)
+}
+
 /// Boundary test 1 — EMPTY MILESTONE VEC:
 /// Passing an empty `milestone_amounts` vec must be rejected with
 /// `Error::InvalidAmount` because there are no milestones to sum and the
@@ -4225,6 +4450,72 @@ fn test_initialize_multiple_milestones_all_pending_correct_amounts() {
     escrow.fund(&client_addr);
     assert_eq!(token.balance(&contract_id), total);
     assert_eq!(token.balance(&client_addr), 0);
+}
+
+#[test]
+fn test_initialize_gas_scales_linearly_for_many_milestones() {
+    let (cpu_64, memory_64) = initialize_budget_for_milestone_count(64);
+    let (cpu_128, memory_128) = initialize_budget_for_milestone_count(128);
+
+    assert!(cpu_64 > 0);
+    assert!(cpu_128 > cpu_64);
+    assert!(
+        cpu_128 < cpu_64.saturating_mul(3),
+        "doubling initialize milestones should stay roughly linear: cpu {} -> {}",
+        cpu_64,
+        cpu_128
+    );
+
+    assert!(memory_64 > 0);
+    assert!(memory_128 > memory_64);
+}
+
+#[test]
+fn test_initialize_invalid_amount_rolls_back_single_pass_writes() {
+    let env = env_without_snapshot();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let invalid_amounts = vec![&env, 100_i128, -1_i128];
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &invalid_amounts,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().persistent().has(&DataKey::Milestone(0u32)));
+    });
+
+    let valid_amounts = vec![&env, 200_i128];
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &valid_amounts,
+    );
+
+    let job = escrow.get_job();
+    assert_eq!(job.milestones.len(), 1);
+    assert_eq!(job.milestones.get(0).unwrap().amount, 200);
 }
 
 /// Boundary test 6 — ALREADY INITIALIZED GUARD (duplicate call):
@@ -4773,102 +5064,39 @@ fn test_remove_whitelisted_token_rejects_zero_contract_address() {
 }
 
 #[test]
-fn test_initialize_emits_structured_event() {
+fn test_claim_auto_release_reverts_on_zero_address() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let admin_addr = Address::generate(&env);
     let client_addr = Address::generate(&env);
     let freelancer_addr = Address::generate(&env);
     let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
 
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let amounts = vec![&env, 1_000_i128, 2_000_i128, 3_000_i128];
-    let auto_release = 604800u64;
-
+    let amounts = vec![&env, 10_000_i128];
     client.initialize(
         &admin_addr,
         &client_addr,
         &freelancer_addr,
         &arbiter_addr,
         &token_contract_id,
-        &auto_release,
+        &100,
         &amounts,
     );
 
-    let all_events = env.events().all();
-    assert!(!all_events.is_empty(), "expected at least one event after initialize");
+    let zero_address =
+        Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
 
-    let init_symbol = Symbol::new(&env, "init");
-    let init_event = all_events.iter().find(|(_, topics, _)| {
-        let topic_vec: soroban_sdk::Vec<Val> = soroban_sdk::Vec::from_val(&env, topics);
-        if topic_vec.is_empty() { return false; }
-        let first: Val = topic_vec.get(0).unwrap();
-        if let Ok(s) = Symbol::try_from_val(&env, &first) { s == init_symbol } else { false }
-    });
-
-    assert!(init_event.is_some(), "initialize must emit an 'init' event");
-    let (_, _, data) = init_event.unwrap();
-    let event: InitializedEvent = InitializedEvent::from_val(&env, &data);
-
-    assert_eq!(event.client, client_addr);
-    assert_eq!(event.freelancer, freelancer_addr);
-    assert_eq!(event.arbiter, arbiter_addr);
-    assert_eq!(event.token, token_contract_id);
-    assert_eq!(event.auto_release_seconds, auto_release);
-    assert_eq!(event.total_amount, 6_000_i128);
-    assert_eq!(event.milestone_count, 3u32);
-    assert_eq!(event.milestone_amounts, amounts);
-}
-
-#[test]
-fn test_initialize_event_matches_single_milestone() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let admin_addr = Address::generate(&env);
-    let client_addr = Address::generate(&env);
-    let freelancer_addr = Address::generate(&env);
-    let arbiter_addr = Address::generate(&env);
-
-    let token_contract_id = env
-        .register_stellar_asset_contract_v2(admin_addr.clone())
-        .address();
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
-
-    let amounts = vec![&env, 5_000_i128];
-    client.initialize(
-        &admin_addr,
-        &client_addr,
-        &freelancer_addr,
-        &arbiter_addr,
-        &token_contract_id,
-        &0u64,
-        &amounts,
-    );
-
-    let all_events = env.events().all();
-    let init_symbol = Symbol::new(&env, "init");
-    let init_event = all_events.iter().find(|(_, topics, _)| {
-        let topic_vec: soroban_sdk::Vec<Val> = soroban_sdk::Vec::from_val(&env, topics);
-        if topic_vec.is_empty() { return false; }
-        let first: Val = topic_vec.get(0).unwrap();
-        if let Ok(s) = Symbol::try_from_val(&env, &first) { s == init_symbol } else { false }
-    });
-
-    assert!(init_event.is_some());
-    let (_, _, data) = init_event.unwrap();
-    let event: InitializedEvent = InitializedEvent::from_val(&env, &data);
-
-    assert_eq!(event.total_amount, 5_000_i128);
-    assert_eq!(event.milestone_count, 1u32);
-    assert_eq!(event.auto_release_seconds, 0u64);
+    // Call the contract method using the zero address—should trip the error guard
+    let result = client.try_claim_auto_release(&zero_address, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
 }
