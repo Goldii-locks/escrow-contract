@@ -1,8 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::Events, testutils::Ledger, vec, Address, Env, FromVal,
-    IntoVal, Symbol, Val,
+    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, testutils::Ledger, vec,
+    Address, Env, FromVal, IntoVal, Symbol, Val,
 };
 
 fn setup_funded_escrow(
@@ -4143,6 +4143,55 @@ fn test_claim_auto_release_wrong_identity_unauthorized() {
 // initialize — boundary / edge-case / negative-input test suite
 // ============================================================================
 
+fn env_without_snapshot() -> Env {
+    Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    })
+}
+
+fn initialize_budget_for_milestone_count(count: u32) -> (u64, u64) {
+    let env = env_without_snapshot();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let mut amounts = vec![&env];
+    for _ in 0..count {
+        amounts.push_back(1_i128);
+    }
+
+    let mut budget = env.cost_estimate().budget();
+    budget.reset_default();
+
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    let budget = env.cost_estimate().budget();
+    let cpu = budget.cpu_instruction_cost();
+    let memory = budget.memory_bytes_cost();
+
+    let job = escrow.get_job();
+    assert_eq!(job.milestones.len(), count);
+
+    (cpu, memory)
+}
+
 /// Boundary test 1 — EMPTY MILESTONE VEC:
 /// Passing an empty `milestone_amounts` vec must be rejected with
 /// `Error::InvalidAmount` because there are no milestones to sum and the
@@ -4378,6 +4427,72 @@ fn test_initialize_multiple_milestones_all_pending_correct_amounts() {
     escrow.fund(&client_addr);
     assert_eq!(token.balance(&contract_id), total);
     assert_eq!(token.balance(&client_addr), 0);
+}
+
+#[test]
+fn test_initialize_gas_scales_linearly_for_many_milestones() {
+    let (cpu_64, memory_64) = initialize_budget_for_milestone_count(64);
+    let (cpu_128, memory_128) = initialize_budget_for_milestone_count(128);
+
+    assert!(cpu_64 > 0);
+    assert!(cpu_128 > cpu_64);
+    assert!(
+        cpu_128 < cpu_64.saturating_mul(3),
+        "doubling initialize milestones should stay roughly linear: cpu {} -> {}",
+        cpu_64,
+        cpu_128
+    );
+
+    assert!(memory_64 > 0);
+    assert!(memory_128 > memory_64);
+}
+
+#[test]
+fn test_initialize_invalid_amount_rolls_back_single_pass_writes() {
+    let env = env_without_snapshot();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let invalid_amounts = vec![&env, 100_i128, -1_i128];
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &invalid_amounts,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().persistent().has(&DataKey::Milestone(0u32)));
+    });
+
+    let valid_amounts = vec![&env, 200_i128];
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &valid_amounts,
+    );
+
+    let job = escrow.get_job();
+    assert_eq!(job.milestones.len(), 1);
+    assert_eq!(job.milestones.get(0).unwrap().amount, 200);
 }
 
 /// Boundary test 6 — ALREADY INITIALIZED GUARD (duplicate call):

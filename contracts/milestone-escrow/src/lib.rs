@@ -311,8 +311,21 @@ impl MilestoneEscrow {
 
         let milestone_count = milestone_amounts.len();
         let mut total_amount: i128 = 0;
-        for amount in milestone_amounts.iter() {
+        for index in 0..milestone_count {
+            let amount = milestone_amounts
+                .get(index)
+                .ok_or(Error::InvalidMilestone)?;
             total_amount = Self::checked_add_amount(total_amount, amount)?;
+            Self::store_milestone(
+                &env,
+                index,
+                &Milestone {
+                    amount,
+                    released_amount: 0,
+                    status: MilestoneStatus::Pending,
+                    delivered_at: 0,
+                },
+            );
         }
 
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -322,19 +335,6 @@ impl MilestoneEscrow {
         env.storage()
             .persistent()
             .set(&DataKey::WhitelistedTokens, &whitelist);
-
-        for (index, amount) in milestone_amounts.iter().enumerate() {
-            Self::store_milestone(
-                &env,
-                index as u32,
-                &Milestone {
-                    amount,
-                    released_amount: 0,
-                    status: MilestoneStatus::Pending,
-                    delivered_at: 0,
-                },
-            );
-        }
 
         let meta = JobMeta {
             client,
