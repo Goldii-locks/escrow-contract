@@ -246,6 +246,15 @@ impl MilestoneEscrow {
         Ok(total_amount)
     }
 
+    fn validate_fund_amount(env: &Env, meta: &JobMeta) -> Result<i128, Error> {
+        let total_amount = Self::checked_job_total(env, meta)?;
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        Ok(total_amount)
+    }
+
     fn validate_fund_client(env: &Env, client: &Address) -> Result<(), Error> {
         if client == &env.current_contract_address() {
             return Err(Error::InvalidAddress);
@@ -287,8 +296,21 @@ impl MilestoneEscrow {
 
         let milestone_count = milestone_amounts.len();
         let mut total_amount: i128 = 0;
-        for amount in milestone_amounts.iter() {
+        for index in 0..milestone_count {
+            let amount = milestone_amounts
+                .get(index)
+                .ok_or(Error::InvalidMilestone)?;
             total_amount = Self::checked_add_amount(total_amount, amount)?;
+            Self::store_milestone(
+                &env,
+                index,
+                &Milestone {
+                    amount,
+                    released_amount: 0,
+                    status: MilestoneStatus::Pending,
+                    delivered_at: 0,
+                },
+            );
         }
 
         env.storage().persistent().set(&DataKey::Admin, &admin);
@@ -298,19 +320,6 @@ impl MilestoneEscrow {
         env.storage()
             .persistent()
             .set(&DataKey::WhitelistedTokens, &whitelist);
-
-        for (index, amount) in milestone_amounts.iter().enumerate() {
-            Self::store_milestone(
-                &env,
-                index as u32,
-                &Milestone {
-                    amount,
-                    released_amount: 0,
-                    status: MilestoneStatus::Pending,
-                    delivered_at: 0,
-                },
-            );
-        }
 
         let meta = JobMeta {
             client,
@@ -361,6 +370,11 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
+        let meta = Self::load_job_meta(&env)?;
+        if meta.funded {
+            return Err(Error::AlreadyFunded);
+        }
+
         let mut whitelist: Vec<Address> = env
             .storage()
             .persistent()
@@ -388,6 +402,18 @@ impl MilestoneEscrow {
     pub fn remove_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
 
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if token == zero_account || token == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
         let stored_admin: Address = env
             .storage()
             .persistent()
@@ -396,6 +422,11 @@ impl MilestoneEscrow {
 
         if admin != stored_admin {
             return Err(Error::Unauthorized);
+        }
+
+        let meta = Self::load_job_meta(&env)?;
+        if meta.funded {
+            return Err(Error::AlreadyFunded);
         }
 
         let mut whitelist: Vec<Address> = env
@@ -446,7 +477,7 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
-        let total_amount = meta.total_amount;
+        let total_amount = Self::validate_fund_amount(&env, &meta)?;
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&client, &env.current_contract_address(), &total_amount);
 
