@@ -94,12 +94,16 @@ pub enum DataKey {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InitializedEvent {
     pub client: Address,
     pub freelancer: Address,
     pub arbiter: Address,
     pub token: Address,
+    pub auto_release_seconds: u64,
     pub milestone_amounts: Vec<i128>,
+    pub total_amount: i128,
+    pub milestone_count: u32,
 }
 
 #[contracttype]
@@ -333,6 +337,24 @@ impl MilestoneEscrow {
         };
 
         Self::store_job_meta(&env, &meta);
+
+        // Emit a structured initialization event so downstream indexers can
+        // record all operational parameters from a single on-chain event without
+        // having to query contract storage separately.
+        env.events().publish(
+            (symbol_short!("init"),),
+            InitializedEvent {
+                client: meta.client,
+                freelancer: meta.freelancer,
+                arbiter: meta.arbiter,
+                token: meta.token,
+                auto_release_seconds: meta.auto_release_seconds,
+                milestone_amounts,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
         Ok(())
     }
 
