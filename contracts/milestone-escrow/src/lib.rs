@@ -143,6 +143,15 @@ pub struct ApprovedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WhitelistedTokenAddedEvent {
+    pub contract_id: Address,
+    pub admin: Address,
+    pub token: Address,
+    pub whitelist_count: u32,
+}
+
+#[contracttype]
 pub struct DisputeRaisedEvent {
     pub milestone_index: u32,
 }
@@ -406,10 +415,22 @@ impl MilestoneEscrow {
             return Err(Error::TokenAlreadyWhitelisted);
         }
 
-        whitelist.push_back(token);
+        whitelist.push_back(token.clone());
+        let whitelist_count = whitelist.len();
         env.storage()
             .instance()
             .set(&DataKey::WhitelistedTokens, &whitelist);
+
+        env.events().publish(
+            (symbol_short!("wl_add"),),
+            WhitelistedTokenAddedEvent {
+                contract_id: env.current_contract_address(),
+                admin,
+                token,
+                whitelist_count,
+            },
+        );
+
         Ok(())
     }
 
