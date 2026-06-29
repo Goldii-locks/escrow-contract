@@ -467,8 +467,14 @@ impl MilestoneEscrow {
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
-        if whitelist.len() == 0 {
+        let whitelist_len = whitelist.len();
+        if whitelist_len == 0 {
             return Err(Error::TokenNotWhitelisted);
+        }
+
+        let post_removal_len = whitelist_len.checked_sub(1).ok_or(Error::InvalidAmount)?;
+        if post_removal_len == 0 {
+            return Err(Error::InvalidAmount);
         }
 
         if !whitelist.contains(&token) {
@@ -477,6 +483,9 @@ impl MilestoneEscrow {
 
         if let Some(index) = whitelist.iter().position(|t| t == token) {
             let safe_index = u32::try_from(index).map_err(|_| Error::InvalidAmount)?;
+            if safe_index >= whitelist_len {
+                return Err(Error::InvalidAmount);
+            }
             whitelist.remove(safe_index);
             env.storage()
                 .persistent()
