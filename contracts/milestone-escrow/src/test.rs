@@ -4699,3 +4699,945 @@ fn test_add_whitelisted_token_unauthorized_before_cap_check() {
     let result = client.try_add_whitelisted_token(&bad_actor, &new_token);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
+
+// ============================================================================
+// Event emission tests for mark_delivered
+// ============================================================================
+
+#[test]
+fn test_mark_delivered_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    let delivered_at = env.ledger().timestamp();
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    let deliver_topic_val: Val = symbol_short!("deliver").into_val(&env);
+    let mut deliver_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == deliver_topic_val.get_payload() {
+                deliver_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    DeliveredEvent::from_val(&env, &event.2),
+                    DeliveredEvent {
+                        contract_id: contract_id.clone(),
+                        milestone_index: 0,
+                        freelancer: freelancer_addr.clone(),
+                        client: client_addr.clone(),
+                        delivered_at,
+                        status: MilestoneStatus::Delivered,
+                        amount: 5_000,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(deliver_events, 1);
+}
+
+#[test]
+fn test_failed_mark_delivered_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    let result = client.try_mark_delivered(&bad_actor, &0u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let deliver_topic_val: Val = symbol_short!("deliver").into_val(&env);
+    let deliver_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == deliver_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(deliver_events, 0);
+}
+
+// ============================================================================
+// Event emission tests for raise_dispute and resolve_dispute
+// ============================================================================
+
+#[test]
+fn test_raise_dispute_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+
+    let dispute_topic_val: Val = symbol_short!("dispute").into_val(&env);
+    let mut dispute_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == dispute_topic_val.get_payload() {
+                dispute_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    DisputeRaisedEvent::from_val(&env, &event.2),
+                    DisputeRaisedEvent {
+                        milestone_index: 0,
+                        caller: client_addr.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(dispute_events, 1);
+}
+
+#[test]
+fn test_raise_dispute_emits_event_for_freelancer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&freelancer_addr, &0u32);
+
+    let dispute_topic_val: Val = symbol_short!("dispute").into_val(&env);
+    let mut dispute_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == dispute_topic_val.get_payload() {
+                dispute_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    DisputeRaisedEvent::from_val(&env, &event.2),
+                    DisputeRaisedEvent {
+                        milestone_index: 0,
+                        caller: freelancer_addr.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(dispute_events, 1);
+}
+
+#[test]
+fn test_failed_raise_dispute_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    let result = client.try_raise_dispute(&bad_actor, &0u32);
+    assert!(result.is_err());
+
+    let dispute_topic_val: Val = symbol_short!("dispute").into_val(&env);
+    let dispute_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == dispute_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(dispute_events, 0);
+}
+
+#[test]
+fn test_resolve_dispute_emits_event_release_to_freelancer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+    client.resolve_dispute(&arbiter_addr, &0u32, &true);
+
+    let resolve_topic_val: Val = symbol_short!("resolve").into_val(&env);
+    let mut resolve_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == resolve_topic_val.get_payload() {
+                resolve_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    DisputeResolvedEvent::from_val(&env, &event.2),
+                    DisputeResolvedEvent {
+                        milestone_index: 0,
+                        released_to_freelancer: true,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(resolve_events, 1);
+}
+
+#[test]
+fn test_resolve_dispute_emits_event_refund_to_client() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+    client.resolve_dispute(&arbiter_addr, &0u32, &false);
+
+    let resolve_topic_val: Val = symbol_short!("resolve").into_val(&env);
+    let mut resolve_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == resolve_topic_val.get_payload() {
+                resolve_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    DisputeResolvedEvent::from_val(&env, &event.2),
+                    DisputeResolvedEvent {
+                        milestone_index: 0,
+                        released_to_freelancer: false,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(resolve_events, 1);
+}
+
+#[test]
+fn test_failed_resolve_dispute_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.raise_dispute(&client_addr, &0u32);
+
+    let result = client.try_resolve_dispute(&bad_actor, &0u32, &true);
+    assert!(result.is_err());
+
+    let resolve_topic_val: Val = symbol_short!("resolve").into_val(&env);
+    let resolve_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == resolve_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(resolve_events, 0);
+}
+
+// ============================================================================
+// Event emission tests for initialize
+// ============================================================================
+
+#[test]
+fn test_initialize_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    let init_topic_val: Val = symbol_short!("init").into_val(&env);
+    let mut init_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == init_topic_val.get_payload() {
+                init_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    InitializedEvent::from_val(&env, &event.2),
+                    InitializedEvent {
+                        client: client_addr.clone(),
+                        freelancer: freelancer_addr.clone(),
+                        arbiter: arbiter_addr.clone(),
+                        token: token_contract_id.clone(),
+                        milestone_amounts: amounts.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(init_events, 1);
+}
+
+#[test]
+fn test_failed_initialize_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, -500_i128];
+    let result = client.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    let init_topic_val: Val = symbol_short!("init").into_val(&env);
+    let init_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == init_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(init_events, 0);
+}
+
+// ============================================================================
+// Event emission tests for transfer_admin
+// ============================================================================
+
+#[test]
+fn test_transfer_admin_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.transfer_admin(&admin_addr, &new_admin);
+
+    let admin_topic_val: Val = symbol_short!("admin").into_val(&env);
+    let mut admin_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == admin_topic_val.get_payload() {
+                admin_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    TransferAdminEvent::from_val(&env, &event.2),
+                    TransferAdminEvent {
+                        old_admin: admin_addr.clone(),
+                        new_admin: new_admin.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(admin_events, 1);
+}
+
+#[test]
+fn test_failed_transfer_admin_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_transfer_admin(&bad_actor, &new_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let admin_topic_val: Val = symbol_short!("admin").into_val(&env);
+    let admin_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == admin_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(admin_events, 0);
+}
+
+// ============================================================================
+// Event emission tests for add_whitelisted_token
+// ============================================================================
+
+#[test]
+fn test_add_whitelisted_token_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    client.add_whitelisted_token(&admin_addr, &token2);
+
+    let wtok_topic_val: Val = symbol_short!("wtok").into_val(&env);
+    let mut wtok_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == wtok_topic_val.get_payload() {
+                wtok_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    TokenWhitelistedEvent::from_val(&env, &event.2),
+                    TokenWhitelistedEvent {
+                        admin: admin_addr.clone(),
+                        token: token2.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(wtok_events, 1);
+}
+
+#[test]
+fn test_failed_add_whitelisted_token_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_add_whitelisted_token(&bad_actor, &token2);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let wtok_topic_val: Val = symbol_short!("wtok").into_val(&env);
+    let wtok_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == wtok_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(wtok_events, 0);
+}
+
+// ============================================================================
+// Event emission tests for remove_whitelisted_token
+// ============================================================================
+
+#[test]
+fn test_remove_whitelisted_token_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+    client.add_whitelisted_token(&admin_addr, &token2);
+    client.remove_whitelisted_token(&admin_addr, &token2);
+
+    let wldel_topic_val: Val = symbol_short!("wldel").into_val(&env);
+    let mut wldel_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == wldel_topic_val.get_payload() {
+                wldel_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    TokenRemovedEvent::from_val(&env, &event.2),
+                    TokenRemovedEvent {
+                        admin: admin_addr.clone(),
+                        token: token2.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(wldel_events, 1);
+}
+
+#[test]
+fn test_failed_remove_whitelisted_token_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_remove_whitelisted_token(&bad_actor, &token2);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let wldel_topic_val: Val = symbol_short!("wldel").into_val(&env);
+    let wldel_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == wldel_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(wldel_events, 0);
+}
+
+// ============================================================================
+// Event emission tests for claim_auto_release
+// ============================================================================
+
+#[test]
+fn test_claim_auto_release_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp += 200;
+    });
+
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    let claim_topic_val: Val = symbol_short!("claim").into_val(&env);
+    let mut claim_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == claim_topic_val.get_payload() {
+                claim_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    ClaimedEvent::from_val(&env, &event.2),
+                    ClaimedEvent {
+                        contract_id: contract_id.clone(),
+                        milestone_index: 0,
+                        freelancer: freelancer_addr.clone(),
+                        token: token_contract_id.clone(),
+                        amount: 10_000,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(claim_events, 1);
+}
+
+#[test]
+fn test_failed_claim_auto_release_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Call before deadline passes — should fail
+    let result = client.try_claim_auto_release(&freelancer_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::DeadlineNotPassed)));
+
+    let claim_topic_val: Val = symbol_short!("claim").into_val(&env);
+    let claim_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == claim_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(claim_events, 0);
+}

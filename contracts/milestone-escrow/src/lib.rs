@@ -94,6 +94,7 @@ pub enum DataKey {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InitializedEvent {
     pub client: Address,
     pub freelancer: Address,
@@ -143,14 +144,48 @@ pub struct ApprovedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeRaisedEvent {
     pub milestone_index: u32,
+    pub caller: Address,
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeResolvedEvent {
     pub milestone_index: u32,
     pub released_to_freelancer: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferAdminEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenWhitelistedEvent {
+    pub admin: Address,
+    pub token: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenRemovedEvent {
+    pub admin: Address,
+    pub token: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimedEvent {
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub freelancer: Address,
+    pub token: Address,
+    pub amount: i128,
 }
 
 #[contract]
@@ -324,6 +359,18 @@ impl MilestoneEscrow {
         };
 
         Self::store_job_meta(&env, &meta);
+
+        env.events().publish(
+            (symbol_short!("init"),),
+            InitializedEvent {
+                client: meta.client,
+                freelancer: meta.freelancer,
+                arbiter: meta.arbiter,
+                token: meta.token,
+                milestone_amounts,
+            },
+        );
+
         Ok(())
     }
 
@@ -345,6 +392,15 @@ impl MilestoneEscrow {
         }
 
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("admin"),),
+            TransferAdminEvent {
+                old_admin: current_admin,
+                new_admin,
+            },
+        );
+
         Ok(())
     }
 
@@ -378,10 +434,19 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        whitelist.push_back(token);
+        whitelist.push_back(token.clone());
         env.storage()
             .persistent()
             .set(&DataKey::WhitelistedTokens, &whitelist);
+
+        env.events().publish(
+            (symbol_short!("wtok"),),
+            TokenWhitelistedEvent {
+                admin,
+                token,
+            },
+        );
+
         Ok(())
     }
 
@@ -409,6 +474,15 @@ impl MilestoneEscrow {
             env.storage()
                 .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
+
+            env.events().publish(
+                (symbol_short!("wldel"),),
+                TokenRemovedEvent {
+                    admin,
+                    token,
+                },
+            );
+
             Ok(())
         } else {
             Err(Error::TokenNotWhitelisted)
@@ -630,6 +704,17 @@ impl MilestoneEscrow {
         &remaining,
     );
 
+    env.events().publish(
+        (symbol_short!("claim"),),
+        ClaimedEvent {
+            contract_id: env.current_contract_address(),
+            milestone_index,
+            freelancer: meta.freelancer,
+            token: meta.token,
+            amount: remaining,
+        },
+    );
+
     Ok(())
 }
 
@@ -809,6 +894,15 @@ impl MilestoneEscrow {
 
         milestone.status = MilestoneStatus::Disputed;
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        env.events().publish(
+            (symbol_short!("dispute"),),
+            DisputeRaisedEvent {
+                milestone_index,
+                caller,
+            },
+        );
+
         Ok(())
     }
 
@@ -851,6 +945,15 @@ impl MilestoneEscrow {
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        env.events().publish(
+            (symbol_short!("resolve"),),
+            DisputeResolvedEvent {
+                milestone_index,
+                released_to_freelancer: release_to_freelancer,
+            },
+        );
+
         Ok(())
     }
 
