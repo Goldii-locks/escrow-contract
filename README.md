@@ -54,6 +54,7 @@ cargo test -p milestone-escrow
 
 - Contract implementation completed in `contracts/milestone-escrow`
 - Includes milestone delivery, approval, dispute, and arbitration flows
+- Initialize now rejects empty milestone lists, zero/negative amounts, zero addresses, and zero auto-release windows with explicit contract errors
 - Contract tests and snapshots are provided under `contracts/milestone-escrow/test_snapshots`
 
 ## Deploy (Testnet)

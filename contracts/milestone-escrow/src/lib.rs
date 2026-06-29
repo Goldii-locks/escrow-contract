@@ -254,6 +254,23 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    fn validate_address(env: &Env, address: &Address) -> Result<(), Error> {
+        let zero_account = Address::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+
+        if address == &zero_account || address == &zero_contract || address == &env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
+        Ok(())
+    }
+
     fn assemble_job(env: &Env, meta: &JobMeta) -> Result<Job, Error> {
         let mut milestones = Vec::new(env);
         for i in 0..meta.milestone_count {
@@ -285,7 +302,21 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyInitialized);
         }
 
+        Self::validate_address(&env, &admin)?;
+        Self::validate_address(&env, &client)?;
+        Self::validate_address(&env, &freelancer)?;
+        Self::validate_address(&env, &arbiter)?;
+        Self::validate_address(&env, &token)?;
+
         let milestone_count = milestone_amounts.len();
+        if milestone_count == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if auto_release_seconds == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
         let mut total_amount: i128 = 0;
         for amount in milestone_amounts.iter() {
             total_amount = Self::checked_add_amount(total_amount, amount)?;
