@@ -381,15 +381,14 @@ impl MilestoneEscrow {
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
-        if whitelist.contains(&token) {
-            return Err(Error::TokenAlreadyWhitelisted);
-        }
-
-        // Guard against integer overflow on the Vec's internal u32 length
-        // counter.  If the whitelist is already at capacity, reject the
-        // addition with InvalidAmount rather than letting push_back overflow.
+        // O(1) capacity check before the O(n) contains scan to avoid
+        // iterating a full-capacity list unnecessarily.
         if whitelist.len() >= MAX_WHITELIST_SIZE {
             return Err(Error::InvalidAmount);
+        }
+
+        if whitelist.contains(&token) {
+            return Err(Error::TokenAlreadyWhitelisted);
         }
 
         whitelist.push_back(token);
