@@ -1,9 +1,37 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, testutils::Ledger, vec,
-    Address, Env, FromVal, IntoVal, Symbol, Val,
+    contract, contractimpl, contracttype, testutils::Address as _, testutils::EnvTestConfig,
+    testutils::Events, testutils::Ledger, vec, Address, Env, FromVal, IntoVal, Symbol, Val,
 };
+
+#[contracttype]
+enum ReentrantTokenDataKey {
+    Reentered,
+}
+
+#[contract]
+pub struct ReentrantToken;
+
+#[contractimpl]
+impl ReentrantToken {
+    pub fn transfer(env: Env, from: Address, to: Address, _amount: i128) {
+        if env.storage().instance().has(&ReentrantTokenDataKey::Reentered) {
+            return;
+        }
+
+        env.storage()
+            .instance()
+            .set(&ReentrantTokenDataKey::Reentered, &true);
+
+        let escrow = MilestoneEscrowClient::new(&env, &to);
+        let _ = escrow.try_fund(&from);
+    }
+
+    pub fn callback_attempted(env: Env) -> bool {
+        env.storage().instance().has(&ReentrantTokenDataKey::Reentered)
+    }
+}
 
 fn setup_funded_escrow(
     env: &Env,
@@ -755,6 +783,43 @@ fn test_double_fund_fails() {
         &amounts,
     );
     client.fund(&client_addr);
+
+    let result = client.try_fund(&client_addr);
+    assert_eq!(result, Err(Ok(Error::AlreadyFunded)));
+}
+
+#[test]
+fn test_fund_reentrancy_guard_blocks_callback_fund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env.register(ReentrantToken, ());
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let token = ReentrantTokenClient::new(&env, &token_contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.fund(&client_addr);
+
+    assert!(token.callback_attempted());
+    let job = client.get_job();
+    assert!(job.funded);
+    assert_eq!(job.milestones.len(), 1);
 
     let result = client.try_fund(&client_addr);
     assert_eq!(result, Err(Ok(Error::AlreadyFunded)));
