@@ -231,6 +231,19 @@ impl MilestoneEscrow {
         total.checked_add(amount).ok_or(Error::InvalidAmount)
     }
 
+    fn checked_initialize_total(milestone_amounts: &Vec<i128>) -> Result<i128, Error> {
+        if milestone_amounts.len() == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut total_amount: i128 = 0;
+        for amount in milestone_amounts.iter() {
+            total_amount = Self::checked_add_amount(total_amount, amount)?;
+        }
+
+        Ok(total_amount)
+    }
+
     fn checked_job_total(env: &Env, meta: &JobMeta) -> Result<i128, Error> {
         let mut total_amount: i128 = 0;
 
@@ -286,10 +299,7 @@ impl MilestoneEscrow {
         }
 
         let milestone_count = milestone_amounts.len();
-        let mut total_amount: i128 = 0;
-        for amount in milestone_amounts.iter() {
-            total_amount = Self::checked_add_amount(total_amount, amount)?;
-        }
+        let total_amount = Self::checked_initialize_total(&milestone_amounts)?;
 
         env.storage().persistent().set(&DataKey::Admin, &admin);
 
