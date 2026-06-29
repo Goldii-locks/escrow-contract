@@ -412,6 +412,11 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
+        let meta = Self::load_job_meta(&env)?;
+        if meta.funded {
+            return Err(Error::AlreadyFunded);
+        }
+
         let zero_account = Address::from_str(
             &env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -422,11 +427,6 @@ impl MilestoneEscrow {
         );
         if token == zero_account || token == zero_contract {
             return Err(Error::InvalidAddress);
-        }
-
-        let meta = Self::load_job_meta(&env)?;
-        if meta.funded {
-            return Err(Error::AlreadyFunded);
         }
 
         let mut whitelist: Vec<Address> = env
