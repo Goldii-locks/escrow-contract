@@ -436,7 +436,12 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)?;
 
         if let Some(index) = whitelist.iter().position(|t| t == token) {
-            whitelist.remove(index as u32);
+            let last = whitelist.len() - 1;
+            if (index as u32) != last {
+                let last_elem = whitelist.get(last).unwrap();
+                whitelist.set(index as u32, last_elem);
+            }
+            whitelist.pop_back();
             env.storage()
                 .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
