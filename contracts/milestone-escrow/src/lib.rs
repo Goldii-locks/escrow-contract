@@ -430,6 +430,10 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
 
+        if token == env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
         let stored_admin: Address = env
             .storage()
             .persistent()
@@ -445,14 +449,27 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyFunded);
         }
 
+        if token == meta.token {
+            return Err(Error::InvalidStatus);
+        }
+
         let mut whitelist: Vec<Address> = env
             .storage()
             .persistent()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
+        if whitelist.len() == 0 {
+            return Err(Error::TokenNotWhitelisted);
+        }
+
+        if !whitelist.contains(&token) {
+            return Err(Error::TokenNotWhitelisted);
+        }
+
         if let Some(index) = whitelist.iter().position(|t| t == token) {
-            whitelist.remove(index as u32);
+            let safe_index = u32::try_from(index).map_err(|_| Error::InvalidAmount)?;
+            whitelist.remove(safe_index);
             env.storage()
                 .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
