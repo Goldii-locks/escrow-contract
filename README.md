@@ -36,15 +36,25 @@ Disputed → Released (arbiter favors freelancer)
 
 ## Build
 
+From the repository root:
+
 ```bash
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown -p milestone-escrow
 ```
 
 ## Test
 
+From the repository root:
+
 ```bash
-cargo test
+cargo test -p milestone-escrow
 ```
+
+## Project Status
+
+- Contract implementation completed in `contracts/milestone-escrow`
+- Includes milestone delivery, approval, dispute, and arbitration flows
+- Contract tests and snapshots are provided under `contracts/milestone-escrow/test_snapshots`
 
 ## Deploy (Testnet)
 
