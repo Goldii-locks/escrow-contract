@@ -430,7 +430,15 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
 
+        if admin == zero_account || admin == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
         if token == env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
+        if admin == env.current_contract_address() {
             return Err(Error::InvalidAddress);
         }
 
