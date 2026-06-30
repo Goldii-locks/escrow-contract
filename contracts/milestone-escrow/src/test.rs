@@ -4608,9 +4608,23 @@ fn test_initialize_state_transition_matrix() {
     );
 
     // State 5: Released -> Must Revert
-    escrow.approve_milestone(&client_addr, &0);
+    let contract_id3 = env.register(MilestoneEscrow, ());
+    let escrow3 = MilestoneEscrowClient::new(&env, &contract_id3);
+
+    escrow3.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    escrow3.fund(&client_addr);
+    escrow3.mark_delivered(&freelancer_addr, &0);
+    escrow3.approve_milestone(&client_addr, &0);
     assert_eq!(
-        attempt_init(&escrow),
+        attempt_init(&escrow3),
         Err(Ok(Error::AlreadyInitialized)),
         "Transition from Released must revert"
     );
