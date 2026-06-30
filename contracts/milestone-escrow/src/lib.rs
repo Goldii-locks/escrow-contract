@@ -294,6 +294,8 @@ impl MilestoneEscrow {
         auto_release_seconds: u64,
         milestone_amounts: Vec<i128>,
     ) -> Result<(), Error> {
+        admin.require_auth();
+
         if env.storage().instance().has(&DataKey::Job) {
             return Err(Error::AlreadyInitialized);
         }
