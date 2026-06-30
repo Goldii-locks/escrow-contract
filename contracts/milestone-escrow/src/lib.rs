@@ -94,12 +94,16 @@ pub enum DataKey {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InitializedEvent {
     pub client: Address,
     pub freelancer: Address,
     pub arbiter: Address,
     pub token: Address,
+    pub auto_release_seconds: u64,
     pub milestone_amounts: Vec<i128>,
+    pub total_amount: i128,
+    pub milestone_count: u32,
 }
 
 #[contracttype]
@@ -143,11 +147,14 @@ pub struct ApprovedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeRaisedEvent {
     pub milestone_index: u32,
+    pub caller: Address,
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeResolvedEvent {
     pub milestone_index: u32,
     pub released_to_freelancer: bool,
@@ -155,10 +162,33 @@ pub struct DisputeResolvedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferAdminEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenWhitelistedEvent {
+    pub admin: Address,
+    pub token: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TokenRemovedEvent {
     pub admin: Address,
     pub token: Address,
-    pub remaining_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimedEvent {
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub freelancer: Address,
+    pub token: Address,
+    pub amount: i128,
 }
 
 #[contract]
@@ -298,6 +328,8 @@ impl MilestoneEscrow {
         auto_release_seconds: u64,
         milestone_amounts: Vec<i128>,
     ) -> Result<(), Error> {
+        admin.require_auth();
+
         if env.storage().instance().has(&DataKey::Job) {
             return Err(Error::AlreadyInitialized);
         }
@@ -341,6 +373,24 @@ impl MilestoneEscrow {
         };
 
         Self::store_job_meta(&env, &meta);
+
+        // Emit a structured initialization event so downstream indexers can
+        // record all operational parameters from a single on-chain event without
+        // having to query contract storage separately.
+        env.events().publish(
+            (symbol_short!("init"),),
+            InitializedEvent {
+                client: meta.client,
+                freelancer: meta.freelancer,
+                arbiter: meta.arbiter,
+                token: meta.token,
+                auto_release_seconds: meta.auto_release_seconds,
+                milestone_amounts,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
         Ok(())
     }
 
@@ -362,6 +412,15 @@ impl MilestoneEscrow {
         }
 
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("admin"),),
+            TransferAdminEvent {
+                old_admin: current_admin,
+                new_admin,
+            },
+        );
+
         Ok(())
     }
 
@@ -400,10 +459,19 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        whitelist.push_back(token);
+        whitelist.push_back(token.clone());
         env.storage()
             .persistent()
             .set(&DataKey::WhitelistedTokens, &whitelist);
+
+        env.events().publish(
+            (symbol_short!("wtok"),),
+            TokenWhitelistedEvent {
+                admin,
+                token,
+            },
+        );
+
         Ok(())
     }
 
@@ -456,11 +524,10 @@ impl MilestoneEscrow {
                 .set(&DataKey::WhitelistedTokens, &whitelist);
 
             env.events().publish(
-                (symbol_short!("tk_rm"),),
+                (symbol_short!("wldel"),),
                 TokenRemovedEvent {
                     admin,
                     token,
-                    remaining_count,
                 },
             );
 
@@ -502,11 +569,14 @@ impl MilestoneEscrow {
         }
 
         let total_amount = Self::validate_fund_amount(&env, &meta)?;
-        let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(&client, &env.current_contract_address(), &total_amount);
-
+        
+        // Update status BEFORE token transfer to ensure state is persisted
+        // and prevent double-funding via reentrancy
         meta.funded = true;
         Self::store_job_meta(&env, &meta);
+        
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(&client, &env.current_contract_address(), &total_amount);
 
         env.events().publish(
             (symbol_short!("fund"),),
@@ -614,6 +684,18 @@ impl MilestoneEscrow {
     freelancer: Address,
     milestone_index: u32,
 ) -> Result<(), Error> {
+    // Block the Stellar Public Key Zero Address.
+    let zero_account = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let zero_contract = Address::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    );
+    if freelancer == zero_account || freelancer == zero_contract {
+        return Err(Error::InvalidAddress);
+    }
     freelancer.require_auth();
     let meta = Self::load_job_meta(&env)?;
 
@@ -683,6 +765,17 @@ impl MilestoneEscrow {
         &env.current_contract_address(),
         &meta.freelancer,
         &remaining,
+    );
+
+    env.events().publish(
+        (symbol_short!("claim"),),
+        ClaimedEvent {
+            contract_id: env.current_contract_address(),
+            milestone_index,
+            freelancer: meta.freelancer,
+            token: meta.token,
+            amount: remaining,
+        },
     );
 
     Ok(())
@@ -864,6 +957,15 @@ impl MilestoneEscrow {
 
         milestone.status = MilestoneStatus::Disputed;
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        env.events().publish(
+            (symbol_short!("dispute"),),
+            DisputeRaisedEvent {
+                milestone_index,
+                caller,
+            },
+        );
+
         Ok(())
     }
 
@@ -906,6 +1008,15 @@ impl MilestoneEscrow {
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        env.events().publish(
+            (symbol_short!("resolve"),),
+            DisputeResolvedEvent {
+                milestone_index,
+                released_to_freelancer: release_to_freelancer,
+            },
+        );
+
         Ok(())
     }
 

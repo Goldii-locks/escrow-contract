@@ -2,7 +2,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::Address as _, testutils::EnvTestConfig, testutils::Events, testutils::Ledger, vec,
-    Address, Env, FromVal, IntoVal, Symbol, Val,
+    Address, Env, FromVal, IntoVal, InvokeError, Symbol, Val,
 };
 
 fn setup_funded_escrow(
@@ -4215,6 +4215,176 @@ fn initialize_budget_for_milestone_count(count: u32) -> (u64, u64) {
     (cpu, memory)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn initialize_args<'a>(
+    env: &Env,
+    admin_addr: &'a Address,
+    client_addr: &'a Address,
+    freelancer_addr: &'a Address,
+    arbiter_addr: &'a Address,
+    token_contract_id: &'a Address,
+    amounts: &'a soroban_sdk::Vec<i128>,
+) -> soroban_sdk::Vec<Val> {
+    (
+        admin_addr,
+        client_addr,
+        freelancer_addr,
+        arbiter_addr,
+        token_contract_id,
+        604800u64,
+        amounts.clone(),
+    )
+        .into_val(env)
+}
+
+#[test]
+fn test_initialize_requires_admin_auth() {
+    let env = env_without_snapshot();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+
+    let result = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    // The Soroban host reports missing auth as Auth/InvalidAction, which the
+    // generated client exposes as InvokeError::Abort.
+    assert_eq!(result, Err(Err(InvokeError::Abort)));
+
+    env.mock_all_auths();
+    let retry = escrow.try_initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(retry, Ok(Ok(())));
+}
+
+#[test]
+fn test_initialize_rejects_wrong_admin_signature() {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+    let env = env_without_snapshot();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &impostor,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: initialize_args(
+                    &env,
+                    &admin_addr,
+                    &client_addr,
+                    &freelancer_addr,
+                    &arbiter_addr,
+                    &token_contract_id,
+                    &amounts,
+                ),
+                sub_invokes: &[],
+            },
+        }])
+        .try_initialize(
+            &admin_addr,
+            &client_addr,
+            &freelancer_addr,
+            &arbiter_addr,
+            &token_contract_id,
+            &604800,
+            &amounts,
+        );
+
+    // The wrong signer does not satisfy admin.require_auth(), so the host
+    // rejects the call before contract state is written.
+    assert_eq!(result, Err(Err(InvokeError::Abort)));
+}
+
+#[test]
+fn test_initialize_accepts_admin_signature() {
+    use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+    let env = env_without_snapshot();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &admin_addr,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: initialize_args(
+                    &env,
+                    &admin_addr,
+                    &client_addr,
+                    &freelancer_addr,
+                    &arbiter_addr,
+                    &token_contract_id,
+                    &amounts,
+                ),
+                sub_invokes: &[],
+            },
+        }])
+        .try_initialize(
+            &admin_addr,
+            &client_addr,
+            &freelancer_addr,
+            &arbiter_addr,
+            &token_contract_id,
+            &604800,
+            &amounts,
+        );
+
+    assert_eq!(result, Ok(Ok(())));
+    let job = escrow.get_job();
+    assert_eq!(job.client, client_addr);
+    assert_eq!(job.freelancer, freelancer_addr);
+    assert_eq!(job.arbiter, arbiter_addr);
+    assert_eq!(job.token, token_contract_id);
+}
+
 /// Boundary test 1 — EMPTY MILESTONE VEC:
 /// Passing an empty `milestone_amounts` vec must be rejected with
 /// `Error::InvalidAmount` because there are no milestones to sum and the
@@ -5060,5 +5230,43 @@ fn test_remove_whitelisted_token_rejects_zero_contract_address() {
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
     );
     let result = client.try_remove_whitelisted_token(&admin_addr, &zero_contract);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+#[test]
+fn test_claim_auto_release_reverts_on_zero_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &amounts,
+    );
+
+    let zero_address =
+        Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+
+    // Call the contract method using the zero address—should trip the error guard
+    let result = client.try_claim_auto_release(&zero_address, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAddress)));
 }
