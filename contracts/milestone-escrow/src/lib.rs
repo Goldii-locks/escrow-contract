@@ -1,6 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Vec,
 };
 
 /// Maximum number of tokens that may be held in the whitelist at any one time.
@@ -76,6 +77,7 @@ pub enum DataKey {
     Job,
     Milestone(u32),
     Admin,
+    Version,
     WhitelistedTokens,
     /// Temporary key: records the ledger timestamp at which a milestone was
     /// marked delivered.  Written by `mark_delivered`, consumed by
@@ -94,12 +96,16 @@ pub enum DataKey {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InitializedEvent {
     pub client: Address,
     pub freelancer: Address,
     pub arbiter: Address,
     pub token: Address,
+    pub auto_release_seconds: u64,
     pub milestone_amounts: Vec<i128>,
+    pub total_amount: i128,
+    pub milestone_count: u32,
 }
 
 #[contracttype]
@@ -143,14 +149,48 @@ pub struct ApprovedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeRaisedEvent {
     pub milestone_index: u32,
+    pub caller: Address,
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeResolvedEvent {
     pub milestone_index: u32,
     pub released_to_freelancer: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferAdminEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenWhitelistedEvent {
+    pub admin: Address,
+    pub token: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenRemovedEvent {
+    pub admin: Address,
+    pub token: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimedEvent {
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub freelancer: Address,
+    pub token: Address,
+    pub amount: i128,
 }
 
 #[contract]
@@ -246,6 +286,15 @@ impl MilestoneEscrow {
         Ok(total_amount)
     }
 
+    fn validate_fund_amount(env: &Env, meta: &JobMeta) -> Result<i128, Error> {
+        let total_amount = Self::checked_job_total(env, meta)?;
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        Ok(total_amount)
+    }
+
     fn validate_fund_client(env: &Env, client: &Address) -> Result<(), Error> {
         if client == &env.current_contract_address() {
             return Err(Error::InvalidAddress);
@@ -281,28 +330,22 @@ impl MilestoneEscrow {
         auto_release_seconds: u64,
         milestone_amounts: Vec<i128>,
     ) -> Result<(), Error> {
+        admin.require_auth();
+
         if env.storage().instance().has(&DataKey::Job) {
             return Err(Error::AlreadyInitialized);
         }
 
         let milestone_count = milestone_amounts.len();
         let mut total_amount: i128 = 0;
-        for amount in milestone_amounts.iter() {
+        for index in 0..milestone_count {
+            let amount = milestone_amounts
+                .get(index)
+                .ok_or(Error::InvalidMilestone)?;
             total_amount = Self::checked_add_amount(total_amount, amount)?;
-        }
-
-        env.storage().persistent().set(&DataKey::Admin, &admin);
-
-        let mut whitelist: Vec<Address> = Vec::new(&env);
-        whitelist.push_back(token.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::WhitelistedTokens, &whitelist);
-
-        for (index, amount) in milestone_amounts.iter().enumerate() {
             Self::store_milestone(
                 &env,
-                index as u32,
+                index,
                 &Milestone {
                     amount,
                     released_amount: 0,
@@ -311,6 +354,15 @@ impl MilestoneEscrow {
                 },
             );
         }
+
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Version, &1u32);
+
+        let mut whitelist: Vec<Address> = Vec::new(&env);
+        whitelist.push_back(token.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::WhitelistedTokens, &whitelist);
 
         let meta = JobMeta {
             client,
@@ -324,6 +376,24 @@ impl MilestoneEscrow {
         };
 
         Self::store_job_meta(&env, &meta);
+
+        // Emit a structured initialization event so downstream indexers can
+        // record all operational parameters from a single on-chain event without
+        // having to query contract storage separately.
+        env.events().publish(
+            (symbol_short!("init"),),
+            InitializedEvent {
+                client: meta.client,
+                freelancer: meta.freelancer,
+                arbiter: meta.arbiter,
+                token: meta.token,
+                auto_release_seconds: meta.auto_release_seconds,
+                milestone_amounts,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
         Ok(())
     }
 
@@ -345,6 +415,15 @@ impl MilestoneEscrow {
         }
 
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("admin"),),
+            TransferAdminEvent {
+                old_admin: current_admin,
+                new_admin,
+            },
+        );
+
         Ok(())
     }
 
@@ -383,27 +462,24 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        whitelist.push_back(token);
+        whitelist.push_back(token.clone());
         env.storage()
             .persistent()
             .set(&DataKey::WhitelistedTokens, &whitelist);
+
+        env.events().publish(
+            (symbol_short!("wtok"),),
+            TokenWhitelistedEvent {
+                admin,
+                token,
+            },
+        );
+
         Ok(())
     }
 
     pub fn remove_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
-
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if token == zero_account || token == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
 
         let stored_admin: Address = env
             .storage()
@@ -420,6 +496,18 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyFunded);
         }
 
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if token == zero_account || token == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
         let mut whitelist: Vec<Address> = env
             .storage()
             .persistent()
@@ -427,10 +515,25 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)?;
 
         if let Some(index) = whitelist.iter().position(|t| t == token) {
-            whitelist.remove(index as u32);
+            let last = whitelist.len() - 1;
+            if (index as u32) != last {
+                let last_elem = whitelist.get(last).unwrap();
+                whitelist.set(index as u32, last_elem);
+            }
+            whitelist.pop_back();
+            let remaining_count = whitelist.len();
             env.storage()
                 .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
+
+            env.events().publish(
+                (symbol_short!("wldel"),),
+                TokenRemovedEvent {
+                    admin,
+                    token,
+                },
+            );
+
             Ok(())
         } else {
             Err(Error::TokenNotWhitelisted)
@@ -468,12 +571,15 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
-        let total_amount = meta.total_amount;
-        let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(&client, &env.current_contract_address(), &total_amount);
-
+        let total_amount = Self::validate_fund_amount(&env, &meta)?;
+        
+        // Update status BEFORE token transfer to ensure state is persisted
+        // and prevent double-funding via reentrancy
         meta.funded = true;
         Self::store_job_meta(&env, &meta);
+        
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(&client, &env.current_contract_address(), &total_amount);
 
         env.events().publish(
             (symbol_short!("fund"),),
@@ -581,6 +687,18 @@ impl MilestoneEscrow {
     freelancer: Address,
     milestone_index: u32,
 ) -> Result<(), Error> {
+    // Block the Stellar Public Key Zero Address.
+    let zero_account = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let zero_contract = Address::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    );
+    if freelancer == zero_account || freelancer == zero_contract {
+        return Err(Error::InvalidAddress);
+    }
     freelancer.require_auth();
     let meta = Self::load_job_meta(&env)?;
 
@@ -650,6 +768,17 @@ impl MilestoneEscrow {
         &env.current_contract_address(),
         &meta.freelancer,
         &remaining,
+    );
+
+    env.events().publish(
+        (symbol_short!("claim"),),
+        ClaimedEvent {
+            contract_id: env.current_contract_address(),
+            milestone_index,
+            freelancer: meta.freelancer,
+            token: meta.token,
+            amount: remaining,
+        },
     );
 
     Ok(())
@@ -745,7 +874,6 @@ impl MilestoneEscrow {
     }
 
     pub fn approve_milestone(env: Env, client: Address, milestone_index: u32) -> Result<(), Error> {
-        // Check for zero addresses (both account and contract types)
         let zero_account = Address::from_str(
             &env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -754,10 +882,10 @@ impl MilestoneEscrow {
             &env,
             "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
         );
-
         if client == zero_account || client == zero_contract {
             return Err(Error::InvalidAddress);
         }
+
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -866,6 +994,15 @@ impl MilestoneEscrow {
 
         milestone.status = MilestoneStatus::Disputed;
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        env.events().publish(
+            (symbol_short!("dispute"),),
+            DisputeRaisedEvent {
+                milestone_index,
+                caller,
+            },
+        );
+
         Ok(())
     }
 
@@ -924,7 +1061,50 @@ impl MilestoneEscrow {
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
+
+        env.events().publish(
+            (symbol_short!("resolve"),),
+            DisputeResolvedEvent {
+                milestone_index,
+                released_to_freelancer: release_to_freelancer,
+            },
+        );
+
         Ok(())
+    }
+
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        let current: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &(current + 1));
+
+        Ok(())
+    }
+
+    pub fn version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1)
     }
 
     pub fn get_job(env: Env) -> Result<Job, Error> {
