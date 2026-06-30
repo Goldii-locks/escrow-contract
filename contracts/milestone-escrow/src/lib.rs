@@ -900,9 +900,10 @@ impl MilestoneEscrow {
             return Err(Error::InvalidMilestone);
         }
 
-        let mut milestone = Self::load_milestone(&env, milestone_index)?;
-
-        if milestone.status != MilestoneStatus::Delivered {
+       let mut milestone = Self::load_milestone(&env, milestone_index)?;
+       if milestone.status != MilestoneStatus::Delivered 
+        && milestone.status != MilestoneStatus::PartiallyReleased 
+        {
             return Err(Error::InvalidStatus);
         }
 
