@@ -2720,15 +2720,12 @@ fn test_claim_auto_release_zero_auto_release_seconds_fails() {
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
-    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &5_000);
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
     let amounts = vec![&env, 5_000_i128];
-    // Initialize with auto_release_seconds = 0
-    client.initialize(
+    let result = client.try_initialize(
         &admin_addr,
         &client_addr,
         &freelancer_addr,
@@ -2737,14 +2734,7 @@ fn test_claim_auto_release_zero_auto_release_seconds_fails() {
         &0u64,
         &amounts,
     );
-    client.fund(&client_addr);
-    client.mark_delivered(&freelancer_addr, &0u32);
-
-    let result = client.try_claim_auto_release(&freelancer_addr, &0u32);
-    assert_eq!(
-        result,
-        Err(Ok(Error::InvalidAmount))
-    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]
@@ -4407,15 +4397,6 @@ fn test_initialize_empty_milestones_fails() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    // An empty milestone list has no positive-amount entry so the inner loop
-    // never calls checked_add_amount, leaving total_amount at 0.  The first
-    // iteration of the loop never runs, so the sum stays 0. The contract
-    // stores the job with total_amount 0, which means fund would transfer 0.
-    // However the contract does not explicitly reject empty vecs today — verify
-    // the actual behaviour and assert it is stable.
-    //
-    // Current behaviour: initialize succeeds with 0 total_amount (no milestones
-    // to iterate), so get_job returns an empty milestones vec.
     let empty_amounts: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
     let result = client.try_initialize(
         &admin_addr,
@@ -4426,16 +4407,39 @@ fn test_initialize_empty_milestones_fails() {
         &604800,
         &empty_amounts,
     );
-    // The contract accepts an empty milestone list (total_amount = 0).
-    // Document that this succeeds so any future breaking change is caught.
-    assert!(
-        result.is_ok(),
-        "initialize with empty milestones should succeed (total_amount = 0)"
-    );
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
 
-    let job = client.get_job();
-    assert_eq!(job.milestones.len(), 0);
-    assert!(!job.funded);
+#[test]
+fn test_initialize_zero_address_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let zero_address = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    let result = client.try_initialize(
+        &admin_addr,
+        &zero_address,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
 }
 
 /// Boundary test 2 — NEGATIVE MILESTONE AMOUNT:
@@ -4836,13 +4840,10 @@ fn test_initialize_state_transition_matrix() {
 }
 
 /// Boundary test 7 — AUTO_RELEASE_SECONDS ZERO:
-/// `initialize` does not reject `auto_release_seconds = 0`.  Documenting this
-/// as an explicit test ensures any future validation addition is a deliberate
-/// breaking change rather than an accidental regression.  The test also
-/// verifies that `claim_auto_release` correctly rejects the zero value with
-/// `Error::InvalidAmount` at claim time, keeping the runtime guard in place.
+/// `initialize` must reject `auto_release_seconds = 0` with
+/// `Error::InvalidAmount` so invalid job configuration cannot be persisted.
 #[test]
-fn test_initialize_auto_release_seconds_zero_succeeds_claim_fails() {
+fn test_initialize_auto_release_seconds_zero_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -4854,14 +4855,11 @@ fn test_initialize_auto_release_seconds_zero_succeeds_claim_fails() {
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
-    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &1_000);
 
     let contract_id = env.register(MilestoneEscrow, ());
     let escrow = MilestoneEscrowClient::new(&env, &contract_id);
 
     let amounts = vec![&env, 1_000_i128];
-    // auto_release_seconds = 0 — initialize must succeed.
     let init_result = escrow.try_initialize(
         &admin_addr,
         &client_addr,
@@ -4871,14 +4869,7 @@ fn test_initialize_auto_release_seconds_zero_succeeds_claim_fails() {
         &0u64,
         &amounts,
     );
-    assert!(init_result.is_ok(), "initialize with auto_release_seconds=0 should succeed");
-
-    escrow.fund(&client_addr);
-    escrow.mark_delivered(&freelancer_addr, &0u32);
-
-    // claim_auto_release must reject auto_release_seconds=0 with InvalidAmount.
-    let claim_result = escrow.try_claim_auto_release(&freelancer_addr, &0u32);
-    assert_eq!(claim_result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(init_result, Err(Ok(Error::InvalidAmount)));
 }
 
 // ============================================================================
