@@ -384,6 +384,22 @@ impl MilestoneEscrow {
     pub fn add_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
 
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if token == zero_account || token == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
+        if token == env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
         let stored_admin: Address = env
             .storage()
             .persistent()
@@ -438,6 +454,18 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
 
+        if admin == zero_account || admin == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
+        if token == env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
+        if admin == env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
         let stored_admin: Address = env
             .storage()
             .persistent()
@@ -453,14 +481,36 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyFunded);
         }
 
+        if token == meta.token {
+            return Err(Error::InvalidStatus);
+        }
+
         let mut whitelist: Vec<Address> = env
             .storage()
             .persistent()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
+        let whitelist_len = whitelist.len();
+        if whitelist_len == 0 {
+            return Err(Error::TokenNotWhitelisted);
+        }
+
+        let post_removal_len = whitelist_len.checked_sub(1).ok_or(Error::InvalidAmount)?;
+        if post_removal_len == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if !whitelist.contains(&token) {
+            return Err(Error::TokenNotWhitelisted);
+        }
+
         if let Some(index) = whitelist.iter().position(|t| t == token) {
-            whitelist.remove(index as u32);
+            let safe_index = u32::try_from(index).map_err(|_| Error::InvalidAmount)?;
+            if safe_index >= whitelist_len {
+                return Err(Error::InvalidAmount);
+            }
+            whitelist.remove(safe_index);
             env.storage()
                 .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
