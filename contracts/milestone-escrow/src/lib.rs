@@ -478,18 +478,6 @@ impl MilestoneEscrow {
     pub fn remove_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
 
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if token == zero_account || token == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
-
         let stored_admin: Address = env
             .storage()
             .persistent()
@@ -505,6 +493,18 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyFunded);
         }
 
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if token == zero_account || token == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
         let mut whitelist: Vec<Address> = env
             .storage()
             .persistent()
@@ -512,7 +512,13 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)?;
 
         if let Some(index) = whitelist.iter().position(|t| t == token) {
-            whitelist.remove(index as u32);
+            let last = whitelist.len() - 1;
+            if (index as u32) != last {
+                let last_elem = whitelist.get(last).unwrap();
+                whitelist.set(index as u32, last_elem);
+            }
+            whitelist.pop_back();
+            let remaining_count = whitelist.len();
             env.storage()
                 .persistent()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
