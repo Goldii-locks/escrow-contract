@@ -5270,3 +5270,336 @@ fn test_claim_auto_release_reverts_on_zero_address() {
     let result = client.try_claim_auto_release(&zero_address, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAddress)));
 }
+
+// ============================================================================
+// add_whitelisted_token — comprehensive boundary / negative / edge-case tests
+// ============================================================================
+
+/// add_whitelisted_token before initialize: no Admin key exists yet, so the
+/// function must return NotInitialized (the `get(&DataKey::Admin)` path).
+#[test]
+fn test_add_whitelisted_token_before_initialize_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // No initialize call — storage is empty.
+    let result = client.try_add_whitelisted_token(&admin_addr, &token_addr);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+/// add_whitelisted_token after the escrow is funded must return AlreadyFunded.
+/// This guards against post-funding token substitution attacks.
+#[test]
+fn test_add_whitelisted_token_after_funded_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token1);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    client.fund(&client_addr);
+
+    // Contract is now funded; adding a new token must be rejected.
+    let extra_token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let result = client.try_add_whitelisted_token(&admin_addr, &extra_token);
+    assert_eq!(result, Err(Ok(Error::AlreadyFunded)));
+}
+
+/// Calling add_whitelisted_token with a non-admin address (even one that is a
+/// valid address, e.g. the freelancer) must return Unauthorized.
+/// This is distinct from `test_non_admin_add_token_fails` which uses a
+/// completely random bad_actor — here we use a known role address.
+#[test]
+fn test_add_whitelisted_token_freelancer_is_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // freelancer is a known participant but not the admin.
+    let result = client.try_add_whitelisted_token(&freelancer_addr, &token2);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// Calling add_whitelisted_token with the client address (another known role
+/// that is NOT the admin) must also return Unauthorized.
+#[test]
+fn test_add_whitelisted_token_client_is_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // client is a known participant but not the admin.
+    let result = client.try_add_whitelisted_token(&client_addr, &token2);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// add_whitelisted_token must emit exactly one `wtok` event containing the
+/// correct admin and token fields.  Verifies both event count and payload.
+#[test]
+fn test_add_whitelisted_token_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    client.add_whitelisted_token(&admin_addr, &token2);
+
+    let wtok_topic: Val = symbol_short!("wtok").into_val(&env);
+    let mut wtok_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == wtok_topic.get_payload() {
+                wtok_events += 1;
+                assert_eq!(
+                    TokenWhitelistedEvent::from_val(&env, &event.2),
+                    TokenWhitelistedEvent {
+                        admin: admin_addr.clone(),
+                        token: token2.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(wtok_events, 1, "expected exactly one wtok event");
+}
+
+/// A failed add_whitelisted_token (duplicate token) must NOT emit any `wtok`
+/// event, ensuring events are only emitted on state-changing success paths.
+#[test]
+fn test_add_whitelisted_token_failed_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // Attempt to add the already-whitelisted token — must fail.
+    let _ = client.try_add_whitelisted_token(&admin_addr, &token1);
+
+    let wtok_topic: Val = symbol_short!("wtok").into_val(&env);
+    let wtok_count = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == wtok_topic.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(wtok_count, 0, "failed call must not emit wtok event");
+}
+
+/// After admin transfer, the old admin must be rejected by add_whitelisted_token
+/// and the new admin must succeed.  Exercises the interaction between
+/// transfer_admin and the admin identity check inside add_whitelisted_token.
+#[test]
+fn test_add_whitelisted_token_old_admin_rejected_after_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let new_admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token3 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    client.transfer_admin(&admin_addr, &new_admin_addr);
+
+    // Old admin must now be rejected.
+    let old_result = client.try_add_whitelisted_token(&admin_addr, &token2);
+    assert_eq!(old_result, Err(Ok(Error::Unauthorized)));
+
+    // New admin must succeed.
+    let new_result = client.try_add_whitelisted_token(&new_admin_addr, &token3);
+    assert!(new_result.is_ok(), "new admin should be able to add a token");
+    assert!(client.is_token_whitelisted(&token3));
+}
+
+/// Whitelist membership is mutually exclusive: adding token A then querying
+/// token B must return false, and vice-versa.  Guards against false positives
+/// in is_token_whitelisted after an add.
+#[test]
+fn test_add_whitelisted_token_does_not_whitelist_other_tokens() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token2 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token3 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // Only token2 is added.
+    client.add_whitelisted_token(&admin_addr, &token2);
+
+    assert!(client.is_token_whitelisted(&token1), "token1 (init token) must still be whitelisted");
+    assert!(client.is_token_whitelisted(&token2), "token2 must be whitelisted after add");
+    assert!(!client.is_token_whitelisted(&token3), "token3 was never added — must not be whitelisted");
+
+    // Whitelist length must be exactly 2.
+    assert_eq!(client.get_whitelisted_tokens().len(), 2);
+}
