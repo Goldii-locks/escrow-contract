@@ -6802,6 +6802,45 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "Admin"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Admin"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Milestone"
                 },
                 {
@@ -6887,6 +6926,196 @@
         {
           "contract_data": {
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "WhitelistedTokens"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "WhitelistedTokens"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                    },
+                    {
+                      "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
+                    },
+                    {
+                      "address": "CD3FXVGYSLQFFTW3UH6WFF2OKZH7VERGZJZAMJHTGHBWO4F6URWEJL23"
+                    },
+                    {
+                      "address": "CCFPZOCU33AWX2NKX47XD6W5JNYFP7MU57DTQFB5XOOQSJLSSC4PMX25"
+                    },
+                    {
+                      "address": "CDRIJBEGEU4HKTWI72MZ66F5TR24I6JO2LE6QXYZFUGBMW4K4AQ7IAJ6"
+                    },
+                    {
+                      "address": "CCVQTUQIJR624NNEI5TORM2BHEXTSDMY5ZB3CYJKAATGJQCY7LU2MD45"
+                    },
+                    {
+                      "address": "CCF7CGAN3G4L2LJV6EB3GZKQSQY6YGJ4XEQYQVA7GXOYRGIQXSIWVBTI"
+                    },
+                    {
+                      "address": "CCF7HWZ6PBT2MQ6AUBKXM4CPWAR2PO6ND34WXLB32NDAYD7KIKBAAS7I"
+                    },
+                    {
+                      "address": "CD6J4NTZEADXNETD2UY7ALD2N26RY35GGC73JSXXZB2GKB3ZTLR3Y4FH"
+                    },
+                    {
+                      "address": "CAWGXBFCJA6N64Z6HECE34OQ4YFA7WJPNP7DYDSRZNKXT474KE4IY3D5"
+                    },
+                    {
+                      "address": "CDWECPEHVOKI6FAHQCJGMB4TONARWNWIVD2L7YZN3KWZCNU4BGESITIC"
+                    },
+                    {
+                      "address": "CDQDL7TMGO2N7Y6SPFPTYYJ5S36GVZRTLRPNSUTCJFDK7M2B6YTZHCEO"
+                    },
+                    {
+                      "address": "CDYN7UF3YXJ7DZH2HZZC6OOTWWUKEQFHJEMJANA7MTAFXGLEALG3EU43"
+                    },
+                    {
+                      "address": "CASMQTHAUI74BR7CBOI5LCDJYPBE5YFKDWZM7BZANZFKPEDMXR4WNEGW"
+                    },
+                    {
+                      "address": "CAQHTC6TL3C7RREM7DZUCSCES2FIICQDOKPR2D4SRRUMRMFQGXO4A7GZ"
+                    },
+                    {
+                      "address": "CC2U57ADVIV7HAIVXIQFTU5FQTARYJPZD2ACMEMP7KD6UU7CDJUXY7QW"
+                    },
+                    {
+                      "address": "CAV4N2YZ7DC4ZGALAVILSNPEUENH66NFUXRP42DUXLWDOAPU5RVUBYAB"
+                    },
+                    {
+                      "address": "CAQVMWW77RUE2DFUX52ESVVMYLHEI73FTOHUUKOVH4KMKKWNGAEZVW3L"
+                    },
+                    {
+                      "address": "CDPELJTATRYH2CDKQZAA5VZB3IXGNJPMHZCOVQ2LQU7W5RPJJR2LBNRS"
+                    },
+                    {
+                      "address": "CB7S76AIGEIFFV6J7GK3QKWVK32MSAUH7UI2N2PEUZ2FEQLC5S5WBRSU"
+                    },
+                    {
+                      "address": "CB7GOYRVBXEULCAWJKYR6GYQY6ZFRERSRSHS7VZ5OBTYELPK6Z4TUNXU"
+                    },
+                    {
+                      "address": "CDBA6QWURVDDNUITHQZAPNEVN4GSYJICITBQHQC2NM3H2WSOW62MY4IZ"
+                    },
+                    {
+                      "address": "CD7HOYKU66T4255Q45O7AHXWN7UXIC252Q6YT6EVLSTXTMCLECUORUN6"
+                    },
+                    {
+                      "address": "CASG7OYOP2THJAW3QNLSTVCJK2AGAG2HKOC2BPDRO743YTX3XIS3HQG6"
+                    },
+                    {
+                      "address": "CDG5HCU43E4Z4H2CNJRZQ3SWRYU5KYBJC3DXZEXBTJURPUP6Z2QWSGFL"
+                    },
+                    {
+                      "address": "CBVPBZ4XXWHM3VNUHQ2C33CWMBQK255YAZZLZLK7MJN6FZXB42IHWWUX"
+                    },
+                    {
+                      "address": "CDPDJFQQZXZLFZJO2TZJSFZZ7D53MPSICCLLGTOZDU3AKB66R4UNVI6T"
+                    },
+                    {
+                      "address": "CA4CVLTTJI2BGISKBYOBD3PQ7MB4JRK4LEVCNQPHLC6PWZMNG7KBYJQ6"
+                    },
+                    {
+                      "address": "CCNRWEEHO5B6EUSBEGL7YHS4TFNZLHKGCOK2ZFHTHMMA5BSPLYXPQNGX"
+                    },
+                    {
+                      "address": "CBWMMKJ2BFCUJ3TVTMX3NJ65CQDDMSSPBHTMKG4KGZKJJAQQEYCR2QEJ"
+                    },
+                    {
+                      "address": "CCXUPCVCBY5NOAHNCVTEKGG3TFWB5LTDOOEYLN7VA65XQRIPY4ATPQUQ"
+                    },
+                    {
+                      "address": "CCXLCYVTONY4Y4HTQJAAICEBMLHDY3JZP64VQD3WTA5R7TTFAA3JQBXA"
+                    },
+                    {
+                      "address": "CCAOUCWJFLKOXC2PEHV6VMI4BDGHVPKWDWTNSF3W4EY5SUABYPKYS7SQ"
+                    },
+                    {
+                      "address": "CDR676ATP6U4RHOZXRWIG6Z5M3UTEUDOFJLPZ7MMM5HTNWNT37Z7GWT7"
+                    },
+                    {
+                      "address": "CCIDNEUTSYMZE5Y32MQHWIBROF3Q4KHHEBTBFCT2IFCQM4IOFQ34VUFL"
+                    },
+                    {
+                      "address": "CBK64IVKHIT75E6PMUHIYLB7PGRN64PMQQBOC7ZRHW6PFY7HRGFJYG4B"
+                    },
+                    {
+                      "address": "CDV6BQTP7DDNAKCE2JTIWK5JQRHFIDZIPJME2BTUNFQVO2HKDVG2ZTZH"
+                    },
+                    {
+                      "address": "CAIKDPKCESY5EFQW4ZB463XMPWRI6T62UHQELOF6KUDUBT5COAOHRJCO"
+                    },
+                    {
+                      "address": "CAXZYNIDY53GNDIHNRC5ABY25CBOB3NBIZEBOAPU3DE2EGAAIYLUILV3"
+                    },
+                    {
+                      "address": "CCVRZW2LDNP4V5FD55NYAABUZDHYNPA6KWPKG452PDAHNXI3LD2ZUX3Y"
+                    },
+                    {
+                      "address": "CB3DBXHVUST5QJAHTXIXFJMZ4DIHGN2KSLMFEVCD3XYLAEXTR3HDETDR"
+                    },
+                    {
+                      "address": "CB2LJKK7YNGOSKUOZ3RHK7NSXQQZTWXRETDTEW2MBBVY6ONJMLYRHP44"
+                    },
+                    {
+                      "address": "CB2FZXTEA552VZPTVNGL6MNLY4KYPWQB5KJARASAUGDVUZCCJVIR5UYV"
+                    },
+                    {
+                      "address": "CADXA73LBR665UCRTEPQR2OEOHQHEL5JKF3IGS34DJSMM6FZ357UYF2M"
+                    },
+                    {
+                      "address": "CBZLXHCX34GGMBMIHHKTPAVGZSYRPCMM5SSYRFAX5AVQI42KXESPY4AX"
+                    },
+                    {
+                      "address": "CDCGUF2DMOAL5ZZSEIYGQGUAIXTUEJAEH5O32IPN472UVPDJ7SFPY2RB"
+                    },
+                    {
+                      "address": "CAS6ODFTNQ6MUEBRVB2KS4E77MAKCXA724WVANP6TQ3DGNT6B4U6YCXJ"
+                    },
+                    {
+                      "address": "CCZGRQLBJPHEXURBOTDUV3NJRLTMEC5R5JZDO6NPAVZDL3RNNKCYT2SM"
+                    },
+                    {
+                      "address": "CDDFQHNAH4AXMVUR3TP4T5MIJKAHTITYFTYRXXZZ2AJ4Q63STWT4GV4L"
+                    },
+                    {
+                      "address": "CCF4DKID4UCVHQC2ZGNAW2Z3I7JYSJUQ5EPJZ6ALJLRJGXBDISI4QGOE"
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
             "key": "ledger_key_contract_instance",
             "durability": "persistent"
           }
@@ -6906,18 +7135,6 @@
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
                     "storage": [
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Admin"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                        }
-                      },
                       {
                         "key": {
                           "vec": [
@@ -6994,169 +7211,6 @@
                                   "lo": 1000
                                 }
                               }
-                            }
-                          ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "WhitelistedTokens"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "vec": [
-                            {
-                              "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
-                            },
-                            {
-                              "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
-                            },
-                            {
-                              "address": "CD3FXVGYSLQFFTW3UH6WFF2OKZH7VERGZJZAMJHTGHBWO4F6URWEJL23"
-                            },
-                            {
-                              "address": "CCFPZOCU33AWX2NKX47XD6W5JNYFP7MU57DTQFB5XOOQSJLSSC4PMX25"
-                            },
-                            {
-                              "address": "CDRIJBEGEU4HKTWI72MZ66F5TR24I6JO2LE6QXYZFUGBMW4K4AQ7IAJ6"
-                            },
-                            {
-                              "address": "CCVQTUQIJR624NNEI5TORM2BHEXTSDMY5ZB3CYJKAATGJQCY7LU2MD45"
-                            },
-                            {
-                              "address": "CCF7CGAN3G4L2LJV6EB3GZKQSQY6YGJ4XEQYQVA7GXOYRGIQXSIWVBTI"
-                            },
-                            {
-                              "address": "CCF7HWZ6PBT2MQ6AUBKXM4CPWAR2PO6ND34WXLB32NDAYD7KIKBAAS7I"
-                            },
-                            {
-                              "address": "CD6J4NTZEADXNETD2UY7ALD2N26RY35GGC73JSXXZB2GKB3ZTLR3Y4FH"
-                            },
-                            {
-                              "address": "CAWGXBFCJA6N64Z6HECE34OQ4YFA7WJPNP7DYDSRZNKXT474KE4IY3D5"
-                            },
-                            {
-                              "address": "CDWECPEHVOKI6FAHQCJGMB4TONARWNWIVD2L7YZN3KWZCNU4BGESITIC"
-                            },
-                            {
-                              "address": "CDQDL7TMGO2N7Y6SPFPTYYJ5S36GVZRTLRPNSUTCJFDK7M2B6YTZHCEO"
-                            },
-                            {
-                              "address": "CDYN7UF3YXJ7DZH2HZZC6OOTWWUKEQFHJEMJANA7MTAFXGLEALG3EU43"
-                            },
-                            {
-                              "address": "CASMQTHAUI74BR7CBOI5LCDJYPBE5YFKDWZM7BZANZFKPEDMXR4WNEGW"
-                            },
-                            {
-                              "address": "CAQHTC6TL3C7RREM7DZUCSCES2FIICQDOKPR2D4SRRUMRMFQGXO4A7GZ"
-                            },
-                            {
-                              "address": "CC2U57ADVIV7HAIVXIQFTU5FQTARYJPZD2ACMEMP7KD6UU7CDJUXY7QW"
-                            },
-                            {
-                              "address": "CAV4N2YZ7DC4ZGALAVILSNPEUENH66NFUXRP42DUXLWDOAPU5RVUBYAB"
-                            },
-                            {
-                              "address": "CAQVMWW77RUE2DFUX52ESVVMYLHEI73FTOHUUKOVH4KMKKWNGAEZVW3L"
-                            },
-                            {
-                              "address": "CDPELJTATRYH2CDKQZAA5VZB3IXGNJPMHZCOVQ2LQU7W5RPJJR2LBNRS"
-                            },
-                            {
-                              "address": "CB7S76AIGEIFFV6J7GK3QKWVK32MSAUH7UI2N2PEUZ2FEQLC5S5WBRSU"
-                            },
-                            {
-                              "address": "CB7GOYRVBXEULCAWJKYR6GYQY6ZFRERSRSHS7VZ5OBTYELPK6Z4TUNXU"
-                            },
-                            {
-                              "address": "CDBA6QWURVDDNUITHQZAPNEVN4GSYJICITBQHQC2NM3H2WSOW62MY4IZ"
-                            },
-                            {
-                              "address": "CD7HOYKU66T4255Q45O7AHXWN7UXIC252Q6YT6EVLSTXTMCLECUORUN6"
-                            },
-                            {
-                              "address": "CASG7OYOP2THJAW3QNLSTVCJK2AGAG2HKOC2BPDRO743YTX3XIS3HQG6"
-                            },
-                            {
-                              "address": "CDG5HCU43E4Z4H2CNJRZQ3SWRYU5KYBJC3DXZEXBTJURPUP6Z2QWSGFL"
-                            },
-                            {
-                              "address": "CBVPBZ4XXWHM3VNUHQ2C33CWMBQK255YAZZLZLK7MJN6FZXB42IHWWUX"
-                            },
-                            {
-                              "address": "CDPDJFQQZXZLFZJO2TZJSFZZ7D53MPSICCLLGTOZDU3AKB66R4UNVI6T"
-                            },
-                            {
-                              "address": "CA4CVLTTJI2BGISKBYOBD3PQ7MB4JRK4LEVCNQPHLC6PWZMNG7KBYJQ6"
-                            },
-                            {
-                              "address": "CCNRWEEHO5B6EUSBEGL7YHS4TFNZLHKGCOK2ZFHTHMMA5BSPLYXPQNGX"
-                            },
-                            {
-                              "address": "CBWMMKJ2BFCUJ3TVTMX3NJ65CQDDMSSPBHTMKG4KGZKJJAQQEYCR2QEJ"
-                            },
-                            {
-                              "address": "CCXUPCVCBY5NOAHNCVTEKGG3TFWB5LTDOOEYLN7VA65XQRIPY4ATPQUQ"
-                            },
-                            {
-                              "address": "CCXLCYVTONY4Y4HTQJAAICEBMLHDY3JZP64VQD3WTA5R7TTFAA3JQBXA"
-                            },
-                            {
-                              "address": "CCAOUCWJFLKOXC2PEHV6VMI4BDGHVPKWDWTNSF3W4EY5SUABYPKYS7SQ"
-                            },
-                            {
-                              "address": "CDR676ATP6U4RHOZXRWIG6Z5M3UTEUDOFJLPZ7MMM5HTNWNT37Z7GWT7"
-                            },
-                            {
-                              "address": "CCIDNEUTSYMZE5Y32MQHWIBROF3Q4KHHEBTBFCT2IFCQM4IOFQ34VUFL"
-                            },
-                            {
-                              "address": "CBK64IVKHIT75E6PMUHIYLB7PGRN64PMQQBOC7ZRHW6PFY7HRGFJYG4B"
-                            },
-                            {
-                              "address": "CDV6BQTP7DDNAKCE2JTIWK5JQRHFIDZIPJME2BTUNFQVO2HKDVG2ZTZH"
-                            },
-                            {
-                              "address": "CAIKDPKCESY5EFQW4ZB463XMPWRI6T62UHQELOF6KUDUBT5COAOHRJCO"
-                            },
-                            {
-                              "address": "CAXZYNIDY53GNDIHNRC5ABY25CBOB3NBIZEBOAPU3DE2EGAAIYLUILV3"
-                            },
-                            {
-                              "address": "CCVRZW2LDNP4V5FD55NYAABUZDHYNPA6KWPKG452PDAHNXI3LD2ZUX3Y"
-                            },
-                            {
-                              "address": "CB3DBXHVUST5QJAHTXIXFJMZ4DIHGN2KSLMFEVCD3XYLAEXTR3HDETDR"
-                            },
-                            {
-                              "address": "CB2LJKK7YNGOSKUOZ3RHK7NSXQQZTWXRETDTEW2MBBVY6ONJMLYRHP44"
-                            },
-                            {
-                              "address": "CB2FZXTEA552VZPTVNGL6MNLY4KYPWQB5KJARASAUGDVUZCCJVIR5UYV"
-                            },
-                            {
-                              "address": "CADXA73LBR665UCRTEPQR2OEOHQHEL5JKF3IGS34DJSMM6FZ357UYF2M"
-                            },
-                            {
-                              "address": "CBZLXHCX34GGMBMIHHKTPAVGZSYRPCMM5SSYRFAX5AVQI42KXESPY4AX"
-                            },
-                            {
-                              "address": "CDCGUF2DMOAL5ZZSEIYGQGUAIXTUEJAEH5O32IPN472UVPDJ7SFPY2RB"
-                            },
-                            {
-                              "address": "CAS6ODFTNQ6MUEBRVB2KS4E77MAKCXA724WVANP6TQ3DGNT6B4U6YCXJ"
-                            },
-                            {
-                              "address": "CCZGRQLBJPHEXURBOTDUV3NJRLTMEC5R5JZDO6NPAVZDL3RNNKCYT2SM"
-                            },
-                            {
-                              "address": "CDDFQHNAH4AXMVUR3TP4T5MIJKAHTITYFTYRXXZZ2AJ4Q63STWT4GV4L"
-                            },
-                            {
-                              "address": "CCF4DKID4UCVHQC2ZGNAW2Z3I7JYSJUQ5EPJZ6ALJLRJGXBDISI4QGOE"
                             }
                           ]
                         }
