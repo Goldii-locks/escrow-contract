@@ -1106,9 +1106,7 @@ fn test_fund_rejects_missing_milestone_index() {
     );
 
     env.as_contract(&contract_id, || {
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Milestone(1u32));
+        env.storage().persistent().remove(&DataKey::Milestone(1u32));
     });
 
     let result = client.try_fund(&client_addr);
@@ -5447,4 +5445,126 @@ fn test_add_whitelisted_token_does_not_whitelist_other_tokens() {
 
     // Whitelist length must be exactly 2.
     assert_eq!(client.get_whitelisted_tokens().len(), 2);
+}
+
+#[test]
+fn test_reputation_tracking() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &20_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128, 5_000_i128, 5_000_i128, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // Initial reputation should be 0
+    assert_eq!(client.get_reputation(&client_addr), 0);
+    assert_eq!(client.get_reputation(&freelancer_addr), 0);
+
+    // 1. Full Release (Milestone 0)
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_milestone(&client_addr, &0u32);
+
+    // Both freelancer and client should have reputation incremented to 1
+    assert_eq!(client.get_reputation(&client_addr), 1);
+    assert_eq!(client.get_reputation(&freelancer_addr), 1);
+
+    // 2. Partial Release (Milestone 1) - Part 1 (not final)
+    client.mark_delivered(&freelancer_addr, &1u32);
+    client.approve_partial(&client_addr, &1u32, &2_000_i128);
+    // Reputation should NOT increment for non-final partial release
+    assert_eq!(client.get_reputation(&client_addr), 1);
+    assert_eq!(client.get_reputation(&freelancer_addr), 1);
+
+    // 2. Partial Release (Milestone 1) - Part 2 (final)
+    client.approve_partial(&client_addr, &1u32, &3_000_i128);
+    // Reputation SHOULD increment now
+    assert_eq!(client.get_reputation(&client_addr), 2);
+    assert_eq!(client.get_reputation(&freelancer_addr), 2);
+
+    // 3. Dispute with Refund (Milestone 2)
+    client.mark_delivered(&freelancer_addr, &2u32);
+    client.raise_dispute(&client_addr, &2u32);
+    // Raising dispute should NOT increment reputation
+    assert_eq!(client.get_reputation(&client_addr), 2);
+    assert_eq!(client.get_reputation(&freelancer_addr), 2);
+
+    client.resolve_dispute(&arbiter_addr, &2u32, &false); // refund
+                                                          // Refund should NOT increment reputation
+    assert_eq!(client.get_reputation(&client_addr), 2);
+    assert_eq!(client.get_reputation(&freelancer_addr), 2);
+
+    // 4. Dispute with Release to Freelancer (Milestone 3)
+    client.mark_delivered(&freelancer_addr, &3u32);
+    client.raise_dispute(&client_addr, &3u32);
+    client.resolve_dispute(&arbiter_addr, &3u32, &true); // release
+                                                         // Resolution in favor of freelancer SHOULD increment reputation
+    assert_eq!(client.get_reputation(&client_addr), 3);
+    assert_eq!(client.get_reputation(&freelancer_addr), 3);
+}
+
+#[test]
+fn test_reputation_auto_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100, // 100 seconds auto-release
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Jump time ahead by 101 seconds
+    env.ledger().with_mut(|li| {
+        li.timestamp += 101;
+    });
+
+    client.claim_auto_release(&freelancer_addr, &0u32);
+
+    // Auto-release claim SHOULD increment reputation
+    assert_eq!(client.get_reputation(&client_addr), 1);
+    assert_eq!(client.get_reputation(&freelancer_addr), 1);
 }
