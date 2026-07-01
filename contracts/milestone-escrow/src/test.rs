@@ -3201,6 +3201,207 @@ fn test_approve_milestone_emits_event() {
 }
 
 #[test]
+fn test_approve_milestone_emits_detailed_event_payload() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| {
+        li.timestamp = 123_456;
+    });
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_milestone(&client_addr, &0u32);
+
+    let detail_topic: Symbol = symbol_short!("appr_mile");
+    let detail_topic_val: Val = detail_topic.into_val(&env);
+    let expected_event: Val = MilestoneApprovedEvent {
+        contract_id,
+        milestone_index: 0,
+        client: client_addr,
+        freelancer: freelancer_addr,
+        arbiter: arbiter_addr,
+        token: token_contract_id,
+        funded: true,
+        auto_release_seconds: 604800,
+        milestone_count: 1,
+        total_amount: 10_000,
+        milestone_amount: 10_000,
+        approved_amount: 10_000,
+        previously_released_amount: 0,
+        released_amount: 10_000,
+        remaining: 0,
+        previous_status: MilestoneStatus::Delivered,
+        status: MilestoneStatus::Released,
+        delivered_at: 123_456,
+        approved_at: 123_456,
+    }
+    .into_val(&env);
+
+    let mut detail_count = 0u32;
+    for e in env.events().all().iter() {
+        if let Some(topic) = e.1.get(0) {
+            if topic.get_payload() == detail_topic_val.get_payload() {
+                assert_eq!(e.1.len(), 1);
+                assert_eq!(e.2.get_payload(), expected_event.get_payload());
+                detail_count += 1;
+            }
+        }
+    }
+
+    assert_eq!(detail_count, 1);
+}
+
+#[test]
+fn test_approve_milestone_detailed_event_after_partial_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| {
+        li.timestamp = 222_000;
+    });
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 222_111;
+    });
+    client.approve_milestone(&client_addr, &0u32);
+
+    let detail_topic: Symbol = symbol_short!("appr_mile");
+    let detail_topic_val: Val = detail_topic.into_val(&env);
+    let expected_event: Val = MilestoneApprovedEvent {
+        contract_id,
+        milestone_index: 0,
+        client: client_addr,
+        freelancer: freelancer_addr,
+        arbiter: arbiter_addr,
+        token: token_contract_id,
+        funded: true,
+        auto_release_seconds: 604800,
+        milestone_count: 1,
+        total_amount: 10_000,
+        milestone_amount: 10_000,
+        approved_amount: 6_000,
+        previously_released_amount: 4_000,
+        released_amount: 10_000,
+        remaining: 0,
+        previous_status: MilestoneStatus::PartiallyReleased,
+        status: MilestoneStatus::Released,
+        delivered_at: 222_000,
+        approved_at: 222_111,
+    }
+    .into_val(&env);
+
+    let mut detail_count = 0u32;
+    for e in env.events().all().iter() {
+        if let Some(topic) = e.1.get(0) {
+            if topic.get_payload() == detail_topic_val.get_payload() {
+                assert_eq!(e.1.len(), 1);
+                assert_eq!(e.2.get_payload(), expected_event.get_payload());
+                detail_count += 1;
+            }
+        }
+    }
+
+    assert_eq!(detail_count, 1);
+}
+
+#[test]
+fn test_approve_milestone_after_partial_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token = token::Client::new(&env, &token_contract_id);
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &10_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_partial(&client_addr, &0u32, &4_000_i128);
+
+    // Now approve the milestone fully
+    client.approve_milestone(&client_addr, &0u32);
+
+    let job = client.get_job();
+    let ms = job.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Released);
+    assert_eq!(ms.released_amount, 10_000);
+    assert_eq!(token.balance(&freelancer_addr), 10_000);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // Approving again should fail
+    let result = client.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
 fn test_approve_milestone_on_disputed_milestone_fails() {
     let env = Env::default();
     env.mock_all_auths();
