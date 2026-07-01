@@ -379,7 +379,7 @@ impl MilestoneEscrow {
         let mut whitelist: Vec<Address> = Vec::new(&env);
         whitelist.push_back(token.clone());
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::WhitelistedTokens, &whitelist);
 
         let meta = JobMeta {
@@ -448,6 +448,21 @@ impl MilestoneEscrow {
     pub fn add_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         admin.require_auth();
 
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if token == zero_account || token == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+        if token == env.current_contract_address() {
+            return Err(Error::InvalidAddress);
+        }
+
         let stored_admin: Address = env
             .storage()
             .persistent()
@@ -465,24 +480,19 @@ impl MilestoneEscrow {
 
         let mut whitelist: Vec<Address> = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
-        if whitelist.contains(&token) {
-            return Err(Error::TokenAlreadyWhitelisted);
-        }
-
-        // Guard against integer overflow on the Vec's internal u32 length
-        // counter.  If the whitelist is already at capacity, reject the
-        // addition with InvalidAmount rather than letting push_back overflow.
+        // O(1) capacity check before the O(n) contains scan to avoid
+        // iterating a full-capacity list unnecessarily.
         if whitelist.len() >= MAX_WHITELIST_SIZE {
             return Err(Error::InvalidAmount);
         }
 
         whitelist.push_back(token.clone());
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::WhitelistedTokens, &whitelist);
 
         env.events().publish(
@@ -525,7 +535,7 @@ impl MilestoneEscrow {
 
         let mut whitelist: Vec<Address> = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
@@ -538,7 +548,7 @@ impl MilestoneEscrow {
             whitelist.pop_back();
             let remaining_count = whitelist.len();
             env.storage()
-                .persistent()
+                .instance()
                 .set(&DataKey::WhitelistedTokens, &whitelist);
 
             env.events().publish(
@@ -555,7 +565,7 @@ impl MilestoneEscrow {
     pub fn is_token_whitelisted(env: Env, token: Address) -> bool {
         if let Some(whitelist) = env
             .storage()
-            .persistent()
+            .instance()
             .get::<_, Vec<Address>>(&DataKey::WhitelistedTokens)
         {
             whitelist.contains(&token)
@@ -566,7 +576,7 @@ impl MilestoneEscrow {
 
     pub fn get_whitelisted_tokens(env: Env) -> Result<Vec<Address>, Error> {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)
     }
