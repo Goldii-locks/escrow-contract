@@ -484,8 +484,13 @@ impl MilestoneEscrow {
             .get(&DataKey::WhitelistedTokens)
             .ok_or(Error::NotInitialized)?;
 
-        // O(1) capacity check before the O(n) contains scan to avoid
-        // iterating a full-capacity list unnecessarily.
+        // Duplicate check runs before the capacity check so that a
+        // full whitelist still reports TokenAlreadyWhitelisted (rather
+        // than InvalidAmount) for a token that's already present.
+        if whitelist.contains(&token) {
+            return Err(Error::TokenAlreadyWhitelisted);
+        }
+
         if whitelist.len() >= MAX_WHITELIST_SIZE {
             return Err(Error::InvalidAmount);
         }
