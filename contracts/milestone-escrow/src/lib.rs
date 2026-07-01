@@ -165,6 +165,19 @@ pub struct DisputeResolvedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutoReleasedEvent {
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub freelancer: Address,
+    pub client: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub delivered_at: u64,
+    pub released_at: u64,
+    pub auto_release_seconds: u64,
+}
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferAdminEvent {
     pub old_admin: Address,
     pub new_admin: Address,
