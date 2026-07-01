@@ -759,6 +759,8 @@ impl MilestoneEscrow {
             .checked_add(meta.auto_release_seconds)
             .ok_or(Error::InvalidAmount)?;
         let current = env.ledger().timestamp();
+        // Deadline semantics: `current == deadline` is allowed to claim.
+        // This is important at the interaction boundary with client `approve_partial`.
         if current < deadline {
             return Err(Error::DeadlineNotPassed);
         }
