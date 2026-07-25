@@ -17,7 +17,11 @@ pub struct ReentrantToken;
 #[contractimpl]
 impl ReentrantToken {
     pub fn transfer(env: Env, from: Address, to: Address, _amount: i128) {
-        if env.storage().instance().has(&ReentrantTokenDataKey::Reentered) {
+        if env
+            .storage()
+            .instance()
+            .has(&ReentrantTokenDataKey::Reentered)
+        {
             return;
         }
 
@@ -30,7 +34,9 @@ impl ReentrantToken {
     }
 
     pub fn callback_attempted(env: Env) -> bool {
-        env.storage().instance().has(&ReentrantTokenDataKey::Reentered)
+        env.storage()
+            .instance()
+            .has(&ReentrantTokenDataKey::Reentered)
     }
 }
 
@@ -2501,7 +2507,9 @@ fn test_approve_milestone_state_transitions() {
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
     // Setup 5 milestones: one for each invalid status path, plus one for the valid path
-    let amounts = vec![&env, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128];
+    let amounts = vec![
+        &env, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128,
+    ];
     client.initialize(
         &admin_addr,
         &client_addr,
@@ -2521,7 +2529,10 @@ fn test_approve_milestone_state_transitions() {
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_milestone(&client_addr, &0u32);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Released);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Released
+    );
 
     // Test 3: PartiallyReleased → InvalidStatus (should fail)
     client.mark_delivered(&freelancer_addr, &1u32);
@@ -5161,8 +5172,7 @@ fn test_upgrade_admin_auth_check_passes() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     // Admin auth passes; the call will fail because [0; 32] isn't a valid
     // uploaded wasm hash, but it must NOT return Unauthorized.
@@ -5453,7 +5463,10 @@ fn test_add_whitelisted_token_old_admin_rejected_after_transfer() {
 
     // New admin must succeed.
     let new_result = client.try_add_whitelisted_token(&new_admin_addr, &token3);
-    assert!(new_result.is_ok(), "new admin should be able to add a token");
+    assert!(
+        new_result.is_ok(),
+        "new admin should be able to add a token"
+    );
     assert!(client.is_token_whitelisted(&token3));
 }
 
@@ -5496,9 +5509,18 @@ fn test_add_whitelisted_token_does_not_whitelist_other_tokens() {
     // Only token2 is added.
     client.add_whitelisted_token(&admin_addr, &token2);
 
-    assert!(client.is_token_whitelisted(&token1), "token1 (init token) must still be whitelisted");
-    assert!(client.is_token_whitelisted(&token2), "token2 must be whitelisted after add");
-    assert!(!client.is_token_whitelisted(&token3), "token3 was never added — must not be whitelisted");
+    assert!(
+        client.is_token_whitelisted(&token1),
+        "token1 (init token) must still be whitelisted"
+    );
+    assert!(
+        client.is_token_whitelisted(&token2),
+        "token2 must be whitelisted after add"
+    );
+    assert!(
+        !client.is_token_whitelisted(&token3),
+        "token3 was never added — must not be whitelisted"
+    );
 
     // Whitelist length must be exactly 2.
     assert_eq!(client.get_whitelisted_tokens().len(), 2);
@@ -5624,4 +5646,235 @@ fn test_reputation_auto_release() {
     // Auto-release claim SHOULD increment reputation
     assert_eq!(client.get_reputation(&client_addr), 1);
     assert_eq!(client.get_reputation(&freelancer_addr), 1);
+}
+
+#[test]
+fn test_multisig_admin_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &vec![&env, 1000],
+    );
+
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 1);
+    assert_eq!(admins.get(0).unwrap(), admin_addr);
+    assert_eq!(client.get_admin_threshold(), 1);
+}
+
+#[test]
+fn test_multisig_admin_transfer_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_a = Address::generate(&env);
+    let admin_b = Address::generate(&env);
+    let admin_c = Address::generate(&env);
+    let admin_d = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_a.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_a,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &vec![&env, 1000],
+    );
+
+    // Transition to a 2-of-3 multisig configuration
+    let new_admins = vec![&env, admin_a.clone(), admin_b.clone(), admin_c.clone()];
+    client.propose_admin_transfer(&admin_a, &new_admins, &2);
+
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 3);
+    assert_eq!(client.get_admin_threshold(), 2);
+
+    // Admin A proposes to transfer to Admin D
+    let proposed_admins = vec![&env, admin_d.clone()];
+    client.propose_admin_transfer(&admin_a, &proposed_admins, &1);
+
+    // Verify that Admin D is not yet the admin
+    let current_admins = client.get_admins();
+    assert_eq!(current_admins.len(), 3);
+    assert_eq!(client.get_admin_threshold(), 2);
+
+    // Admin B approves the transfer
+    client.approve_admin_transfer(&admin_b);
+
+    // Verify that the transfer is now executed
+    let final_admins = client.get_admins();
+    assert_eq!(final_admins.len(), 1);
+    assert_eq!(final_admins.get(0).unwrap(), admin_d);
+    assert_eq!(client.get_admin_threshold(), 1);
+}
+
+#[test]
+fn test_multisig_admin_transfer_errors() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_a = Address::generate(&env);
+    let admin_b = Address::generate(&env);
+    let admin_c = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_a.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_a,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &vec![&env, 1000],
+    );
+
+    // Set to 2-of-3 multisig
+    let new_admins = vec![&env, admin_a.clone(), admin_b.clone(), admin_c.clone()];
+    client.propose_admin_transfer(&admin_a, &new_admins, &2);
+
+    // 1. Proposing from non-admin fails with Unauthorized
+    let prop_err = client.try_propose_admin_transfer(&non_admin, &new_admins, &1);
+    assert_eq!(prop_err, Err(Ok(Error::Unauthorized)));
+
+    // 2. Proposing with invalid threshold/empty admins fails with InvalidAmount
+    let empty_admins = vec![&env];
+    let empty_err = client.try_propose_admin_transfer(&admin_a, &empty_admins, &1);
+    assert_eq!(empty_err, Err(Ok(Error::InvalidAmount)));
+
+    let threshold_err = client.try_propose_admin_transfer(&admin_a, &new_admins, &4);
+    assert_eq!(threshold_err, Err(Ok(Error::InvalidAmount)));
+
+    // 3. Approving a non-existent proposal fails with ProposalNotFound
+    let no_prop_err = client.try_approve_admin_transfer(&admin_a);
+    assert_eq!(no_prop_err, Err(Ok(Error::ProposalNotFound)));
+
+    // Create a valid proposal
+    let dest_admins = vec![&env, Address::generate(&env)];
+    client.propose_admin_transfer(&admin_a, &dest_admins, &1);
+
+    // 4. Proposing while a proposal is active returns ProposalPending
+    let pending_err = client.try_propose_admin_transfer(&admin_b, &dest_admins, &1);
+    assert_eq!(pending_err, Err(Ok(Error::ProposalPending)));
+
+    // 5. Double-voting returns AlreadyApproved
+    let double_err = client.try_approve_admin_transfer(&admin_a);
+    assert_eq!(double_err, Err(Ok(Error::AlreadyApproved)));
+
+    // 6. Approving from non-admin returns Unauthorized
+    let unauth_appr = client.try_approve_admin_transfer(&non_admin);
+    assert_eq!(unauth_appr, Err(Ok(Error::Unauthorized)));
+
+    // 7. Expired proposal returns ProposalExpired
+    env.ledger().with_mut(|li| {
+        li.timestamp += 604_800 + 1; // Expired (7 days + 1s)
+    });
+    let expired_err = client.try_approve_admin_transfer(&admin_b);
+    assert_eq!(expired_err, Err(Ok(Error::ProposalExpired)));
+}
+
+#[test]
+fn test_multisig_admin_revoke_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_a = Address::generate(&env);
+    let admin_b = Address::generate(&env);
+    let admin_c = Address::generate(&env);
+    let admin_d = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_a.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_a,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &100,
+        &vec![&env, 1000],
+    );
+
+    // Set to 2-of-3 multisig
+    let new_admins = vec![&env, admin_a.clone(), admin_b.clone(), admin_c.clone()];
+    client.propose_admin_transfer(&admin_a, &new_admins, &2);
+
+    // Admin A proposes transfer to Admin D
+    let proposed_admins = vec![&env, admin_d.clone()];
+
+    // Let's transition to 3-of-3 first:
+    client.propose_admin_transfer(&admin_a, &new_admins, &3);
+    client.approve_admin_transfer(&admin_b);
+    assert_eq!(client.get_admin_threshold(), 3);
+
+    // Now Admin A proposes transfer to Admin D (approvals = [A])
+    client.propose_admin_transfer(&admin_a, &proposed_admins, &1);
+
+    // Admin B approves (approvals = [A, B])
+    client.approve_admin_transfer(&admin_b);
+
+    // Admin B revokes (approvals = [A])
+    client.revoke_admin_approval(&admin_b);
+
+    // Admin C approves (approvals = [A, C])
+    client.approve_admin_transfer(&admin_c);
+
+    // Verify it is not executed yet because approvals is 2 (A, C), threshold is 3.
+    let current_admins = client.get_admins();
+    assert_eq!(current_admins.len(), 3);
+
+    // Admin B approves again (approvals = [A, C, B]) -> Threshold met!
+    client.approve_admin_transfer(&admin_b);
+
+    // Verify transfer is executed
+    let final_admins = client.get_admins();
+    assert_eq!(final_admins.len(), 1);
+    assert_eq!(final_admins.get(0).unwrap(), admin_d);
 }

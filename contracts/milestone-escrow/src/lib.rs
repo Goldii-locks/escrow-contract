@@ -25,6 +25,10 @@ pub enum Error {
     InvalidAmount = 10,
     DeadlineNotPassed = 11,
     InvalidAddress = 12,
+    ProposalPending = 13,
+    AlreadyApproved = 14,
+    ProposalExpired = 15,
+    ProposalNotFound = 16,
 }
 
 #[contracttype]
@@ -79,6 +83,9 @@ pub enum DataKey {
     Admin,
     Version,
     WhitelistedTokens,
+    Admins,
+    AdminThreshold,
+    AdminProposal,
     /// Temporary key: records the ledger timestamp at which a milestone was
     /// marked delivered.  Written by `mark_delivered`, consumed by
     /// `claim_auto_release` and `time_until_auto_release`.  Uses temporary
@@ -212,6 +219,28 @@ pub struct MilestoneEscrow;
 
 #[contractimpl]
 impl MilestoneEscrow {
+    fn check_admin(env: &Env, caller: &Address) -> Result<(), Error> {
+        caller.require_auth();
+        if let Some(admins) = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<Address>>(&DataKey::Admins)
+        {
+            if admins.contains(caller) {
+                return Ok(());
+            }
+        } else if let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Admin)
+        {
+            if &admin == caller {
+                return Ok(());
+            }
+        }
+        Err(Error::Unauthorized)
+    }
+
     fn load_job_meta(env: &Env) -> Result<JobMeta, Error> {
         env.storage()
             .instance()
@@ -344,7 +373,10 @@ impl MilestoneEscrow {
             "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
         );
 
-        if address == &zero_account || address == &zero_contract || address == &env.current_contract_address() {
+        if address == &zero_account
+            || address == &zero_contract
+            || address == &env.current_contract_address()
+        {
             return Err(Error::InvalidAddress);
         }
 
@@ -418,6 +450,14 @@ impl MilestoneEscrow {
         }
 
         env.storage().persistent().set(&DataKey::Admin, &admin);
+
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin.clone());
+        env.storage().persistent().set(&DataKey::Admins, &admins);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminThreshold, &1u32);
+
         env.storage().instance().set(&DataKey::Version, &1u32);
 
         let mut whitelist: Vec<Address> = Vec::new(&env);
@@ -464,19 +504,17 @@ impl MilestoneEscrow {
         current_admin: Address,
         new_admin: Address,
     ) -> Result<(), Error> {
-        current_admin.require_auth();
-
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-
-        if current_admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
+        Self::check_admin(&env, &current_admin)?;
+        Self::validate_address(&env, &new_admin)?;
 
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
+
+        let mut admins = Vec::new(&env);
+        admins.push_back(new_admin.clone());
+        env.storage().persistent().set(&DataKey::Admins, &admins);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminThreshold, &1u32);
 
         env.events().publish(
             (symbol_short!("admin"),),
@@ -490,7 +528,13 @@ impl MilestoneEscrow {
     }
 
     pub fn add_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
-        admin.require_auth();
+        // Guard: contract must be initialized before admin operations are valid.
+        // Without this check, check_admin would return Unauthorized (no Admin key)
+        // instead of the semantically correct NotInitialized.
+        if !env.storage().persistent().has(&DataKey::Admins) {
+            return Err(Error::NotInitialized);
+        }
+        Self::check_admin(&env, &admin)?;
 
         let zero_account = Address::from_str(
             &env,
@@ -505,16 +549,6 @@ impl MilestoneEscrow {
         }
         if token == env.current_contract_address() {
             return Err(Error::InvalidAddress);
-        }
-
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
         }
 
         let meta = Self::load_job_meta(&env)?;
@@ -553,17 +587,7 @@ impl MilestoneEscrow {
     }
 
     pub fn remove_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
-        admin.require_auth();
-
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
+        Self::check_admin(&env, &admin)?;
 
         let meta = Self::load_job_meta(&env)?;
         if meta.funded {
@@ -1004,8 +1028,8 @@ impl MilestoneEscrow {
             return Err(Error::InvalidMilestone);
         }
 
-       let mut milestone = Self::load_milestone(&env, milestone_index)?;
-       if milestone.status != MilestoneStatus::Delivered {
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        if milestone.status != MilestoneStatus::Delivered {
             return Err(Error::InvalidStatus);
         }
 
@@ -1178,25 +1202,17 @@ impl MilestoneEscrow {
     }
 
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        admin.require_auth();
-
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
+        // Guard: contract must be initialized before admin operations are valid.
+        // Without this check, check_admin would return Unauthorized (no Admin key)
+        // instead of the semantically correct NotInitialized.
+        if !env.storage().persistent().has(&DataKey::Admins) {
+            return Err(Error::NotInitialized);
         }
+        Self::check_admin(&env, &admin)?;
 
         env.deployer().update_current_contract_wasm(new_wasm_hash);
 
-        let current: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Version)
-            .unwrap_or(1);
+        let current: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
         env.storage()
             .instance()
             .set(&DataKey::Version, &(current + 1));
@@ -1205,10 +1221,7 @@ impl MilestoneEscrow {
     }
 
     pub fn version(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Version)
-            .unwrap_or(1)
+        env.storage().instance().get(&DataKey::Version).unwrap_or(1)
     }
 
     pub fn get_job(env: Env) -> Result<Job, Error> {
@@ -1222,6 +1235,32 @@ impl MilestoneEscrow {
             .get(&DataKey::Reputation(address))
             .unwrap_or(0)
     }
+
+    pub fn propose_admin_transfer(
+        env: Env,
+        proposer: Address,
+        new_admins: Vec<Address>,
+        new_threshold: u32,
+    ) -> Result<(), Error> {
+        multisig_transfer_admin::propose_admin_transfer(env, proposer, new_admins, new_threshold)
+    }
+
+    pub fn approve_admin_transfer(env: Env, approver: Address) -> Result<(), Error> {
+        multisig_transfer_admin::approve_admin_transfer(env, approver)
+    }
+
+    pub fn revoke_admin_approval(env: Env, admin: Address) -> Result<(), Error> {
+        multisig_transfer_admin::revoke_admin_approval(env, admin)
+    }
+
+    pub fn get_admins(env: Env) -> Result<Vec<Address>, Error> {
+        multisig_transfer_admin::get_admins(&env)
+    }
+
+    pub fn get_admin_threshold(env: Env) -> u32 {
+        multisig_transfer_admin::get_admin_threshold(&env)
+    }
 }
 
+mod multisig_transfer_admin;
 mod test;
