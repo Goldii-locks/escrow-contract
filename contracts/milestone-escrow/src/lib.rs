@@ -27,6 +27,8 @@ pub enum Error {
     InvalidAddress = 12,
     Paused = 13,
     InvalidRatio = 14,
+    LockViolation = 15,
+    DisputeAlreadyRaised = 16,
 }
 
 const BPS_SCALE: u32 = 10_000;
@@ -110,6 +112,18 @@ pub enum DataKey {
     /// flag has no further use.
     MilestoneReleased(u32),
     Reputation(Address),
+    // ── multisig_approval lock key ──────────────────────────────────────────
+    /// Temporary key: set to `true` while `multisig_approval` is executing.
+    /// Prevents concurrent or re-entrant calls to the multisig approval
+    /// workflow.  Written before any state mutation and cleared on completion
+    /// (or on error).  Uses temporary storage so the lock auto-expires after
+    /// TTL if the call fails to clear it.
+    MultisigLock,
+    // ── raise_dispute re-entry lock key ─────────────────────────────────────
+    /// Temporary key: set to `true` while `raise_dispute` is executing for a
+    /// specific milestone.  Prevents re-entrant dispute raising on the same
+    /// milestone.  Written before state mutation, cleared on completion.
+    DisputeLock(u32),
     // ── escrow_interest_yield admin-override keys ────────────────────────────
     /// Persistent: annual yield rate expressed in basis points (1 bp = 0.01 %).
     /// Range 0–10 000 (0 %–100 %).  Written by `admin_set_yield_rate`, read by
@@ -1281,13 +1295,38 @@ impl MilestoneEscrow {
 
     pub fn raise_dispute(env: Env, caller: Address, milestone_index: u32) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
+        // ── Re-entrancy lock ─────────────────────────────────────────────
+        if env.storage().temporary().has(&DataKey::DisputeLock(milestone_index)) {
+            return Err(Error::DisputeAlreadyRaised);
+        }
+        env.storage()
+            .temporary()
+            .set(&DataKey::DisputeLock(milestone_index), &true);
+
+        let result = Self::raise_dispute_inner(&env, caller, milestone_index);
+
+        // Always release the lock regardless of success or failure.
+        Self::release_dispute_lock(&env, milestone_index);
+
+        result
+    }
+
+    /// Core dispute logic extracted so that the lock guard in
+    /// `raise_dispute` wraps every path uniformly.  This function
+    /// is never called directly — it exists only to keep the
+    /// lock/release pairing in one place.
+    fn raise_dispute_inner(
+        env: &Env,
+        caller: Address,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
         // Check for zero addresses (both account and contract types)
         let zero_account = Address::from_str(
-            &env,
+            env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
         );
         let zero_contract = Address::from_str(
-            &env,
+            env,
             "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
         );
 
@@ -1295,7 +1334,7 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
         caller.require_auth();
-        let meta = Self::load_job_meta(&env)?;
+        let meta = Self::load_job_meta(env)?;
 
         if meta.client != caller && meta.freelancer != caller {
             return Err(Error::Unauthorized);
@@ -1304,8 +1343,19 @@ impl MilestoneEscrow {
             return Err(Error::NotFunded);
         }
 
-        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        // ── Input validation: index boundary check ───────────────────────
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
 
+        let mut milestone = Self::load_milestone(env, milestone_index)?;
+
+        // ── Input validation: non-zero positive amount ───────────────────
+        if milestone.amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // ── Status transition validation ─────────────────────────────────
         if milestone.status != MilestoneStatus::Pending
             && milestone.status != MilestoneStatus::Delivered
             && milestone.status != MilestoneStatus::PartiallyReleased
@@ -1314,7 +1364,7 @@ impl MilestoneEscrow {
         }
 
         milestone.status = MilestoneStatus::Disputed;
-        Self::store_milestone(&env, milestone_index, &milestone);
+        Self::store_milestone(env, milestone_index, &milestone);
 
         env.events().publish(
             (symbol_short!("dispute"),),
@@ -1325,6 +1375,15 @@ impl MilestoneEscrow {
         );
 
         Ok(())
+    }
+
+    /// Release the dispute lock for a given milestone index.  Called
+    /// unconditionally after every `raise_dispute` attempt — success or
+    /// failure — so the lock can never become permanently held.
+    fn release_dispute_lock(env: &Env, milestone_index: u32) {
+        env.storage()
+            .temporary()
+            .remove(&DataKey::DisputeLock(milestone_index));
     }
 
     pub fn resolve_dispute(
@@ -1591,6 +1650,145 @@ impl MilestoneEscrow {
         }
 
         Ok(allocations)
+    }
+
+    /// High-precision multi-signature approval that allocates `total_amount`
+    /// across parties according to their `ratios` using the largest-remainder
+    /// method to guarantee zero value loss.
+    ///
+    /// # Locking
+    ///
+    /// This function acquires a temporary lock (`DataKey::MultisigLock`)
+    /// before any computation and releases it on completion (or on error).
+    /// The lock prevents concurrent or re-entrant execution that could result
+    /// in double-allocations or inconsistent state.
+    ///
+    /// # Precision guarantees
+    ///
+    /// * Uses checked arithmetic throughout to prevent overflow.
+    /// * Distributes the remainder (up to `ratios.len()` units) via the
+    ///   largest-remainder method so the sum of all allocations always equals
+    ///   `total_amount` exactly — no value is ever lost or truncated away.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<i128>` of length `ratios.len()` whose elements sum to
+    /// `total_amount`.
+    ///
+    /// # Errors
+    ///
+    /// * `LockViolation`   – Another multisig_approval is already in progress.
+    /// * `InvalidRatio`    – `ratios` is empty, `total_amount` is negative, or
+    ///                       any ratio is negative / zero-sum.
+    /// * `InvalidAmount`   – Arithmetic overflow in allocation computation.
+    pub fn multisig_approval(
+        env: Env,
+        total_amount: i128,
+        ratios: Vec<i128>,
+    ) -> Result<Vec<i128>, Error> {
+        // ── Acquire lock ─────────────────────────────────────────────────
+        if env.storage().temporary().has(&DataKey::MultisigLock) {
+            return Err(Error::LockViolation);
+        }
+        env.storage().temporary().set(&DataKey::MultisigLock, &true);
+
+        // ── Input validation ─────────────────────────────────────────────
+        if total_amount < 0 || ratios.is_empty() {
+            Self::release_multisig_lock(&env);
+            return Err(Error::InvalidRatio);
+        }
+
+        let mut ratio_sum: i128 = 0;
+        for ratio in ratios.iter() {
+            if ratio < 0 {
+                Self::release_multisig_lock(&env);
+                return Err(Error::InvalidRatio);
+            }
+            ratio_sum = ratio_sum.checked_add(ratio).ok_or({
+                Self::release_multisig_lock(&env);
+                Error::InvalidRatio
+            })?;
+        }
+
+        if ratio_sum <= 0 {
+            Self::release_multisig_lock(&env);
+            return Err(Error::InvalidRatio);
+        }
+
+        // ── High-precision allocation via largest-remainder method ────────
+        let mut allocations: Vec<i128> = Vec::new(&env);
+        let mut remainders: Vec<i128> = Vec::new(&env);
+        let mut allocated_total: i128 = 0;
+
+        for ratio in ratios.iter() {
+            let weighted = total_amount.checked_mul(ratio).ok_or({
+                Self::release_multisig_lock(&env);
+                Error::InvalidAmount
+            })?;
+            let base = weighted / ratio_sum;
+            let rem = weighted % ratio_sum;
+
+            allocations.push_back(base);
+            remainders.push_back(rem);
+            allocated_total = allocated_total.checked_add(base).ok_or({
+                Self::release_multisig_lock(&env);
+                Error::InvalidAmount
+            })?;
+        }
+
+        // Distribute remaining units to largest remainders (O(n × r) where
+        // r ≤ n, so bounded).
+        let remaining = total_amount
+            .checked_sub(allocated_total)
+            .ok_or({
+                Self::release_multisig_lock(&env);
+                Error::InvalidAmount
+            })?;
+
+        for _ in 0..remaining {
+            let mut best_index: u32 = 0;
+            let mut best_remainder: i128 = i128::MIN;
+
+            for (idx, rem) in remainders.iter().enumerate() {
+                if rem > best_remainder {
+                    best_remainder = rem;
+                    best_index = idx as u32;
+                }
+            }
+
+            let current = allocations.get(best_index).ok_or({
+                Self::release_multisig_lock(&env);
+                Error::InvalidAmount
+            })?;
+            allocations.set(
+                best_index,
+                current.checked_add(1).ok_or({
+                    Self::release_multisig_lock(&env);
+                    Error::InvalidAmount
+                })?,
+            );
+            remainders.set(best_index, i128::MIN);
+        }
+
+        // ── Verification: sum of allocations MUST equal total_amount ─────
+        let final_sum: i128 = allocations.iter().fold(0_i128, |acc, a| {
+            acc.checked_add(a).unwrap_or(i128::MAX)
+        });
+        if final_sum != total_amount {
+            Self::release_multisig_lock(&env);
+            return Err(Error::InvalidAmount);
+        }
+
+        // ── Release lock ─────────────────────────────────────────────────
+        Self::release_multisig_lock(&env);
+
+        Ok(allocations)
+    }
+
+    /// Release the multisig approval lock.  Called both on success and on
+    /// every error path to ensure the lock cannot become permanently held.
+    fn release_multisig_lock(env: &Env) {
+        env.storage().temporary().remove(&DataKey::MultisigLock);
     }
 
     pub fn version(env: Env) -> u32 {

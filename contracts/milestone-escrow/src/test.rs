@@ -83,6 +83,28 @@ fn setup_funded_escrow(
     )
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Security model: raise_dispute locking and validation
+//
+// raise_dispute uses a two-layer protection strategy:
+//
+//   1. DisputeLock (temporary storage) — re-entrancy guard
+//      Blocks same-transaction re-entrant calls before any state mutation.
+//      The lock is set at entry and released unconditionally on every exit
+//      path (success or error) via the raise_dispute / raise_dispute_inner /
+//      release_dispute_lock pattern.
+//
+//   2. Status transition guard (persistent storage) — double-execution guard
+//      Once the milestone status transitions to Disputed (or any terminal
+//      state: Released, Refunded), the status check in raise_dispute_inner
+//      rejects subsequent calls with InvalidStatus.  This protects across
+//      separate transactions where the DisputeLock has already been cleared.
+//
+//   Together these ensure raise_dispute is safe against both re-entrancy
+//   (same tx) and double-execution (separate txs).
+// ═══════════════════════════════════════════════════════════════════════════════
+
 #[test]
 fn test_full_happy_path() {
     let env = Env::default();
@@ -483,6 +505,25 @@ fn test_mark_delivered_after_refunded_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
+/// Verifies that when a dispute is successfully raised, the returned
+/// status is Disputed and the milestone state is persisted correctly.
+/// Also confirms the flow: fund -> deliver -> dispute works end-to-end.
+#[test]
+fn test_raise_dispute_status_transition_to_disputed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.status, MilestoneStatus::Disputed);
+}
+
 /// mark_delivered on a PartiallyReleased milestone must return InvalidStatus.
 #[test]
 fn test_mark_delivered_after_partially_released_fails() {
@@ -679,6 +720,7 @@ fn test_approve_milestone_zero_amount_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
+#[test]
 fn test_raise_dispute_unauthorized_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -5818,4 +5860,443 @@ fn test_multisig_transfer_admin_invalid_ratio_fails() {
     let ratios = vec![&env, 0_i128, 0_i128];
     let result = client.try_multisig_transfer_admin(&100_i128, &ratios);
     assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// multisig_approval — high-precision division with lock states
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_multisig_approval_preserves_total_exactly() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 1_i128, 1_i128, 1_i128];
+    let allocations = client.multisig_approval(&100_i128, &ratios);
+    assert_eq!(allocations.len(), 3);
+
+    // Verify sum equals total_amount exactly — no value loss.
+    let total = allocations.iter().fold(0_i128, |acc, v| acc + v);
+    assert_eq!(total, 100);
+}
+
+#[test]
+fn test_multisig_approval_largest_remainder_distribution() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // Ratios [1, 2, 3] with total 10. Expected: 1/6, 2/6, 3/6 of 10.
+    // Base: 1.66 -> 1, 3.33 -> 3, 5.0 -> 5. Sum = 9. Remaining = 1.
+    // Remainders: weighted % 6 => 10%6=4, 20%6=2, 30%6=0
+    // Largest remainder is index 0 (4) → gets the extra 1.
+    let ratios = vec![&env, 1_i128, 2_i128, 3_i128];
+    let allocations = client.multisig_approval(&10_i128, &ratios);
+
+    let total = allocations.iter().fold(0_i128, |acc, v| acc + v);
+    assert_eq!(total, 10);
+    assert_eq!(allocations.get(0).unwrap(), 2);
+    assert_eq!(allocations.get(1).unwrap(), 3);
+    assert_eq!(allocations.get(2).unwrap(), 5);
+}
+
+#[test]
+fn test_multisig_approval_single_ratio_gets_all() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 5_i128];
+    let allocations = client.multisig_approval(&100_i128, &ratios);
+
+    assert_eq!(allocations.len(), 1);
+    assert_eq!(allocations.get(0).unwrap(), 100);
+}
+
+#[test]
+fn test_multisig_approval_large_total_no_value_loss() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 3_i128, 5_i128, 2_i128];
+    let allocations = client.multisig_approval(&i128::MAX, &ratios);
+
+    let total = allocations.iter().fold(0_i128, |acc, v| acc.checked_add(v).unwrap());
+    assert_eq!(total, i128::MAX);
+}
+
+#[test]
+fn test_multisig_approval_lock_violation_on_reentrant_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+
+    // Manually set the lock before calling multisig_approval to simulate
+    // a concurrent execution.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .set(&DataKey::MultisigLock, &true);
+    });
+
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let ratios = vec![&env, 1_i128, 1_i128];
+    let result = client.try_multisig_approval(&100_i128, &ratios);
+    assert_eq!(result, Err(Ok(Error::LockViolation)));
+}
+
+#[test]
+fn test_multisig_approval_lock_released_after_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 1_i128, 1_i128];
+    let _ = client.multisig_approval(&100_i128, &ratios);
+
+    // Lock should be released; a second call should succeed.
+    let result = client.try_multisig_approval(&100_i128, &ratios);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_multisig_approval_lock_released_after_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // Trigger an error (empty ratios) which should release the lock.
+    let ratios = soroban_sdk::Vec::new(&env);
+    let result = client.try_multisig_approval(&100_i128, &ratios);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+
+    // Lock should be released; a valid call should now succeed.
+    let valid_ratios = vec![&env, 1_i128];
+    let result2 = client.try_multisig_approval(&100_i128, &valid_ratios);
+    assert!(result2.is_ok());
+}
+
+#[test]
+fn test_multisig_approval_invalid_ratio_negative_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, -1_i128, 2_i128];
+    let result = client.try_multisig_approval(&100_i128, &ratios);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_multisig_approval_invalid_ratio_zero_sum_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 0_i128, 0_i128];
+    let result = client.try_multisig_approval(&100_i128, &ratios);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_multisig_approval_empty_ratios_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = soroban_sdk::Vec::new(&env);
+    let result = client.try_multisig_approval(&100_i128, &ratios);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_multisig_approval_negative_total_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 1_i128, 1_i128];
+    let result = client.try_multisig_approval(&-1_i128, &ratios);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// raise_dispute — re-entry protection & strict input validation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_raise_dispute_double_execution_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+
+    // Second raise_dispute on an already-Disputed milestone must fail.
+    let result = client.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_raise_dispute_reentry_lock_prevents_same_tx_double_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _freelancer_addr, _, _, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Manually set the dispute lock to simulate a re-entrant call
+    // that hasn't yet updated the milestone status.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .set(&DataKey::DisputeLock(0u32), &true);
+    });
+
+    let result = client.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::DisputeAlreadyRaised)));
+}
+
+#[test]
+fn test_raise_dispute_invalid_milestone_index_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // milestone_index beyond the milestone_count must fail with InvalidMilestone.
+    let result = client.try_raise_dispute(&client_addr, &5u32);
+    assert_eq!(result, Err(Ok(Error::InvalidMilestone)));
+}
+
+#[test]
+fn test_raise_dispute_zero_amount_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, _, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Corrupt the milestone amount to 0.
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.amount = 0;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    let result = client.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_raise_dispute_negative_amount_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, _, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Corrupt the milestone amount to negative.
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.amount = -500;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    let result = client.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_raise_dispute_lock_released_after_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _freelancer_addr, _, _, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.raise_dispute(&client_addr, &0u32);
+
+    // Verify the lock was released (no lock should remain in temp storage).
+    let lock_exists = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .has(&DataKey::DisputeLock(0u32))
+    });
+    assert!(!lock_exists);
+}
+
+#[test]
+fn test_raise_dispute_lock_released_after_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, _, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Try to dispute an out-of-bounds milestone; should fail but release lock.
+    let result = client.try_raise_dispute(&client_addr, &99u32);
+    assert_eq!(result, Err(Ok(Error::InvalidMilestone)));
+
+    // Verify the lock on index 99 was released despite the error.
+    let lock_99_still_exists = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .has(&DataKey::DisputeLock(99u32))
+    });
+    assert!(!lock_99_still_exists);
+
+    // Now a valid raise_dispute on index 0 should succeed independently.
+    client.raise_dispute(&client_addr, &0u32);
+
+    let lock_0_still_exists = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .has(&DataKey::DisputeLock(0u32))
+    });
+    assert!(!lock_0_still_exists);
+}
+
+#[test]
+fn test_raise_dispute_as_freelancer_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Freelancer should also be able to raise a dispute.
+    client.raise_dispute(&freelancer_addr, &0u32);
+
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.status, MilestoneStatus::Disputed);
+}
+
+#[test]
+fn test_raise_dispute_on_pending_milestone_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Raise dispute on a Pending milestone (before delivery).
+    client.raise_dispute(&client_addr, &0u32);
+
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.status, MilestoneStatus::Disputed);
+}
+
+#[test]
+fn test_raise_dispute_on_partially_released_milestone_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_partial(&client_addr, &0u32, &300_i128);
+
+    // Raise dispute on a PartiallyReleased milestone.
+    client.raise_dispute(&client_addr, &0u32);
+
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.status, MilestoneStatus::Disputed);
+}
+
+#[test]
+fn test_raise_dispute_after_resolved_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, arbiter_addr, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+    client.resolve_dispute(&arbiter_addr, &0u32, &true);
+
+    // Trying to dispute again after resolution must fail.
+    let result = client.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_failed_raise_dispute_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Raise dispute successfully so we can test double-dispute.
+    client.raise_dispute(&client_addr, &0u32);
+
+    let dispute_topic_val: Val = symbol_short!("dispute").into_val(&env);
+    let dispute_events_before = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == dispute_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+
+    // This call must fail (already disputed).
+    let _ = client.try_raise_dispute(&client_addr, &0u32);
+
+    let dispute_events_after = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == dispute_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+
+    // No new dispute event should have been emitted by the failed call.
+    assert_eq!(dispute_events_before, dispute_events_after);
 }
