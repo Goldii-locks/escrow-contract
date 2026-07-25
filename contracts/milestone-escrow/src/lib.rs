@@ -355,6 +355,7 @@ impl MilestoneEscrow {
             }
         }
         Err(Error::Unauthorized)
+    }
     fn load_admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .persistent()
