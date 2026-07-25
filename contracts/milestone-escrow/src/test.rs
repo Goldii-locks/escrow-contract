@@ -1995,11 +1995,11 @@ fn test_approve_partial_state_transitions() {
     );
     client.fund(&client_addr);
 
-    // Test 1: Pending → InvalidStatus (should fail)
+    // Test 1: Pending ΓåÆ InvalidStatus (should fail)
     let result = client.try_approve_partial(&client_addr, &0u32, &4000_i128);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Test 2: Delivered → PartiallyReleased (should pass)
+    // Test 2: Delivered ΓåÆ PartiallyReleased (should pass)
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_partial(&client_addr, &0u32, &4000_i128);
     let job = client.get_job();
@@ -2009,7 +2009,7 @@ fn test_approve_partial_state_transitions() {
     );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 4000);
 
-    // Test 3: PartiallyReleased → PartiallyReleased (should pass)
+    // Test 3: PartiallyReleased ΓåÆ PartiallyReleased (should pass)
     client.approve_partial(&client_addr, &0u32, &3000_i128);
     let job = client.get_job();
     assert_eq!(
@@ -2018,7 +2018,7 @@ fn test_approve_partial_state_transitions() {
     );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 7000);
 
-    // Test 4: PartiallyReleased → Released (should pass)
+    // Test 4: PartiallyReleased ΓåÆ Released (should pass)
     client.approve_partial(&client_addr, &0u32, &3000_i128);
     let job = client.get_job();
     assert_eq!(
@@ -2027,7 +2027,7 @@ fn test_approve_partial_state_transitions() {
     );
     assert_eq!(job.milestones.get(0).unwrap().released_amount, 10000);
 
-    // Test 5: Released → InvalidStatus (should fail)
+    // Test 5: Released ΓåÆ InvalidStatus (should fail)
     let result = client.try_approve_partial(&client_addr, &0u32, &1000_i128);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
@@ -2521,11 +2521,11 @@ fn test_approve_milestone_state_transitions() {
     );
     client.fund(&client_addr);
 
-    // Test 1: Pending → InvalidStatus (should fail)
+    // Test 1: Pending ΓåÆ InvalidStatus (should fail)
     let result = client.try_approve_milestone(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Test 2: Delivered → Released (should pass)
+    // Test 2: Delivered ΓåÆ Released (should pass)
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_milestone(&client_addr, &0u32);
     let job = client.get_job();
@@ -2534,25 +2534,25 @@ fn test_approve_milestone_state_transitions() {
         MilestoneStatus::Released
     );
 
-    // Test 3: PartiallyReleased → InvalidStatus (should fail)
+    // Test 3: PartiallyReleased ΓåÆ InvalidStatus (should fail)
     client.mark_delivered(&freelancer_addr, &1u32);
     client.approve_partial(&client_addr, &1u32, &500_i128);
     let result = client.try_approve_milestone(&client_addr, &1u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Test 4: Released → InvalidStatus (should fail)
+    // Test 4: Released ΓåÆ InvalidStatus (should fail)
     client.mark_delivered(&freelancer_addr, &2u32);
     client.approve_milestone(&client_addr, &2u32);
     let result = client.try_approve_milestone(&client_addr, &2u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Test 5: Disputed → InvalidStatus (should fail)
+    // Test 5: Disputed ΓåÆ InvalidStatus (should fail)
     client.mark_delivered(&freelancer_addr, &3u32);
     client.raise_dispute(&client_addr, &3u32);
     let result = client.try_approve_milestone(&client_addr, &3u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Test 6: Refunded → InvalidStatus (should fail)
+    // Test 6: Refunded ΓåÆ InvalidStatus (should fail)
     client.mark_delivered(&freelancer_addr, &4u32);
     client.raise_dispute(&client_addr, &4u32);
     client.resolve_dispute(&arbiter_addr, &4u32, &false);
@@ -2807,7 +2807,7 @@ fn test_mark_delivered_state_transitions() {
     );
     client.fund(&client_addr);
 
-    // Test 1: Pending → Delivered (should pass)
+    // Test 1: Pending ΓåÆ Delivered (should pass)
     client.mark_delivered(&freelancer_addr, &0u32);
     let job = client.get_job();
     assert_eq!(
@@ -2815,7 +2815,7 @@ fn test_mark_delivered_state_transitions() {
         MilestoneStatus::Delivered
     );
 
-    // Test 2: Delivered → Delivered (should fail)
+    // Test 2: Delivered ΓåÆ Delivered (should fail)
     let result = client.try_mark_delivered(&freelancer_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
@@ -2955,7 +2955,7 @@ fn test_claim_auto_release_zero_remaining_amount_fails() {
     client.fund(&client_addr);
     client.mark_delivered(&freelancer_addr, &0u32);
 
-    // Client fully approves the milestone first — nothing left to release
+    // Client fully approves the milestone first ΓÇö nothing left to release
     client.approve_milestone(&client_addr, &0u32);
 
     // Manually reset status back to Delivered to simulate the edge case
@@ -2973,7 +2973,7 @@ fn test_claim_auto_release_zero_remaining_amount_fails() {
 }
 
 // ============================================================================
-// approve_partial — hardened test suite
+// approve_partial ΓÇö hardened test suite
 // ============================================================================
 
 /// Helper: set up a funded escrow with a single milestone of `amount` tokens,
@@ -3026,7 +3026,7 @@ fn setup_delivered_single(
     )
 }
 
-/// Test 1 — AUTHORIZATION: The freelancer (a known but non-client party) cannot
+/// Test 1 ΓÇö AUTHORIZATION: The freelancer (a known but non-client party) cannot
 /// call `approve_partial`.  We assert the precise `Error::Unauthorized` variant
 /// rather than just `is_err()`.
 #[test]
@@ -3040,7 +3040,7 @@ fn test_approve_partial_freelancer_is_unauthorized() {
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
-/// Test 2 — AUTHORIZATION: The arbiter (also a known but non-client party)
+/// Test 2 ΓÇö AUTHORIZATION: The arbiter (also a known but non-client party)
 /// cannot call `approve_partial`.  Asserts `Error::Unauthorized` precisely.
 #[test]
 fn test_approve_partial_arbiter_is_unauthorized() {
@@ -3053,7 +3053,7 @@ fn test_approve_partial_arbiter_is_unauthorized() {
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
-/// Test 3 — INVALID STATE (Disputed): A milestone in `Disputed` status is not
+/// Test 3 ΓÇö INVALID STATE (Disputed): A milestone in `Disputed` status is not
 /// approvable.  Raises a dispute first, then attempts `approve_partial` and
 /// asserts `Error::InvalidStatus`.
 #[test]
@@ -3070,7 +3070,7 @@ fn test_approve_partial_on_disputed_milestone_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
-/// Test 4 — INVALID STATE (Refunded): A milestone that has been refunded to the
+/// Test 4 ΓÇö INVALID STATE (Refunded): A milestone that has been refunded to the
 /// client is a terminal state; `approve_partial` must be rejected with
 /// `Error::InvalidStatus`.
 #[test]
@@ -3080,7 +3080,7 @@ fn test_approve_partial_on_refunded_milestone_fails() {
 
     let (client_addr, _, arbiter_addr, _, _, escrow) = setup_delivered_single(&env, 10_000);
 
-    // Dispute then resolve in favour of the client → status = Refunded.
+    // Dispute then resolve in favour of the client ΓåÆ status = Refunded.
     escrow.raise_dispute(&client_addr, &0u32);
     escrow.resolve_dispute(&arbiter_addr, &0u32, &false);
 
@@ -3088,7 +3088,7 @@ fn test_approve_partial_on_refunded_milestone_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
-/// Test 5 — NON-EXISTENT MILESTONE ID: Supplying a milestone index that is
+/// Test 5 ΓÇö NON-EXISTENT MILESTONE ID: Supplying a milestone index that is
 /// strictly out of the initialised range must return `Error::InvalidMilestone`
 /// rather than panicking or silently succeeding.
 #[test]
@@ -3104,7 +3104,7 @@ fn test_approve_partial_nonexistent_milestone_index_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidMilestone)));
 }
 
-/// Test 6 — EXACT REMAINING BALANCE ON A PARTIALLY-RELEASED MILESTONE:
+/// Test 6 ΓÇö EXACT REMAINING BALANCE ON A PARTIALLY-RELEASED MILESTONE:
 /// After one partial release the milestone is `PartiallyReleased`.  Approving
 /// exactly the residual balance must flip the status to `Released` and leave
 /// `released_amount == milestone.amount`.  No tokens should remain in escrow.
@@ -3118,7 +3118,7 @@ fn test_approve_partial_exact_remaining_balance_transitions_to_released() {
 
     let token = token::Client::new(&env, &token_id);
 
-    // First installment — leaves 7 000 remaining.
+    // First installment ΓÇö leaves 7 000 remaining.
     escrow.approve_partial(&client_addr, &0u32, &5_000_i128);
     assert_eq!(token.balance(&freelancer_addr), 5_000);
 
@@ -3127,7 +3127,7 @@ fn test_approve_partial_exact_remaining_balance_transitions_to_released() {
     assert_eq!(ms.status, MilestoneStatus::PartiallyReleased);
     assert_eq!(ms.released_amount, 5_000);
 
-    // Second installment — exactly the remainder.
+    // Second installment ΓÇö exactly the remainder.
     escrow.approve_partial(&client_addr, &0u32, &7_000_i128);
 
     let job2 = escrow.get_job();
@@ -3138,7 +3138,7 @@ fn test_approve_partial_exact_remaining_balance_transitions_to_released() {
     assert_eq!(token.balance(&contract_id), 0);
 }
 
-/// Test 7 — OVER-ALLOCATION ON A PARTIALLY-RELEASED MILESTONE:
+/// Test 7 ΓÇö OVER-ALLOCATION ON A PARTIALLY-RELEASED MILESTONE:
 /// After one partial release the remaining balance is smaller than the
 /// original amount.  Requesting more than *that residual* must be rejected
 /// with `Error::InvalidAmount` even though the requested value is individually
@@ -3153,13 +3153,13 @@ fn test_approve_partial_over_release_after_prior_partial_fails() {
     // Release 6 000; only 4 000 remains.
     escrow.approve_partial(&client_addr, &0u32, &6_000_i128);
 
-    // Attempt to release 5 000 — valid against the original total but exceeds
+    // Attempt to release 5 000 ΓÇö valid against the original total but exceeds
     // the 4 000 residual balance.
     let result = escrow.try_approve_partial(&client_addr, &0u32, &5_000_i128);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
-/// Test 8 — STATE ISOLATION ACROSS MILESTONES:
+/// Test 8 ΓÇö STATE ISOLATION ACROSS MILESTONES:
 /// A partial release on milestone 0 must not alter the stored state of
 /// milestone 1.  `released_amount` and `status` of the untouched milestone
 /// must remain exactly as initialised.
@@ -3207,9 +3207,9 @@ fn test_approve_partial_does_not_mutate_sibling_milestone() {
     assert_eq!(ms1.amount, 10_000);
 }
 
-/// Test 9 — PRE-INITIALIZATION GUARD:
+/// Test 9 ΓÇö PRE-INITIALIZATION GUARD:
 /// Calling `approve_partial` before the contract has been initialised at all
-/// must return `Error::NotInitialized` — the function should not panic
+/// must return `Error::NotInitialized` ΓÇö the function should not panic
 /// unexpectedly or return a misleading error variant.
 #[test]
 fn test_approve_partial_before_initialize_fails() {
@@ -3347,7 +3347,7 @@ fn test_approve_milestone_on_refunded_milestone_fails() {
 /// amount of `i128::MAX` does not panic and that the checked arithmetic in
 /// the `remaining` event field handles the post-release state gracefully.
 /// After a successful full approval `released_amount == milestone.amount`, so
-/// `checked_sub` yields `0` — confirming no overflow or underflow can occur.
+/// `checked_sub` yields `0` ΓÇö confirming no overflow or underflow can occur.
 #[test]
 fn test_approve_milestone_max_i128_checked_math_no_overflow() {
     let env = Env::default();
@@ -3435,7 +3435,7 @@ fn test_approve_milestone_overflow_checked_math_returns_error() {
     // Release 1 token so released_amount == 1; remaining == i128::MAX - 1.
     client.approve_partial(&client_addr, &0u32, &1_i128);
 
-    // Now attempt to release i128::MAX — this would overflow released_amount.
+    // Now attempt to release i128::MAX ΓÇö this would overflow released_amount.
     // The checked_add inside approve_partial must catch it and return InvalidAmount.
     let result = client.try_approve_partial(&client_addr, &0u32, &i128::MAX);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
@@ -3446,8 +3446,8 @@ fn test_approve_milestone_overflow_checked_math_returns_error() {
 /// `mark_delivered`) and that the full happy-path executes without error.
 ///
 /// This test exercises the optimised code path end-to-end:
-///   mark_delivered  → stores DeliveredAt(0) in temporary storage
-///   claim_auto_release → reads DeliveredAt(0) from temporary storage,
+///   mark_delivered  ΓåÆ stores DeliveredAt(0) in temporary storage
+///   claim_auto_release ΓåÆ reads DeliveredAt(0) from temporary storage,
 ///                        confirms deadline has passed, transfers tokens
 #[test]
 fn test_claim_auto_release_uses_temporary_storage_for_deadline() {
@@ -3496,7 +3496,7 @@ fn test_claim_auto_release_uses_temporary_storage_for_deadline() {
     });
 
     // claim_auto_release reads DeliveredAt(0) from temporary storage.
-    // Deadline = 0 + 200 = 200; current = 201 ≥ 200 → should succeed.
+    // Deadline = 0 + 200 = 200; current = 201 ΓëÑ 200 ΓåÆ should succeed.
     client.claim_auto_release(&freelancer_addr, &0u32);
 
     assert_eq!(token.balance(&freelancer_addr), 5_000);
@@ -3571,8 +3571,8 @@ fn test_time_until_auto_release_reads_temporary_storage() {
 /// state on persistent storage is correctly set to `Released`.
 ///
 /// This exercises the optimised code path end-to-end:
-///   mark_delivered  → persists Milestone(0) with status=Delivered
-///   approve_milestone → transfers tokens, persists Milestone(0) with
+///   mark_delivered  ΓåÆ persists Milestone(0) with status=Delivered
+///   approve_milestone ΓåÆ transfers tokens, persists Milestone(0) with
 ///                       status=Released, writes MilestoneReleased(0) to
 ///                       temporary storage as a cheap completion signal
 #[test]
@@ -3637,16 +3637,16 @@ fn test_approve_milestone_writes_temporary_released_flag() {
     assert_eq!(token.balance(&freelancer_addr), 8_000);
     assert_eq!(token.balance(&contract_id), 0);
 
-    // A second approval must be rejected — the persistent status is Released.
+    // A second approval must be rejected ΓÇö the persistent status is Released.
     let result = client.try_approve_milestone(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
 // ============================================================================
-// mark_delivered — hardened test suite (5 new edge-case tests)
+// mark_delivered ΓÇö hardened test suite (5 new edge-case tests)
 // ============================================================================
 
-/// Edge case 1 — FAILED AUTH (wrong caller):
+/// Edge case 1 ΓÇö FAILED AUTH (wrong caller):
 /// A completely unrelated address that is not the registered freelancer must
 /// receive `Error::Unauthorized`.  Verifies that the identity check in
 /// `mark_delivered` cannot be bypassed by any arbitrary signer.
@@ -3686,7 +3686,7 @@ fn test_mark_delivered_wrong_caller_is_unauthorized() {
     let result = client.try_mark_delivered(&impostor, &0u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 
-    // Confirm the milestone is still Pending — no state mutation occurred.
+    // Confirm the milestone is still Pending ΓÇö no state mutation occurred.
     let job = client.get_job();
     assert_eq!(
         job.milestones.get(0).unwrap().status,
@@ -3694,7 +3694,7 @@ fn test_mark_delivered_wrong_caller_is_unauthorized() {
     );
 }
 
-/// Edge case 2 — OVERFLOW / OUT-OF-BOUNDS INDEX (u32::MAX):
+/// Edge case 2 ΓÇö OVERFLOW / OUT-OF-BOUNDS INDEX (u32::MAX):
 /// Supplying `u32::MAX` as the milestone index must be rejected with
 /// `Error::InvalidMilestone` without panicking or overflowing.  This also
 /// covers any large out-of-range index since only index 0 exists.
@@ -3734,7 +3734,7 @@ fn test_mark_delivered_u32_max_index_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidMilestone)));
 }
 
-/// Edge case 3 — PRE-CONDITION (contract not initialized):
+/// Edge case 3 ΓÇö PRE-CONDITION (contract not initialized):
 /// Calling `mark_delivered` before `initialize` has been called must return
 /// `Error::NotInitialized`.  The function must not panic or produce a
 /// misleading error variant.
@@ -3752,7 +3752,7 @@ fn test_mark_delivered_before_initialize_fails() {
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
 
-/// Edge case 4 — INVALID STATE (milestone already Released):
+/// Edge case 4 ΓÇö INVALID STATE (milestone already Released):
 /// Once a milestone has been fully approved and its status is `Released`, a
 /// subsequent call to `mark_delivered` must be rejected with
 /// `Error::InvalidStatus`.  Verifies that the terminal `Released` state is
@@ -3803,7 +3803,7 @@ fn test_mark_delivered_on_released_milestone_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
-/// Edge case 5 — INVALID STATE (milestone Refunded):
+/// Edge case 5 ΓÇö INVALID STATE (milestone Refunded):
 /// A milestone that was refunded to the client after a dispute is in a terminal
 /// state.  `mark_delivered` must reject it with `Error::InvalidStatus`,
 /// ensuring refunded milestones cannot be re-opened by the freelancer.
@@ -3838,7 +3838,7 @@ fn test_mark_delivered_on_refunded_milestone_fails() {
     );
     client.fund(&client_addr);
 
-    // Drive the milestone to `Refunded`: deliver → dispute → resolve for client.
+    // Drive the milestone to `Refunded`: deliver ΓåÆ dispute ΓåÆ resolve for client.
     client.mark_delivered(&freelancer_addr, &0u32);
     client.raise_dispute(&client_addr, &0u32);
     client.resolve_dispute(&arbiter_addr, &0u32, &false);
@@ -3855,7 +3855,7 @@ fn test_mark_delivered_on_refunded_milestone_fails() {
 }
 
 // ============================================================================
-// claim_auto_release — checked-arithmetic boundary tests
+// claim_auto_release ΓÇö checked-arithmetic boundary tests
 // ============================================================================
 
 /// Boundary test: `auto_release_seconds` = u64::MAX causes the
@@ -3970,11 +3970,11 @@ fn test_claim_auto_release_overflow_checked_math_returns_error() {
 }
 
 // ============================================================================
-// claim_auto_release — double-execution / reentrancy guard tests
+// claim_auto_release ΓÇö double-execution / reentrancy guard tests
 // ============================================================================
 
 /// Double-execution test: invoking `claim_auto_release` a second time in the
-/// same environment — after a successful first call — must be rejected with
+/// same environment ΓÇö after a successful first call ΓÇö must be rejected with
 /// `Error::InvalidStatus` because the first call committed `Released` to
 /// storage before executing the token transfer (CEI pattern).  No tokens must
 /// be transferred on the second attempt.
@@ -4021,7 +4021,7 @@ fn test_claim_auto_release_double_execution_reverts() {
     assert_eq!(token.balance(&freelancer_addr), 10_000);
     assert_eq!(token.balance(&contract_id), 0);
 
-    // Milestone status is now Released — a second call must be rejected.
+    // Milestone status is now Released ΓÇö a second call must be rejected.
     let result = client.try_claim_auto_release(&freelancer_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
@@ -4031,10 +4031,10 @@ fn test_claim_auto_release_double_execution_reverts() {
 }
 
 // ============================================================================
-// claim_auto_release — strict identity authorization tests
+// claim_auto_release ΓÇö strict identity authorization tests
 // ============================================================================
 
-/// Auth test 1 — NO SIGNATURE PROVIDED (require_auth enforcement):
+/// Auth test 1 ΓÇö NO SIGNATURE PROVIDED (require_auth enforcement):
 /// Calling `claim_auto_release` with no mocked auth at all means the Soroban
 /// host receives zero authorization entries for the caller.  `require_auth()`
 /// fires before any contract logic and the host rejects the invocation.
@@ -4084,7 +4084,7 @@ fn test_claim_auto_release_no_auth_provided_fails() {
     // set_auths([]) clears all mocks without installing any new entries.
     env.set_auths(&[]);
 
-    // No auth entry exists for freelancer_addr → require_auth() in
+    // No auth entry exists for freelancer_addr ΓåÆ require_auth() in
     // claim_auto_release panics at the host level.  try_ captures that as
     // Err(Err(_)).
     let result = escrow.try_claim_auto_release(&freelancer_addr, &0u32);
@@ -4093,7 +4093,7 @@ fn test_claim_auto_release_no_auth_provided_fails() {
     assert!(matches!(result, Err(Err(_))));
 }
 
-/// Auth test 2 — WRONG IDENTITY (identity-check enforcement):
+/// Auth test 2 ΓÇö WRONG IDENTITY (identity-check enforcement):
 /// An impostor provides a valid signature for their *own* address but passes
 /// `freelancer_addr` as the argument.  `require_auth()` passes for the
 /// impostor's own address, but the subsequent identity comparison
@@ -4160,7 +4160,7 @@ fn test_claim_auto_release_wrong_identity_unauthorized() {
 
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 
-    // Milestone must still be in Delivered state — no state mutation occurred.
+    // Milestone must still be in Delivered state ΓÇö no state mutation occurred.
     let job = escrow.get_job();
     assert_eq!(
         job.milestones.get(0).unwrap().status,
@@ -4169,7 +4169,7 @@ fn test_claim_auto_release_wrong_identity_unauthorized() {
 }
 
 // ============================================================================
-// initialize — boundary / edge-case / negative-input test suite
+// initialize ΓÇö boundary / edge-case / negative-input test suite
 // ============================================================================
 
 fn env_without_snapshot() -> Env {
@@ -4221,7 +4221,7 @@ fn initialize_budget_for_milestone_count(count: u32) -> (u64, u64) {
     (cpu, memory)
 }
 
-/// Boundary test 1 — EMPTY MILESTONE VEC:
+/// Boundary test 1 ΓÇö EMPTY MILESTONE VEC:
 /// Passing an empty `milestone_amounts` vec must be rejected with
 /// `Error::InvalidAmount` because there are no milestones to sum and the
 /// contract has no meaningful work to escrow.  The contract must remain
@@ -4288,7 +4288,7 @@ fn test_initialize_zero_address_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidAddress)));
 }
 
-/// Boundary test 2 — NEGATIVE MILESTONE AMOUNT:
+/// Boundary test 2 ΓÇö NEGATIVE MILESTONE AMOUNT:
 /// A milestone with a negative amount must be rejected with
 /// `Error::InvalidAmount`.  Negative amounts would allow the contract to be
 /// funded with a lower-than-expected total or even drain the contract on
@@ -4323,7 +4323,7 @@ fn test_initialize_negative_milestone_amount_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
-/// Boundary test 3 — MILESTONE AMOUNT SUM OVERFLOW (i128::MAX + 1):
+/// Boundary test 3 ΓÇö MILESTONE AMOUNT SUM OVERFLOW (i128::MAX + 1):
 /// Two milestone amounts whose sum exceeds i128::MAX must trigger the
 /// checked_add overflow guard inside `initialize` and return
 /// `Error::InvalidAmount` without panicking.
@@ -4344,7 +4344,7 @@ fn test_initialize_milestone_sum_overflow_fails() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    // i128::MAX + i128::MAX overflows — checked_add must catch this.
+    // i128::MAX + i128::MAX overflows ΓÇö checked_add must catch this.
     let amounts = vec![&env, i128::MAX, i128::MAX];
     let result = client.try_initialize(
         &admin_addr,
@@ -4358,7 +4358,7 @@ fn test_initialize_milestone_sum_overflow_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
-/// Boundary test 4 — SINGLE VALID MILESTONE STATE VERIFICATION:
+/// Boundary test 4 ΓÇö SINGLE VALID MILESTONE STATE VERIFICATION:
 /// After a successful `initialize` with exactly one milestone, the persisted
 /// state must exactly match the inputs: correct addresses, milestone in
 /// `Pending` state with the right amount and zero released_amount, unfunded,
@@ -4416,7 +4416,7 @@ fn test_initialize_single_milestone_state_is_correct() {
     assert!(escrow.is_token_whitelisted(&token_contract_id));
 }
 
-/// Boundary test 5 — MULTIPLE MILESTONES STATE VERIFICATION:
+/// Boundary test 5 ΓÇö MULTIPLE MILESTONES STATE VERIFICATION:
 /// After initializing with several milestones of distinct amounts, every
 /// milestone must be stored in `Pending` state with the correct individual
 /// amount, zero released_amount, and the aggregate total must equal the sum of
@@ -4551,7 +4551,7 @@ fn test_initialize_invalid_amount_rolls_back_single_pass_writes() {
     assert_eq!(job.milestones.get(0).unwrap().amount, 200);
 }
 
-/// Boundary test 6 — ALREADY INITIALIZED GUARD (duplicate call):
+/// Boundary test 6 ΓÇö ALREADY INITIALIZED GUARD (duplicate call):
 /// Calling `initialize` a second time on an already-initialized contract must
 /// return `Error::AlreadyInitialized` and must not mutate any existing state.
 /// This is a focused regression guard on the re-entrancy / double-init path.
@@ -4584,7 +4584,7 @@ fn test_initialize_already_initialized_returns_correct_error() {
         &amounts,
     );
 
-    // Second call with different parameters — must fail with AlreadyInitialized.
+    // Second call with different parameters ΓÇö must fail with AlreadyInitialized.
     let new_amounts = vec![&env, 9_999_i128];
     let result = escrow.try_initialize(
         &admin_addr,
@@ -4597,7 +4597,7 @@ fn test_initialize_already_initialized_returns_correct_error() {
     );
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 
-    // State must be unchanged — original client and amount still in place.
+    // State must be unchanged ΓÇö original client and amount still in place.
     let job = escrow.get_job();
     assert_eq!(job.client, client_addr);
     assert_eq!(job.milestones.len(), 1);
@@ -4743,7 +4743,7 @@ fn test_initialize_state_transition_matrix() {
     );
 }
 
-/// Boundary test 7 — AUTO_RELEASE_SECONDS ZERO:
+/// Boundary test 7 ΓÇö AUTO_RELEASE_SECONDS ZERO:
 /// `initialize` must reject `auto_release_seconds = 0` with
 /// `Error::InvalidAmount` so invalid job configuration cannot be persisted.
 #[test]
@@ -4777,10 +4777,10 @@ fn test_initialize_auto_release_seconds_zero_fails() {
 }
 
 // ============================================================================
-// add_whitelisted_token — integer overflow protection test suite (#20)
+// add_whitelisted_token ΓÇö integer overflow protection test suite (#20)
 // ============================================================================
 
-/// Overflow-protection test 1 — CAPACITY CAP BOUNDARY (exactly at cap):
+/// Overflow-protection test 1 ΓÇö CAPACITY CAP BOUNDARY (exactly at cap):
 /// Adding tokens one-by-one until the whitelist reaches MAX_WHITELIST_SIZE (50)
 /// must succeed for every addition up to and including the 50th token.  The
 /// 51st addition must be rejected with `Error::InvalidAmount`, proving that
@@ -4833,12 +4833,12 @@ fn test_add_whitelisted_token_at_capacity_fails() {
     let result = client.try_add_whitelisted_token(&admin_addr, &overflow_token);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 
-    // Whitelist length must be unchanged — no mutation on rejected call.
+    // Whitelist length must be unchanged ΓÇö no mutation on rejected call.
     assert_eq!(client.get_whitelisted_tokens().len(), 50);
 }
 
-/// Overflow-protection test 2 — ONE BELOW CAP SUCCEEDS:
-/// Adding the 50th token (index 49, i.e. exactly at MAX_WHITELIST_SIZE − 1
+/// Overflow-protection test 2 ΓÇö ONE BELOW CAP SUCCEEDS:
+/// Adding the 50th token (index 49, i.e. exactly at MAX_WHITELIST_SIZE ΓêÆ 1
 /// before the call) must succeed, confirming the boundary is inclusive of the
 /// last valid slot and the guard fires only when the list is already full.
 #[test]
@@ -4888,7 +4888,7 @@ fn test_add_whitelisted_token_one_below_cap_succeeds() {
     assert_eq!(client.get_whitelisted_tokens().len(), 50);
 }
 
-/// Overflow-protection test 3 — IMMEDIATE OVERFLOW AFTER REMOVE:
+/// Overflow-protection test 3 ΓÇö IMMEDIATE OVERFLOW AFTER REMOVE:
 /// After removing a token from a full whitelist, one slot becomes available and
 /// the next `add_whitelisted_token` must succeed.  A subsequent addition to the
 /// now-full list must again be rejected.  Verifies that the cap interacts
@@ -4957,11 +4957,11 @@ fn test_add_whitelisted_token_cap_resets_after_remove() {
     assert_eq!(result2, Err(Ok(Error::InvalidAmount)));
 }
 
-/// Overflow-protection test 4 — DUPLICATE BEFORE OVERFLOW CHECK:
+/// Overflow-protection test 4 ΓÇö DUPLICATE BEFORE OVERFLOW CHECK:
 /// When a duplicate token is submitted and the whitelist is also at capacity,
 /// the duplicate check (`TokenAlreadyWhitelisted`) must fire before the
-/// overflow guard (`InvalidAmount`) — preserving the logical ordering of
-/// checks: auth → admin identity → duplicate → capacity.
+/// overflow guard (`InvalidAmount`) ΓÇö preserving the logical ordering of
+/// checks: auth ΓåÆ admin identity ΓåÆ duplicate ΓåÆ capacity.
 #[test]
 fn test_add_whitelisted_token_duplicate_checked_before_cap() {
     let env = Env::default();
@@ -5005,9 +5005,9 @@ fn test_add_whitelisted_token_duplicate_checked_before_cap() {
     assert_eq!(result, Err(Ok(Error::TokenAlreadyWhitelisted)));
 }
 
-/// Overflow-protection test 5 — UNAUTHORIZED CALLER BEFORE CAPACITY CHECK:
+/// Overflow-protection test 5 ΓÇö UNAUTHORIZED CALLER BEFORE CAPACITY CHECK:
 /// An unauthorised caller must be rejected before the overflow guard is
-/// evaluated, preserving the existing auth → admin-identity → capacity
+/// evaluated, preserving the existing auth ΓåÆ admin-identity ΓåÆ capacity
 /// check ordering.
 #[test]
 fn test_add_whitelisted_token_unauthorized_before_cap_check() {
@@ -5128,7 +5128,7 @@ fn test_remove_whitelisted_token_rejects_zero_contract_address() {
     assert_eq!(result, Err(Ok(Error::InvalidAddress)));
 }
 
-// ── upgrade / version tests ──────────────────────────────────────────────────
+// ΓöÇΓöÇ upgrade / version tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 #[test]
 fn test_version_returns_one_after_initialize() {
@@ -5182,7 +5182,7 @@ fn test_upgrade_admin_auth_check_passes() {
 }
 
 // ============================================================================
-// add_whitelisted_token — comprehensive boundary / negative / edge-case tests
+// add_whitelisted_token ΓÇö comprehensive boundary / negative / edge-case tests
 // ============================================================================
 
 /// add_whitelisted_token before initialize: no Admin key exists yet, so the
@@ -5200,7 +5200,7 @@ fn test_add_whitelisted_token_before_initialize_fails() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    // No initialize call — storage is empty.
+    // No initialize call ΓÇö storage is empty.
     let result = client.try_add_whitelisted_token(&admin_addr, &token_addr);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
@@ -5248,7 +5248,7 @@ fn test_add_whitelisted_token_after_funded_fails() {
 /// Calling add_whitelisted_token with a non-admin address (even one that is a
 /// valid address, e.g. the freelancer) must return Unauthorized.
 /// This is distinct from `test_non_admin_add_token_fails` which uses a
-/// completely random bad_actor — here we use a known role address.
+/// completely random bad_actor ΓÇö here we use a known role address.
 #[test]
 fn test_add_whitelisted_token_freelancer_is_unauthorized() {
     let env = Env::default();
@@ -5403,7 +5403,7 @@ fn test_add_whitelisted_token_failed_does_not_emit_event() {
         &vec![&env, 1_000_i128],
     );
 
-    // Attempt to add the already-whitelisted token — must fail.
+    // Attempt to add the already-whitelisted token ΓÇö must fail.
     let _ = client.try_add_whitelisted_token(&admin_addr, &token1);
 
     let wtok_topic: Val = symbol_short!("wtok").into_val(&env);
@@ -5521,6 +5521,9 @@ fn test_add_whitelisted_token_does_not_whitelist_other_tokens() {
         !client.is_token_whitelisted(&token3),
         "token3 was never added — must not be whitelisted"
     );
+    assert!(client.is_token_whitelisted(&token1), "token1 (init token) must still be whitelisted");
+    assert!(client.is_token_whitelisted(&token2), "token2 must be whitelisted after add");
+    assert!(!client.is_token_whitelisted(&token3), "token3 was never added ΓÇö must not be whitelisted");
 
     // Whitelist length must be exactly 2.
     assert_eq!(client.get_whitelisted_tokens().len(), 2);
@@ -5650,6 +5653,7 @@ fn test_reputation_auto_release() {
 
 #[test]
 fn test_multisig_admin_initialize() {
+fn test_platform_fee_allocation_admin_override_requires_verified_admin() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -5657,6 +5661,7 @@ fn test_multisig_admin_initialize() {
     let freelancer_addr = Address::generate(&env);
     let arbiter_addr = Address::generate(&env);
     let admin_addr = Address::generate(&env);
+    let attacker = Address::generate(&env);
 
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_addr.clone())
@@ -5665,6 +5670,7 @@ fn test_multisig_admin_initialize() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
+    let amounts = vec![&env, 1_000_i128];
     client.initialize(
         &admin_addr,
         &client_addr,
@@ -5683,6 +5689,17 @@ fn test_multisig_admin_initialize() {
 
 #[test]
 fn test_multisig_admin_transfer_happy_path() {
+        &604800,
+        &amounts,
+    );
+
+    let result =
+        client.try_pf_alloc_admin_override(&attacker, &1000_u32, &8000_u32, &1000_u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_platform_fee_allocation_admin_override_unlocks_locked_allocation() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -5696,6 +5713,10 @@ fn test_multisig_admin_transfer_happy_path() {
 
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_a.clone())
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
 
     let contract_id = env.register(MilestoneEscrow, ());
@@ -5703,6 +5724,9 @@ fn test_multisig_admin_transfer_happy_path() {
 
     client.initialize(
         &admin_a,
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
         &client_addr,
         &freelancer_addr,
         &arbiter_addr,
@@ -5740,6 +5764,26 @@ fn test_multisig_admin_transfer_happy_path() {
 
 #[test]
 fn test_multisig_admin_transfer_errors() {
+        &604800,
+        &amounts,
+    );
+
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+    client.lock_platform_fee_allocation(&admin_addr);
+
+    let locked_update = client.try_set_platform_fee_allocation(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+    assert_eq!(locked_update, Err(Ok(Error::InvalidStatus)));
+
+    client.pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+    let allocation = client.get_platform_fee_allocation();
+    assert_eq!(allocation.client_bps, 1500);
+    assert_eq!(allocation.freelancer_bps, 7500);
+    assert_eq!(allocation.treasury_bps, 1000);
+    assert!(!allocation.locked);
+}
+
+#[test]
+fn test_emergency_pause_admin_override_requires_verified_admin() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -5753,6 +5797,11 @@ fn test_multisig_admin_transfer_errors() {
 
     let token_contract_id = env
         .register_stellar_asset_contract_v2(admin_a.clone())
+    let admin_addr = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
         .address();
 
     let contract_id = env.register(MilestoneEscrow, ());
@@ -5760,6 +5809,9 @@ fn test_multisig_admin_transfer_errors() {
 
     client.initialize(
         &admin_a,
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
         &client_addr,
         &freelancer_addr,
         &arbiter_addr,
@@ -5877,4 +5929,95 @@ fn test_multisig_admin_revoke_approval() {
     let final_admins = client.get_admins();
     assert_eq!(final_admins.len(), 1);
     assert_eq!(final_admins.get(0).unwrap(), admin_d);
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_emergency_pause_admin_override(&attacker, &true);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_emergency_pause_override_unblocks_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 10_000_i128];
+    let (client_addr, freelancer_addr, _arbiter, admin_addr, _token, _id, client) =
+        setup_funded_escrow(&env, amounts);
+
+    client.emergency_pause(&admin_addr);
+    assert!(client.is_emergency_paused());
+
+    let paused_result = client.try_mark_delivered(&freelancer_addr, &0u32);
+    assert_eq!(paused_result, Err(Ok(Error::Paused)));
+
+    client.emergency_pause_admin_override(&admin_addr, &false);
+    assert!(!client.is_emergency_paused());
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    let job = client.get_job();
+    let milestone = job.milestones.get(0).unwrap();
+    assert_eq!(milestone.status, MilestoneStatus::Delivered);
+
+    let funded_result = client.try_fund(&client_addr);
+    assert_eq!(funded_result, Err(Ok(Error::AlreadyFunded)));
+}
+
+#[test]
+fn test_payment_streaming_milestones_ratio_split_is_precise_and_conservative() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let split = client.payment_streaming_milestones(&101_i128, &1_i128, &2_i128);
+    assert_eq!(split.first, 51);
+    assert_eq!(split.second, 50);
+    assert_eq!(split.first + split.second, 101);
+}
+
+#[test]
+fn test_payment_streaming_milestones_invalid_ratio_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_payment_streaming_milestones(&100_i128, &7_i128, &3_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_multisig_transfer_admin_ratio_split_preserves_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 1_i128, 1_i128, 1_i128];
+    let allocations = client.multisig_transfer_admin(&100_i128, &ratios);
+    assert_eq!(allocations.len(), 3);
+    assert_eq!(allocations.get(0).unwrap(), 34);
+    assert_eq!(allocations.get(1).unwrap(), 33);
+    assert_eq!(allocations.get(2).unwrap(), 33);
+
+    let total = allocations.iter().fold(0_i128, |acc, v| acc + v);
+    assert_eq!(total, 100);
+}
+
+#[test]
+fn test_multisig_transfer_admin_invalid_ratio_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let ratios = vec![&env, 0_i128, 0_i128];
+    let result = client.try_multisig_transfer_admin(&100_i128, &ratios);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
 }
