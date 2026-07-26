@@ -14,10 +14,63 @@ enum ReentrantTokenDataKey {
 #[contract]
 pub struct ReentrantToken;
 
+mod mock_token {
+    use super::*;
+
+    #[contracttype]
+    #[derive(Clone)]
+    enum MockTokenDataKey {
+        Balance(Address),
+    }
+
+    #[contract]
+    pub struct MockToken;
+
+    #[contractimpl]
+    impl MockToken {
+        pub fn mint(env: Env, to: Address, amount: i128) {
+            let key = MockTokenDataKey::Balance(to.clone());
+            let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+            env.storage().persistent().set(&key, &(current + amount));
+        }
+
+        pub fn balance(env: Env, addr: Address) -> i128 {
+            let key = MockTokenDataKey::Balance(addr);
+            env.storage().persistent().get(&key).unwrap_or(0)
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            if amount <= 0 {
+                return;
+            }
+
+            let from_key = MockTokenDataKey::Balance(from.clone());
+            let to_key = MockTokenDataKey::Balance(to.clone());
+            let from_balance: i128 = env.storage().persistent().get(&from_key).unwrap_or(0);
+            let to_balance: i128 = env.storage().persistent().get(&to_key).unwrap_or(0);
+
+            if from_balance < amount {
+                return;
+            }
+
+            env.storage()
+                .persistent()
+                .set(&from_key, &(from_balance - amount));
+            env.storage()
+                .persistent()
+                .set(&to_key, &(to_balance + amount));
+        }
+    }
+}
+
 #[contractimpl]
 impl ReentrantToken {
     pub fn transfer(env: Env, from: Address, to: Address, _amount: i128) {
-        if env.storage().instance().has(&ReentrantTokenDataKey::Reentered) {
+        if env
+            .storage()
+            .instance()
+            .has(&ReentrantTokenDataKey::Reentered)
+        {
             return;
         }
 
@@ -30,7 +83,9 @@ impl ReentrantToken {
     }
 
     pub fn callback_attempted(env: Env) -> bool {
-        env.storage().instance().has(&ReentrantTokenDataKey::Reentered)
+        env.storage()
+            .instance()
+            .has(&ReentrantTokenDataKey::Reentered)
     }
 }
 
@@ -859,6 +914,103 @@ fn test_resolve_dispute_wrong_status_fails() {
 
     let result = client.try_resolve_dispute(&arbiter_addr, &0u32, &true);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_resolve_dispute_reverts_when_contract_balance_is_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env.register(mock_token::MockToken, ());
+    let token = mock_token::MockTokenClient::new(&env, &token_contract_id);
+    token.mint(&client_addr, &1_000_i128);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+
+    let token = mock_token::MockTokenClient::new(&env, &token_contract_id);
+    token.transfer(&contract_id, &client_addr, &1_000_i128);
+
+    let result = client.try_resolve_dispute(&arbiter_addr, &0u32, &true);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_resolve_dispute_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env.register(mock_token::MockToken, ());
+    let token = mock_token::MockTokenClient::new(&env, &token_contract_id);
+    token.mint(&client_addr, &1_000_i128);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.raise_dispute(&client_addr, &0u32);
+    client.resolve_dispute(&arbiter_addr, &0u32, &true);
+
+    let resolve_topic: Symbol = symbol_short!("resolve");
+    let resolve_topic_val: Val = resolve_topic.into_val(&env);
+    let mut resolve_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == resolve_topic_val.get_payload() {
+                resolve_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    DisputeResolvedEvent::from_val(&env, &event.2),
+                    DisputeResolvedEvent {
+                        contract_id: contract_id.clone(),
+                        milestone_index: 0,
+                        arbiter: arbiter_addr.clone(),
+                        client: client_addr.clone(),
+                        freelancer: freelancer_addr.clone(),
+                        token: token_contract_id.clone(),
+                        amount: 1_000,
+                        released_to_freelancer: true,
+                        status: MilestoneStatus::Released,
+                    }
+                );
+            }
+        }
+    }
+
+    assert_eq!(resolve_events, 1);
 }
 
 #[test]
@@ -2206,6 +2358,65 @@ fn test_claim_auto_release_before_deadline_fails() {
     assert!(result.is_err());
 }
 
+// ── extend_milestone_deadline ────────────────────────────────────────────────
+
+#[test]
+fn test_extend_milestone_deadline_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+
+    let initial_time = escrow.time_until_auto_release(&0u32);
+    
+    // Extend by 1000 seconds
+    escrow.extend_milestone_deadline(&client_addr, &0u32, &1000u64);
+
+    let new_time = escrow.time_until_auto_release(&0u32);
+    assert_eq!(new_time, initial_time + 1000);
+}
+
+#[test]
+fn test_extend_milestone_deadline_not_client_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+
+    // freelancer tries to extend
+    let result = escrow.try_extend_milestone_deadline(&freelancer_addr, &0u32, &1000u64);
+    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
+}
+
+#[test]
+fn test_extend_milestone_deadline_invalid_status_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    // milestone is Pending, not Delivered
+    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &1000u64);
+    assert_eq!(result.unwrap_err().unwrap(), Error::InvalidStatus);
+}
+
+#[test]
+fn test_extend_milestone_deadline_zero_seconds_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+
+    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &0u64);
+    assert_eq!(result.unwrap_err().unwrap(), Error::InvalidExtension);
+}
+
 #[test]
 fn test_claim_auto_release_after_deadline_succeeds() {
     let env = Env::default();
@@ -2543,7 +2754,9 @@ fn test_approve_milestone_state_transitions() {
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
     // Setup 5 milestones: one for each invalid status path, plus one for the valid path
-    let amounts = vec![&env, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128];
+    let amounts = vec![
+        &env, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128, 1_000_i128,
+    ];
     client.initialize(
         &admin_addr,
         &client_addr,
@@ -2563,7 +2776,10 @@ fn test_approve_milestone_state_transitions() {
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_milestone(&client_addr, &0u32);
     let job = client.get_job();
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Released);
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Released
+    );
 
     // Test 3: PartiallyReleased ΓåÆ InvalidStatus (should fail)
     client.mark_delivered(&freelancer_addr, &1u32);
@@ -5203,8 +5419,7 @@ fn test_upgrade_admin_auth_check_passes() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     // Admin auth passes; the call will fail because [0; 32] isn't a valid
     // uploaded wasm hash, but it must NOT return Unauthorized.
@@ -5495,7 +5710,10 @@ fn test_add_whitelisted_token_old_admin_rejected_after_transfer() {
 
     // New admin must succeed.
     let new_result = client.try_add_whitelisted_token(&new_admin_addr, &token3);
-    assert!(new_result.is_ok(), "new admin should be able to add a token");
+    assert!(
+        new_result.is_ok(),
+        "new admin should be able to add a token"
+    );
     assert!(client.is_token_whitelisted(&token3));
 }
 
@@ -5538,9 +5756,18 @@ fn test_add_whitelisted_token_does_not_whitelist_other_tokens() {
     // Only token2 is added.
     client.add_whitelisted_token(&admin_addr, &token2);
 
-    assert!(client.is_token_whitelisted(&token1), "token1 (init token) must still be whitelisted");
-    assert!(client.is_token_whitelisted(&token2), "token2 must be whitelisted after add");
-    assert!(!client.is_token_whitelisted(&token3), "token3 was never added ΓÇö must not be whitelisted");
+    assert!(
+        client.is_token_whitelisted(&token1),
+        "token1 (init token) must still be whitelisted"
+    );
+    assert!(
+        client.is_token_whitelisted(&token2),
+        "token2 must be whitelisted after add"
+    );
+    assert!(
+        !client.is_token_whitelisted(&token3),
+        "token3 was never added ΓÇö must not be whitelisted"
+    );
 
     // Whitelist length must be exactly 2.
     assert_eq!(client.get_whitelisted_tokens().len(), 2);
@@ -5697,8 +5924,7 @@ fn test_platform_fee_allocation_admin_override_requires_verified_admin() {
         &amounts,
     );
 
-    let result =
-        client.try_pf_alloc_admin_override(&attacker, &1000_u32, &8000_u32, &1000_u32);
+    let result = client.try_pf_alloc_admin_override(&attacker, &1000_u32, &8000_u32, &1000_u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
@@ -5733,7 +5959,8 @@ fn test_platform_fee_allocation_admin_override_unlocks_locked_allocation() {
     client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
     client.lock_platform_fee_allocation(&admin_addr);
 
-    let locked_update = client.try_set_platform_fee_allocation(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+    let locked_update =
+        client.try_set_platform_fee_allocation(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
     assert_eq!(locked_update, Err(Ok(Error::InvalidStatus)));
 
     client.pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
