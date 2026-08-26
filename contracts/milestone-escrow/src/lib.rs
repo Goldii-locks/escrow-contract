@@ -191,6 +191,11 @@ pub enum DataKey {
     /// cleared by `multisig_admin_override_release` or
     /// `multisig_admin_override_refund`.
     MultisigLocked,
+    /// Temporary key: cumulative extension seconds applied to a Delivered
+    /// milestone. Written by `extend_milestone_deadline`, read by
+    /// `claim_auto_release` and `time_until_auto_release`. Uses temporary
+    /// storage because the extension is deadline-scoped workflow state whose
+    /// ledger footprint cost should not persist beyond the auto-release window.
     MilestoneTimeExtension(u32),
     CancelLock,
     // ── tax_withholding_deductions storage keys ──────────────────────────────
@@ -1088,7 +1093,7 @@ impl MilestoneEscrow {
 
     fn load_time_extension(env: &Env, index: u32) -> u64 {
         env.storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::MilestoneTimeExtension(index))
             .unwrap_or(0)
     }
@@ -1791,8 +1796,7 @@ impl MilestoneEscrow {
         let new_extension = current_extension
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
-
-        env.storage().persistent().set(
+        env.storage().temporary().set(
             &DataKey::MilestoneTimeExtension(milestone_index),
             &new_extension,
         );
