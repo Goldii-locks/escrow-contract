@@ -9363,3 +9363,47 @@ fn test_multisig_transfer_admin_zero_total_emits_no_event() {
     let events = env.events().all();
     assert!(events.is_empty(), "no events expected on failed call");
 }
+
+    // Verify the event was published
+    let events = env.events().all();
+    assert!(!events.is_empty(), "expected at least one event");
+    let last = events.last().unwrap();
+    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, Symbol::new(&env, "m_ext"));
+}
+
+#[test]
+fn test_milestone_time_extensions_does_not_write_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    client.initialize(&admin, &client_addr, &freelancer_addr, &arbiter_addr, &token, &604800, &vec![&env, 1000_i128]);
+
+    let job_before = client.get_job();
+
+    client.milestone_time_extensions(&1000_i128, &1_i128, &2_i128);
+
+    let job_after = client.get_job();
+    assert_eq!(job_before.milestones.len(), job_after.milestones.len());
+    for i in 0..job_before.milestones.len() {
+        let m1 = job_before.milestones.get(i).unwrap();
+        let m2 = job_after.milestones.get(i).unwrap();
+        assert_eq!(m1.amount, m2.amount);
+        assert_eq!(m1.released_amount, m2.released_amount);
+        assert_eq!(m1.status, m2.status);
+        assert_eq!(m1.delivered_at, m2.delivered_at);
+    }
+}
+
+// ============================================================================
+// Zero/empty balance guards + event emission — multisig_transfer_admin
+// (Issues #270 and #273)
+// ============================================================================
