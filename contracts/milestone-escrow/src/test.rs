@@ -10149,3 +10149,171 @@ fn test_multisig_split_refund_illegal_source_state_fails() {
     let result = client.try_multisig_split_refund(&admin_addr, &1_000_i128, &5_000_u32, &5_000_u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
+
+// Admin-transfer hardening (#346)
+//
+// `propose_admin_transfer` must reject unauthorised callers and illegal source
+// states with specific typed errors, and must not mutate any ledger entry on
+// the rejected paths.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_propose_admin_transfer_unauthorized_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604800,
+        &amounts,
+    );
+
+    let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+
+    let result = client.try_propose_admin_transfer(&attacker, &new_admin, &1u32);
+    assert_eq!(result, Err(Ok(crate::Error::Unauthorized)));
+
+    // A rejected call must not have written any ledger entry.
+    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+}
+
+#[test]
+fn test_propose_admin_transfer_pending_state_no_overwrite() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604800,
+        &amounts,
+    );
+
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    assert_eq!(
+        client.try_propose_admin_transfer(&admin, &first, &1u32),
+        Ok(Ok(()))
+    );
+
+    let rejected = client.try_propose_admin_transfer(&admin, &second, &2u32);
+    assert_eq!(rejected, Err(Ok(crate::Error::AdminTransferPending)));
+
+    // The already-pending proposal must remain untouched.
+    let pending = client
+        .try_get_pending_admin_transfer()
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.new_admin, first);
+    assert_eq!(pending.proposal_id, 1u32);
+}
+
+#[test]
+fn test_propose_admin_transfer_uninitialized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+    let result = client.try_propose_admin_transfer(&admin, &new_admin, &1u32);
+    assert_eq!(result, Err(Ok(crate::Error::NotInitialized)));
+    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+}
+
+#[test]
+fn test_propose_admin_transfer_invalid_address_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604800,
+        &amounts,
+    );
+
+    let zero = Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let result = client.try_propose_admin_transfer(&admin, &zero, &1u32);
+    assert_eq!(result, Err(Ok(crate::Error::InvalidAddress)));
+    assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));
+}
+
+#[test]
+fn test_propose_admin_transfer_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604800,
+        &amounts,
+    );
+
+    let new_admin = Address::generate(&env);
+    assert_eq!(
+        client.try_propose_admin_transfer(&admin, &new_admin, &42u32),
+        Ok(Ok(()))
+    );
+    let pending = client
+        .try_get_pending_admin_transfer()
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.new_admin, new_admin);
+    assert_eq!(pending.proposal_id, 42u32);
+}
