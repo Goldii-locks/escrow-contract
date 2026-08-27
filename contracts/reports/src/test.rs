@@ -6255,6 +6255,23 @@ fn test_multisig_transfer_admin_ratio_split_preserves_total() {
 }
 
 #[test]
+fn test_multisig_transfer_admin_high_precision_split_preserves_every_unit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amount = 1_000_000_000_000_000_001_i128;
+    let ratios = vec![&env, 2_i128, 3_i128, 5_i128];
+
+    let allocations = client.multisig_transfer_admin(&amount, &ratios);
+    assert_eq!(allocations.get(0).unwrap(), 200_000_000_000_000_001);
+    assert_eq!(allocations.get(1).unwrap(), 300_000_000_000_000_000);
+    assert_eq!(allocations.get(2).unwrap(), 500_000_000_000_000_000);
+    assert_eq!(allocations.iter().fold(0_i128, |sum, value| sum + value), amount);
+}
+
+#[test]
 fn test_multisig_transfer_admin_invalid_ratio_fails() {
     let env = Env::default();
     env.mock_all_auths();
