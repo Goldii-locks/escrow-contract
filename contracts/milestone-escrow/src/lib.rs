@@ -1564,29 +1564,59 @@ impl MilestoneEscrow {
     /// (whitelist management, pause/resume, emergency overrides, etc.); the
     /// previous admin loses that access.
     ///
+    /// # Checks (in order)
+    /// 1. `current_admin.require_auth()` — SDK-level signature check.
+    /// 2. Contract must be initialised (`NotInitialized`).
+    /// 3. `require_admin` — verified admin key matches `DataKey::Admin`.
+    /// 4. `new_admin` must not be a zero address (`InvalidAddress`).
+    /// 5. No multisig admin-transfer proposal may already be pending
+    ///    (`AdminTransferPending`).
+    ///
     /// # Parameters
     /// * `current_admin` – Must match the currently stored admin. Must
     ///                     authorize the call.
     /// * `new_admin`     – Address to become the new admin.
     ///
     /// # Errors
-    /// * `NotInitialized` – Contract has not been initialized.
-    /// * `Unauthorized`   – `current_admin` is not the stored admin.
+    /// * `NotInitialized`       – Contract has not been initialized.
+    /// * `Unauthorized`         – `current_admin` is not the stored admin.
+    /// * `InvalidAddress`       – `new_admin` is a zero address.
+    /// * `AdminTransferPending` – A multisig admin-transfer proposal is already
+    ///                            pending; execute or cancel it first.
     pub fn transfer_admin(
         env: Env,
         current_admin: Address,
         new_admin: Address,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &current_admin)?;
+        // Auth + init guards first — a single require_auth so the host does not
+        // abort on a duplicated auth requirement.
+        current_admin.require_auth();
+        if !env.storage().persistent().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let stored_admin = Self::load_admin(&env)?;
+        if stored_admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
 
-        let stored_admin: Address = env
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if new_admin == zero_account || new_admin == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
+        if env
             .storage()
             .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-
-        if current_admin != stored_admin {
-            return Err(Error::Unauthorized);
+            .has(&DataKey::PendingAdminTransfer)
+        {
+            return Err(Error::AdminTransferPending);
         }
 
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
@@ -3243,15 +3273,28 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized`            – Admin key has never been stored.
     /// * `Unauthorized`              – `admin` is not the stored admin.
-    /// * `EmergencyPauseInProgress`  – A pause transition is already running.
     /// * `NotPaused`                 – The contract is not currently paused.
+    /// * `EmergencyPauseInProgress`  – A pause transition is already running.
     pub fn emergency_unpause(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
+        // Auth + init guards first — a single require_auth so the host does not
+        // abort on a duplicated auth requirement.
+        admin.require_auth();
+        if !env.storage().persistent().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let stored_admin = Self::load_admin(&env)?;
+        if stored_admin != admin {
+            return Err(Error::Unauthorized);
+        }
 
+        // Reject the illegal source state before any further ledger access
+        // (including the transition lock) so a mistaken unpause never mutates
+        // storage.
         if !Self::is_emergency_paused(env.clone()) {
             return Err(Error::NotPaused);
         }
+
+        Self::assert_emergency_pause_not_locked(&env)?;
 
         env.storage()
             .instance()
@@ -4776,39 +4819,62 @@ impl MilestoneEscrow {
     /// Resume a previously paused escrow, re-enabling all normal user-facing
     /// endpoints.
     ///
-    /// Calling this on an escrow that is not paused is a no-op (idempotent).
+    /// Resuming an escrow that is not paused is rejected with `NotPaused`
+    /// rather than silently succeeding, so a mistaken call is visible instead
+    /// of reading as a completed recovery.
+    ///
+    /// # Checks (in order)
+    /// 1. `admin.require_auth()` — SDK-level signature check.
+    /// 2. `require_admin` — verified admin key matches `DataKey::Admin`.
+    /// 3. Contract must currently be paused (`NotPaused`).
+    /// 4. No pause transition may already be mid-execution
+    ///    (`EmergencyPauseInProgress`).
     ///
     /// # Parameters
     /// * `admin` – Must match `DataKey::Admin`.
     ///
     /// # Errors
-    /// * `NotInitialized` – Contract has not been initialised.
-    /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `NotInitialized`           – Contract has not been initialised.
+    /// * `Unauthorized`             – `admin` is not the stored admin.
+    /// * `NotPaused`                – The escrow is not currently paused.
+    /// * `EmergencyPauseInProgress` – A pause transition is already running.
     pub fn admin_resume_escrow(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Auth + init guards first — a single require_auth so the host does not
+        // abort on a duplicated auth requirement.
+        admin.require_auth();
+        if !env.storage().persistent().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let stored_admin = Self::load_admin(&env)?;
+        if stored_admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let currently_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if !currently_paused {
+            return Err(Error::NotPaused);
+        }
+
+        Self::assert_emergency_pause_not_locked(&env)?;
 
         env.storage()
             .instance()
             .set(&DataKey::EmergencyPauseLock, &true);
 
         let result = (|| {
-            let currently_paused: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::Paused)
-                .unwrap_or(false);
-
             env.storage().instance().set(&DataKey::Paused, &false);
 
-            if currently_paused {
-                env.events().publish(
-                    (symbol_short!("resume"),),
-                    EscrowResumedEvent {
-                        admin: admin.clone(),
-                        contract_id: env.current_contract_address(),
-                    },
-                );
-            }
+            env.events().publish(
+                (symbol_short!("resume"),),
+                EscrowResumedEvent {
+                    admin: admin.clone(),
+                    contract_id: env.current_contract_address(),
+                },
+            );
 
             Ok(())
         })();
@@ -5269,6 +5335,14 @@ impl MilestoneEscrow {
     /// The milestone is moved to `Released` and a full token transfer is
     /// executed to the freelancer.  The `MultisigLocked` flag is cleared.
     ///
+    /// # Checks (in order)
+    /// 1. `admin.require_auth()` — SDK-level signature check.
+    /// 2. `require_admin` — verified admin key matches `DataKey::Admin`.
+    /// 3. `MultisigLocked` must be active (`InvalidStatus`).
+    /// 4. Escrow must be funded (`NotFunded`).
+    /// 5. `milestone_index` must be in range (`InvalidMilestone`).
+    /// 6. Milestone must not already be terminal (`InvalidStatus`).
+    ///
     /// # Parameters
     /// * `admin`           – Must match `DataKey::Admin`.
     /// * `milestone_index` – Target milestone.
@@ -5276,16 +5350,37 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
     /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `InvalidStatus`   – `MultisigLocked` is not active, or the milestone
+    ///                       is already `Released` / `Refunded`.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
-    /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
     /// * `InvalidAmount`   – Remaining balance is ≤ 0.
     pub fn multisig_admin_override_release(
         env: Env,
         admin: Address,
         milestone_index: u32,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Auth + init guards first — a single require_auth so the host does not
+        // abort on a duplicated auth requirement.
+        admin.require_auth();
+        if !env.storage().persistent().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let stored_admin = Self::load_admin(&env)?;
+        if stored_admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        // Only valid when a multisig lock is active — reject before any
+        // JobMeta / milestone ledger reads.
+        let multisig_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::MultisigLocked)
+            .unwrap_or(false);
+        if !multisig_locked {
+            return Err(Error::InvalidStatus);
+        }
 
         let meta = Self::load_job_meta(&env)?;
         if !meta.funded {
