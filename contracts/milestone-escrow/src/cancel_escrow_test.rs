@@ -23,16 +23,26 @@ fn test_cancel_escrow_sets_lock_and_emits_event() {
     });
     assert!(!is_locked_before);
 
-    // Call cancel_escrow by client
+    // First call (client) records approval — lock NOT yet set.
     client.cancel_escrow(&client_addr);
+    let is_locked_mid = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(!is_locked_mid, "lock must not fire on single signature");
 
-    // Verify event immediately
+    // Second call (freelancer) completes the two-party approval — lock fires.
+    client.cancel_escrow(&freelancer_addr);
+
+    // Verify the final event is the "cancel" event with full details.
     let events = env.events().all();
     let last_event = events.last().unwrap();
     let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("cancel"));
     let parsed_event = CancelEscrowInitiatedEvent::from_val(&env, &last_event.2);
-    assert_eq!(parsed_event.caller, client_addr);
+    assert_eq!(parsed_event.caller, freelancer_addr);
     assert_eq!(parsed_event.contract_id, client.address);
 
     // Verify CancelLock is set to true
@@ -51,12 +61,21 @@ fn test_cancel_escrow_by_freelancer_succeeds() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, milestone_amounts);
 
-    // Call cancel_escrow by freelancer
+    // Freelancer calls first — records approval, no lock yet.
     client.cancel_escrow(&freelancer_addr);
+    let is_locked_mid = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(!is_locked_mid, "lock must not fire on single signature");
 
-    // Verify CancelLock is set to true
+    // Client calls second — both parties have approved, lock fires.
+    client.cancel_escrow(&client_addr);
     let is_locked = env.as_contract(&client.address, || {
         env.storage()
             .instance()

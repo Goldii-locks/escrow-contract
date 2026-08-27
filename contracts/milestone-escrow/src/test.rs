@@ -9403,3 +9403,411 @@ fn test_admin_tax_withholding_deductions_zero_balance_fails() {
     let res = client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &1000u32);
     assert_eq!(res, Err(Ok(Error::InvalidAmount)));
 }
+
+// ============================================================================
+// cancel_escrow multi-party authentication — #295
+// ============================================================================
+
+// ── single-signature reverts ──────────────────────────────────────────────────
+
+/// A single call from the client must NOT set CancelLock — the escrow must
+/// remain operational until the freelancer also approves.
+#[test]
+fn test_cancel_escrow_single_client_signature_does_not_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let locked = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(!locked, "CancelLock must NOT be set after only one signature");
+
+    // Normal ops must still work — mark_delivered should succeed.
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+}
+
+/// A single call from the freelancer must NOT set CancelLock.
+#[test]
+fn test_cancel_escrow_single_freelancer_signature_does_not_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let locked = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(!locked, "CancelLock must NOT be set after only one signature");
+
+    // Normal ops must still work after single freelancer signature.
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+    let job = escrow.get_job();
+    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Delivered);
+}
+
+/// A duplicate call from the same party (client signing twice) must revert
+/// with InvalidStatus before the second bit can be set.
+#[test]
+fn test_cancel_escrow_duplicate_same_party_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let result = escrow.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+/// Freelancer signing twice (without client) must revert.
+#[test]
+fn test_cancel_escrow_duplicate_freelancer_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&freelancer_addr);
+    let result = escrow.try_cancel_escrow(&freelancer_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+// ── two-party approval completes cancel ───────────────────────────────────────
+
+/// Client then freelancer: CancelLock fires after both have approved.
+#[test]
+fn test_cancel_escrow_client_then_freelancer_locks() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let locked = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(locked, "CancelLock must be set after both parties approve");
+}
+
+/// Freelancer then client: order must not matter — lock fires either way.
+#[test]
+fn test_cancel_escrow_freelancer_then_client_locks() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&freelancer_addr);
+    escrow.cancel_escrow(&client_addr);
+
+    let locked = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(locked);
+}
+
+/// After both sign, attempting a third call returns EscrowLocked.
+#[test]
+fn test_cancel_escrow_third_call_after_lock_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let result = escrow.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+}
+
+// ── approval bitmask and events ───────────────────────────────────────────────
+
+/// First signature emits cxlappr event with mask = 1 (client bit).
+#[test]
+fn test_cancel_escrow_first_signature_emits_approval_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cxlappr");
+    let topic_val: Val = topic.into_val(&env);
+    let mut found = false;
+    for e in env.events().all().iter() {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                let ev: CancelApprovalRecordedEvent =
+                    soroban_sdk::FromVal::from_val(&env, &e.2);
+                assert_eq!(ev.caller, client_addr);
+                assert_eq!(ev.approval_mask, 1u32); // bit 0 = client
+                found = true;
+            }
+        }
+    }
+    assert!(found, "cxlappr event not emitted");
+}
+
+/// First signature by freelancer emits cxlappr with mask = 2 (freelancer bit).
+#[test]
+fn test_cancel_escrow_freelancer_first_emits_mask_2() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cxlappr");
+    let topic_val: Val = topic.into_val(&env);
+    let mut mask_found = 0u32;
+    for e in env.events().all().iter() {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                let ev: CancelApprovalRecordedEvent =
+                    soroban_sdk::FromVal::from_val(&env, &e.2);
+                mask_found = ev.approval_mask;
+            }
+        }
+    }
+    assert_eq!(mask_found, 2u32, "freelancer bit should be 2");
+}
+
+/// Second signature (completing both) emits the final cancel event, not cxlappr.
+#[test]
+fn test_cancel_escrow_second_signature_emits_cancel_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let cancel_topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
+    let cancel_val: Val = cancel_topic.into_val(&env);
+    let count = env.events().all().iter().fold(0u32, |acc, e| {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == cancel_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(count, 1, "exactly one cancel event must fire");
+}
+
+/// CancelApproval storage key is cleared after the lock fires (both signed).
+#[test]
+fn test_cancel_escrow_approval_key_cleared_after_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let mask: u32 = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::CancelApproval)
+            .unwrap_or(0u32)
+    });
+    assert_eq!(mask, 0u32, "CancelApproval must be cleared after lock fires");
+}
+
+// ── revoke_cancel_approval ────────────────────────────────────────────────────
+
+/// Client can revoke before freelancer approves — lock must not fire.
+#[test]
+fn test_revoke_cancel_approval_client_before_second_sig() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.revoke_cancel_approval(&client_addr);
+
+    let locked = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(!locked, "lock must not fire after revocation");
+
+    // Normal ops still work.
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+}
+
+/// After revocation both parties can re-approve and complete the cancel.
+#[test]
+fn test_revoke_then_reapprove_completes_cancel() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.revoke_cancel_approval(&client_addr);
+
+    // Re-approve — both sign fresh.
+    escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let locked = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(locked, "cancel must complete after re-approval by both");
+}
+
+/// Revoking when no approval is recorded returns InvalidStatus.
+#[test]
+fn test_revoke_cancel_approval_without_prior_approval_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let result = escrow.try_revoke_cancel_approval(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+/// Revoking after CancelLock is already active returns InvalidStatus.
+#[test]
+fn test_revoke_cancel_approval_after_lock_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let result = escrow.try_revoke_cancel_approval(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+/// Non-party cannot revoke — returns Unauthorized.
+#[test]
+fn test_revoke_cancel_approval_non_party_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    escrow.cancel_escrow(&client_addr);
+
+    let stranger = Address::generate(&env);
+    let result = escrow.try_revoke_cancel_approval(&stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// revoke_cancel_approval emits a cancelrev event with the updated mask.
+#[test]
+fn test_revoke_cancel_approval_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    escrow.revoke_cancel_approval(&client_addr);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancelrev");
+    let topic_val: Val = topic.into_val(&env);
+    let mut found = false;
+    for e in env.events().all().iter() {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                let ev: CancelApprovalRevokedEvent =
+                    soroban_sdk::FromVal::from_val(&env, &e.2);
+                assert_eq!(ev.caller, client_addr);
+                assert_eq!(ev.approval_mask, 0u32);
+                found = true;
+            }
+        }
+    }
+    assert!(found, "cancelrev event not emitted");
+}
+
+// ── unauthorised callers ──────────────────────────────────────────────────────
+
+/// Arbiter cannot initiate a cancel — Unauthorized.
+#[test]
+fn test_cancel_escrow_arbiter_cannot_sign() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, _, arbiter_addr, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let result = escrow.try_cancel_escrow(&arbiter_addr);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// Admin cannot initiate a cancel — Unauthorized.
+#[test]
+fn test_cancel_escrow_admin_cannot_sign() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, _, _, admin_addr, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let result = escrow.try_cancel_escrow(&admin_addr);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
