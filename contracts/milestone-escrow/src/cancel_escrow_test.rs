@@ -1,14 +1,9 @@
 #![cfg(test)]
 use super::*;
-use crate::{
-    CancelEscrowInitiatedEvent, Error, DataKey,
-};
-use soroban_sdk::{
-    Address, Env, symbol_short, Symbol, IntoVal, FromVal, vec, Val,
-    TryIntoVal,
-};
+use crate::{CancelEscrowInitiatedEvent, DataKey, Error};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Events as _;
+use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
 
 #[test]
 fn test_cancel_escrow_sets_lock_and_emits_event() {
@@ -21,7 +16,10 @@ fn test_cancel_escrow_sets_lock_and_emits_event() {
 
     // Initial state: not cancel-locked
     let is_locked_before = env.as_contract(&client.address, || {
-        env.storage().instance().get::<_, bool>(&DataKey::CancelLock).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
     });
     assert!(!is_locked_before);
 
@@ -39,7 +37,10 @@ fn test_cancel_escrow_sets_lock_and_emits_event() {
 
     // Verify CancelLock is set to true
     let is_locked_after = env.as_contract(&client.address, || {
-        env.storage().instance().get::<_, bool>(&DataKey::CancelLock).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
     });
     assert!(is_locked_after);
 }
@@ -50,15 +51,17 @@ fn test_cancel_escrow_by_freelancer_succeeds() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, freelancer_addr, _, _, _, _, client) =
-        setup_funded_escrow(&env, milestone_amounts);
+    let (_, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     // Call cancel_escrow by freelancer
     client.cancel_escrow(&freelancer_addr);
 
     // Verify CancelLock is set to true
     let is_locked = env.as_contract(&client.address, || {
-        env.storage().instance().get::<_, bool>(&DataKey::CancelLock).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
     });
     assert!(is_locked);
 }
@@ -69,8 +72,7 @@ fn test_cancel_escrow_invalid_address() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, _, _, _, client) =
-        setup_funded_escrow(&env, milestone_amounts);
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     let zero_account = Address::from_str(
         &env,
@@ -96,8 +98,7 @@ fn test_cancel_escrow_unauthorized() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, arbiter_addr, _, _, _, client) =
-        setup_funded_escrow(&env, milestone_amounts);
+    let (_, _, arbiter_addr, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     // Call cancel_escrow by arbiter (should fail)
     let res = client.try_cancel_escrow(&arbiter_addr);
