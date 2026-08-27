@@ -380,6 +380,32 @@ pub struct EscrowResumedEvent {
     pub contract_id: Address,
 }
 
+/// Emitted by `emergency_pause` when the admin pauses the escrow.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyPausedEvent {
+    pub admin: Address,
+    pub contract_id: Address,
+}
+
+/// Emitted by `emergency_unpause` when the admin unpauses the escrow.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyUnpausedEvent {
+    pub admin: Address,
+    pub contract_id: Address,
+}
+
+/// Emitted by `emergency_pause_admin_override` when the admin overrides the pause state.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyPauseAdminOverrideEvent {
+    pub admin: Address,
+    pub contract_id: Address,
+    pub paused: bool,
+}
+
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentStreamingEvent {
@@ -1627,6 +1653,15 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::EmergencyPaused, &true);
+
+        env.events().publish(
+            (symbol_short!("empause"),),
+            EmergencyPausedEvent {
+                admin: admin.clone(),
+                contract_id: env.current_contract_address(),
+            },
+        );
+
         Ok(())
     }
 
@@ -1635,6 +1670,15 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::EmergencyPaused, &false);
+
+        env.events().publish(
+            (symbol_short!("emunpause"),),
+            EmergencyUnpausedEvent {
+                admin: admin.clone(),
+                contract_id: env.current_contract_address(),
+            },
+        );
+
         Ok(())
     }
 
@@ -1658,6 +1702,16 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::EmergencyPaused, &paused);
+
+        env.events().publish(
+            (symbol_short!("emoverrid"),),
+            EmergencyPauseAdminOverrideEvent {
+                admin: admin.clone(),
+                contract_id: env.current_contract_address(),
+                paused,
+            },
+        );
+
         Ok(())
     }
 
