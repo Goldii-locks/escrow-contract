@@ -1630,6 +1630,26 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
 
+        // Reject if the contract is emergency-paused.
+        let emergency_paused = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::EmergencyPaused)
+            .unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Reject a duplicate cancel — CancelLock already active.
+        let already_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false);
+        if already_locked {
+            return Err(Error::EscrowLocked);
+        }
+
         caller.require_auth();
         let meta = Self::load_job_meta(&env)?;
 

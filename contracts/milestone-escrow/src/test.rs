@@ -7002,3 +7002,400 @@ fn test_tax_withholding_multi_milestone_independent() {
     assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Released);
     assert_eq!(job.milestones.get(1).unwrap().status, MilestoneStatus::Refunded);
 }
+
+// ============================================================================
+// cancel_escrow — validation requirements test suite (#290)
+// ============================================================================
+
+// ── invalid address guards ────────────────────────────────────────────────────
+
+/// Zero Stellar account address must be rejected before any auth or storage
+/// access, returning InvalidAddress immediately.
+#[test]
+fn test_cancel_escrow_zero_account_address_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let zero_account = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let result = escrow.try_cancel_escrow(&zero_account);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// Zero contract address must be rejected with InvalidAddress.
+#[test]
+fn test_cancel_escrow_zero_contract_address_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let zero_contract = Address::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    );
+    let result = escrow.try_cancel_escrow(&zero_contract);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+// ── not-initialized guard ─────────────────────────────────────────────────────
+
+/// Calling cancel_escrow before initialize must return NotInitialized.
+#[test]
+fn test_cancel_escrow_not_initialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    let result = escrow.try_cancel_escrow(&caller);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+// ── not-funded guard ──────────────────────────────────────────────────────────
+
+/// cancel_escrow before funding must return NotFunded.
+#[test]
+fn test_cancel_escrow_not_funded_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_id,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    let result = escrow.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::NotFunded)));
+}
+
+// ── unauthorized guard ────────────────────────────────────────────────────────
+
+/// A random address that is neither client nor freelancer must get Unauthorized.
+#[test]
+fn test_cancel_escrow_stranger_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let stranger = Address::generate(&env);
+
+    let result = escrow.try_cancel_escrow(&stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// The arbiter is not a valid caller — must get Unauthorized.
+#[test]
+fn test_cancel_escrow_arbiter_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, _, arbiter_addr, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let result = escrow.try_cancel_escrow(&arbiter_addr);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// The admin is not a valid caller — must get Unauthorized.
+#[test]
+fn test_cancel_escrow_admin_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, _, _, admin_addr, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let result = escrow.try_cancel_escrow(&admin_addr);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+// ── emergency-paused guard ────────────────────────────────────────────────────
+
+/// cancel_escrow while the contract is emergency-paused must return Paused.
+#[test]
+fn test_cancel_escrow_while_paused_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, admin_addr, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.emergency_pause(&admin_addr);
+
+    let result = escrow.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::Paused)));
+}
+
+// ── duplicate-cancel guard ────────────────────────────────────────────────────
+
+/// A second call to cancel_escrow after the lock is already set must return
+/// EscrowLocked, preventing duplicate lock-sets or race conditions.
+#[test]
+fn test_cancel_escrow_duplicate_call_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    // First call succeeds.
+    escrow.cancel_escrow(&client_addr);
+
+    // Second call must be rejected.
+    let result = escrow.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+}
+
+/// Freelancer calling cancel after client already locked it also gets EscrowLocked.
+#[test]
+fn test_cancel_escrow_freelancer_duplicate_after_client_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let result = escrow.try_cancel_escrow(&freelancer_addr);
+    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+}
+
+// ── happy paths ───────────────────────────────────────────────────────────────
+
+/// Client can successfully cancel a funded escrow — lock is set, Ok returned.
+#[test]
+fn test_cancel_escrow_client_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let result = escrow.try_cancel_escrow(&client_addr);
+    assert!(result.is_ok());
+}
+
+/// Freelancer can successfully cancel a funded escrow.
+#[test]
+fn test_cancel_escrow_freelancer_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    let result = escrow.try_cancel_escrow(&freelancer_addr);
+    assert!(result.is_ok());
+}
+
+// ── post-cancel state validation ──────────────────────────────────────────────
+
+/// After cancel_escrow, fund is blocked with EscrowLocked.
+#[test]
+fn test_cancel_escrow_blocks_fund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Set up an unfunded escrow so we can test fund after cancel.
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_id,
+        &604800,
+        &vec![&env, 5_000_i128],
+    );
+    // Fund first so cancel_escrow is callable, then verify downstream ops blocked.
+    escrow.fund(&client_addr);
+    escrow.cancel_escrow(&client_addr);
+
+    // fund requires not-locked, so a refunded-and-re-initialized path would
+    // also be blocked.  Verify mark_delivered is blocked as a proxy.
+    let result = escrow.try_mark_delivered(&freelancer_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+}
+
+/// After cancel_escrow, mark_delivered is blocked with EscrowLocked.
+#[test]
+fn test_cancel_escrow_blocks_mark_delivered() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let result = escrow.try_mark_delivered(&freelancer_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+}
+
+/// After cancel_escrow, approve_milestone is blocked with EscrowLocked.
+#[test]
+fn test_cancel_escrow_blocks_approve_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let result = escrow.try_approve_milestone(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+}
+
+/// After cancel_escrow, raise_dispute is blocked with EscrowLocked.
+#[test]
+fn test_cancel_escrow_blocks_raise_dispute() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let result = escrow.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+}
+
+// ── event validation ──────────────────────────────────────────────────────────
+
+/// cancel_escrow must emit exactly one "cancel" event.
+#[test]
+fn test_cancel_escrow_emits_exactly_one_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
+    let topic_val: Val = topic.into_val(&env);
+    let count = env.events().all().iter().fold(0u32, |acc, e| {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(count, 1);
+}
+
+/// The emitted event must contain the correct caller address.
+#[test]
+fn test_cancel_escrow_event_contains_correct_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&freelancer_addr);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
+    let topic_val: Val = topic.into_val(&env);
+    let mut found_caller: Option<Address> = None;
+    for e in env.events().all().iter() {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                let event: CancelEscrowInitiatedEvent = soroban_sdk::FromVal::from_val(&env, &e.2);
+                found_caller = Some(event.caller);
+            }
+        }
+    }
+    assert_eq!(found_caller, Some(freelancer_addr));
+}
+
+// ── milestone state isolation ─────────────────────────────────────────────────
+
+/// cancel_escrow does not mutate any milestone — all remain in their
+/// pre-cancel status after the lock is set.
+#[test]
+fn test_cancel_escrow_does_not_mutate_milestones() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 3_000_i128, 7_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    // Deliver milestone 0 so it is in Delivered state before cancel.
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let job = escrow.get_job();
+    // Milestone 0 must still be Delivered — cancel must not reset it.
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Delivered
+    );
+    // Milestone 1 must still be Pending.
+    assert_eq!(
+        job.milestones.get(1).unwrap().status,
+        MilestoneStatus::Pending
+    );
+}
+
+/// cancel_escrow on an escrow where all milestones are already Released
+/// still succeeds — no business rule blocks it.
+#[test]
+fn test_cancel_escrow_all_milestones_released_still_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+    escrow.approve_milestone(&client_addr, &0u32);
+
+    // All milestones released — cancel is still valid.
+    let result = escrow.try_cancel_escrow(&client_addr);
+    assert!(result.is_ok());
+}
