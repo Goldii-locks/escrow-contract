@@ -9403,3 +9403,260 @@ fn test_admin_tax_withholding_deductions_zero_balance_fails() {
     let res = client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &1000u32);
     assert_eq!(res, Err(Ok(Error::InvalidAmount)));
 }
+
+// ============================================================================
+// cancel_escrow structured events — indexer parsing tests (#293)
+// ============================================================================
+
+// Helper: extract the CancelEscrowInitiatedEvent from the environment event log.
+fn get_cancel_event(env: &Env) -> CancelEscrowInitiatedEvent {
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
+    let topic_val: Val = topic.into_val(env);
+    for e in env.events().all().iter() {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                return soroban_sdk::FromVal::from_val(env, &e.2);
+            }
+        }
+    }
+    panic!("cancel event not found");
+}
+
+// ── exactly one event emitted ─────────────────────────────────────────────────
+
+/// cancel_escrow emits exactly one structured event per successful call.
+#[test]
+fn test_cancel_escrow_event_emitted_exactly_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
+    let topic_val: Val = topic.into_val(&env);
+    let count = env.events().all().iter().fold(0u32, |acc, e| {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() { acc + 1 } else { acc }
+        } else { acc }
+    });
+    assert_eq!(count, 1);
+}
+
+// ── contract_id field ─────────────────────────────────────────────────────────
+
+/// The contract_id field must equal the escrow contract address.
+#[test]
+fn test_cancel_escrow_event_contract_id_correct() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.contract_id, contract_id);
+}
+
+// ── caller field ──────────────────────────────────────────────────────────────
+
+/// The caller field must contain the actual address that triggered the cancel.
+#[test]
+fn test_cancel_escrow_event_caller_is_client_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.caller, client_addr);
+}
+
+/// When the freelancer cancels, the caller field holds the freelancer address.
+#[test]
+fn test_cancel_escrow_event_caller_is_freelancer_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&freelancer_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.caller, freelancer_addr);
+}
+
+// ── caller_is_client role field ───────────────────────────────────────────────
+
+/// caller_is_client must be true when the client initiates the cancel.
+#[test]
+fn test_cancel_escrow_event_caller_is_client_true_for_client() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert!(event.caller_is_client);
+}
+
+/// caller_is_client must be false when the freelancer initiates the cancel.
+#[test]
+fn test_cancel_escrow_event_caller_is_client_false_for_freelancer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&freelancer_addr);
+    let event = get_cancel_event(&env);
+    assert!(!event.caller_is_client);
+}
+
+// ── client / freelancer / token fields ───────────────────────────────────────
+
+/// The client field in the event must match the registered client address.
+#[test]
+fn test_cancel_escrow_event_client_field_correct() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.client, client_addr);
+}
+
+/// The freelancer field in the event must match the registered freelancer.
+#[test]
+fn test_cancel_escrow_event_freelancer_field_correct() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.freelancer, freelancer_addr);
+}
+
+/// The token field must match the escrow token contract address.
+#[test]
+fn test_cancel_escrow_event_token_field_correct() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, token_id, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.token, token_id);
+}
+
+// ── milestone_count field ─────────────────────────────────────────────────────
+
+/// milestone_count must reflect the number of milestones passed to initialize.
+#[test]
+fn test_cancel_escrow_event_milestone_count_single() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.milestone_count, 1);
+}
+
+/// milestone_count must be correct for a multi-milestone escrow.
+#[test]
+fn test_cancel_escrow_event_milestone_count_multiple() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 1_000_i128, 2_000_i128, 3_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.milestone_count, 3);
+}
+
+// ── total_amount field ────────────────────────────────────────────────────────
+
+/// total_amount must equal the sum of all milestone amounts.
+#[test]
+fn test_cancel_escrow_event_total_amount_correct_single_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 7_500_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.total_amount, 7_500);
+}
+
+/// total_amount must be the aggregate of all milestones for a multi-milestone escrow.
+#[test]
+fn test_cancel_escrow_event_total_amount_correct_multi_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 1_000_i128, 2_000_i128, 3_000_i128];
+    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+
+    escrow.cancel_escrow(&client_addr);
+    let event = get_cancel_event(&env);
+    assert_eq!(event.total_amount, 6_000);
+}
+
+// ── full indexer parse round-trip ─────────────────────────────────────────────
+
+/// An indexer can reconstruct all operational parameters from a single event.
+/// Verifies that contract_id, caller, caller_is_client, client, freelancer,
+/// token, milestone_count, and total_amount are all correctly populated in
+/// one combined assertion.
+#[test]
+fn test_cancel_escrow_event_full_indexer_parse() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 4_000_i128, 6_000_i128];
+    let (
+        client_addr,
+        freelancer_addr,
+        _,
+        _,
+        token_id,
+        contract_id,
+        escrow,
+    ) = setup_funded_escrow(&env, amounts);
+
+    // Freelancer initiates the cancel.
+    escrow.cancel_escrow(&freelancer_addr);
+    let event = get_cancel_event(&env);
+
+    assert_eq!(event.contract_id, contract_id,  "contract_id mismatch");
+    assert_eq!(event.caller,      freelancer_addr.clone(), "caller mismatch");
+    assert!(!event.caller_is_client,             "caller_is_client should be false");
+    assert_eq!(event.client,      client_addr,   "client mismatch");
+    assert_eq!(event.freelancer,  freelancer_addr, "freelancer mismatch");
+    assert_eq!(event.token,       token_id,      "token mismatch");
+    assert_eq!(event.milestone_count, 2,         "milestone_count mismatch");
+    assert_eq!(event.total_amount, 10_000,       "total_amount mismatch");
+}

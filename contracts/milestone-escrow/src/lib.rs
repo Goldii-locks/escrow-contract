@@ -477,6 +477,19 @@ pub struct ClaimedEvent {
 pub struct CancelEscrowInitiatedEvent {
     pub contract_id: Address,
     pub caller: Address,
+    /// Whether the initiating caller is the client (`true`) or the freelancer
+    /// (`false`).  Lets indexers attribute the cancellation without resolving
+    /// the caller address against off-chain metadata.
+    pub caller_is_client: bool,
+    pub client: Address,
+    pub freelancer: Address,
+    pub token: Address,
+    /// Total number of milestones in the escrow at the time of cancellation.
+    pub milestone_count: u32,
+    /// Sum of all milestone amounts as stored in `JobMeta`.  Does not account
+    /// for amounts already released; indexers that need unreleased balance
+    /// should subtract separately-indexed release events.
+    pub total_amount: i128,
 }
 
 /// Emitted by `admin_override_cancel_release` when the admin resolves a locked
@@ -2829,6 +2842,12 @@ impl MilestoneEscrow {
             (symbol_short!("cancel"),),
             CancelEscrowInitiatedEvent {
                 contract_id: env.current_contract_address(),
+                caller_is_client: caller == meta.client,
+                client: meta.client.clone(),
+                freelancer: meta.freelancer.clone(),
+                token: meta.token.clone(),
+                milestone_count: meta.milestone_count,
+                total_amount: meta.total_amount,
                 caller,
             },
         );
