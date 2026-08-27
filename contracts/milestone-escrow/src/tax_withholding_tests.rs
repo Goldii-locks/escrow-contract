@@ -67,6 +67,30 @@ fn tax_withholding_rejects_freelancer_only_signature() {
     assert!(client_addr != freelancer_addr);
 }
 
+// ── Issue #298: validation requirements ─────────────────────────────────────
+//
+// tax_withholding_deductions already rejected Released/Refunded milestones,
+// but not Disputed ones — the one status this file's dual-signature setup
+// doesn't otherwise exercise, and unlike `raise_dispute_inner` /
+// `resolve_dispute` elsewhere in this crate, which both treat Disputed as its
+// own case via an exhaustive match rather than folding it into "terminal".
+// A disputed milestone's funds are meant to be frozen until `resolve_dispute`
+// runs; letting tax_withholding_deductions compute and persist a
+// TaxWithholdingRecord for one would let this entry point move money around
+// that freeze. Covered here since no existing test combined raise_dispute
+// with tax_withholding_deductions.
+
+#[test]
+fn tax_withholding_rejects_disputed_milestone() {
+    let env = Env::default();
+    let (client_addr, _freelancer_addr, _contract_id, escrow) = setup_withholding_case(&env);
+
+    escrow.raise_dispute(&client_addr, &0u32);
+
+    let result = escrow.try_tax_withholding_deductions(&0u32, &500u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
 #[test]
 fn failed_single_signature_does_not_create_withholding_record() {
     let env = Env::default();
