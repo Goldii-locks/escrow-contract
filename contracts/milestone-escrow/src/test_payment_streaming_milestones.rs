@@ -14,7 +14,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::Address as _, testutils::EnvTestConfig, testutils::Events, testutils::MockAuth,
-    testutils::MockAuthInvoke, vec, Address, Env, FromVal, IntoVal, Symbol, Val,
+    testutils::MockAuthInvoke, token, vec, Address, Env, FromVal, IntoVal, Symbol, Val,
 };
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -605,4 +605,145 @@ fn test_streaming_matrix_repeated_calls_are_pure() {
     let again = escrow.payment_streaming_milestones(&997_i128, &13_i128, &29_i128);
 
     assert_eq!((first.first, first.second), (again.first, again.second));
+}
+
+// ── #257: execution lock blocks concurrent modifications ─────────────────────
+
+#[test]
+fn test_payment_streaming_lock_blocks_fund() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &5_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 5_000_i128];
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::PaymentStreamingExecutionLock, &true);
+    });
+
+    assert_eq!(
+        escrow.try_fund(&client_addr),
+        Err(Ok(Error::PaymentStreamingInProgress))
+    );
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&DataKey::PaymentStreamingExecutionLock);
+    });
+}
+
+#[test]
+fn test_payment_streaming_lock_blocks_mark_delivered() {
+    let env = test_env();
+    let (escrow, parties) = initialised_escrow(&env);
+
+    // Fund so mark_delivered is otherwise valid.
+    let token_admin = token::StellarAssetClient::new(&env, &escrow.get_job().token);
+    token_admin.mint(&parties.client, &1_000);
+    escrow.fund(&parties.client);
+
+    env.as_contract(&parties.contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::PaymentStreamingExecutionLock, &true);
+    });
+
+    assert_eq!(
+        escrow.try_mark_delivered(&parties.freelancer, &0),
+        Err(Ok(Error::PaymentStreamingInProgress))
+    );
+
+    env.as_contract(&parties.contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&DataKey::PaymentStreamingExecutionLock);
+    });
+}
+
+#[test]
+fn test_payment_streaming_lock_blocks_approve_milestone() {
+    let env = test_env();
+    let (escrow, parties) = initialised_escrow(&env);
+
+    let token_admin = token::StellarAssetClient::new(&env, &escrow.get_job().token);
+    token_admin.mint(&parties.client, &1_000);
+    escrow.fund(&parties.client);
+    escrow.mark_delivered(&parties.freelancer, &0);
+
+    env.as_contract(&parties.contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::PaymentStreamingExecutionLock, &true);
+    });
+
+    assert_eq!(
+        escrow.try_approve_milestone(&parties.client, &0),
+        Err(Ok(Error::PaymentStreamingInProgress))
+    );
+
+    env.as_contract(&parties.contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&DataKey::PaymentStreamingExecutionLock);
+    });
+}
+
+#[test]
+fn test_payment_streaming_releases_lock_after_success() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = calculator_only(&env);
+    let contract_id = escrow.address.clone();
+
+    let _ = escrow.payment_streaming_milestones(&1_000_i128, &1_i128, &2_i128);
+
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held, "execution lock must be cleared after success");
+}
+
+#[test]
+fn test_payment_streaming_releases_lock_after_failure() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = calculator_only(&env);
+    let contract_id = escrow.address.clone();
+
+    let _ = escrow.try_payment_streaming_milestones(&0_i128, &1_i128, &2_i128);
+
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held, "execution lock must be cleared after failure");
 }
