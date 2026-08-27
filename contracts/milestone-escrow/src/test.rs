@@ -9403,3 +9403,277 @@ fn test_admin_tax_withholding_deductions_zero_balance_fails() {
     let res = client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &1000u32);
     assert_eq!(res, Err(Ok(Error::InvalidAmount)));
 }
+
+// ============================================================================
+// cancel_escrow_split_refund — refund allocation algorithms (#292)
+// ============================================================================
+
+// ── correct percentage calculation ───────────────────────────────────────────
+
+/// Full refund to client (10 000 bps): client_refund = total, freelancer = 0.
+#[test]
+fn test_cancel_escrow_split_refund_full_client_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let alloc = client.cancel_escrow_split_refund(&10_000_i128, &10_000u32, &0u32);
+    assert_eq!(alloc.client_refund, 10_000);
+    assert_eq!(alloc.freelancer_payout, 0);
+    assert_eq!(alloc.client_refund_bps, 10_000);
+    assert_eq!(alloc.freelancer_payout_bps, 0);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 10_000);
+}
+
+/// Full payout to freelancer (10 000 bps): freelancer = total, client = 0.
+#[test]
+fn test_cancel_escrow_split_refund_full_freelancer_payout() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let alloc = client.cancel_escrow_split_refund(&10_000_i128, &0u32, &10_000u32);
+    assert_eq!(alloc.client_refund, 0);
+    assert_eq!(alloc.freelancer_payout, 10_000);
+    assert_eq!(alloc.client_refund_bps, 0);
+    assert_eq!(alloc.freelancer_payout_bps, 10_000);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 10_000);
+}
+
+/// 50/50 split: each party receives exactly half (even total).
+#[test]
+fn test_cancel_escrow_split_refund_equal_split() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let alloc = client.cancel_escrow_split_refund(&10_000_i128, &5_000u32, &5_000u32);
+    assert_eq!(alloc.client_refund, 5_000);
+    assert_eq!(alloc.freelancer_payout, 5_000);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 10_000);
+}
+
+/// 70/30 split: client gets 70 %, freelancer 30 %.
+#[test]
+fn test_cancel_escrow_split_refund_70_30() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let alloc = client.cancel_escrow_split_refund(&10_000_i128, &7_000u32, &3_000u32);
+    assert_eq!(alloc.client_refund, 7_000);
+    assert_eq!(alloc.freelancer_payout, 3_000);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 10_000);
+}
+
+/// 1 bps client / 9 999 bps freelancer on a large amount — percentages correct.
+#[test]
+fn test_cancel_escrow_split_refund_tiny_client_share() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let total = 1_000_000_i128;
+    let alloc = client.cancel_escrow_split_refund(&total, &1u32, &9_999u32);
+    // round_nearest(1_000_000 × 1 / 10_000) = 100
+    assert_eq!(alloc.client_refund, 100);
+    assert_eq!(alloc.freelancer_payout, 999_900);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, total);
+}
+
+// ── no-value-lost rounding guarantee ─────────────────────────────────────────
+
+/// Odd total with uneven split — both legs always sum to total exactly.
+/// 101 × 50/50: round_nearest(101 × 5000/10000) = round_nearest(50.5) = 51.
+#[test]
+fn test_cancel_escrow_split_refund_odd_total_rounds_nearest_no_value_lost() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let alloc = client.cancel_escrow_split_refund(&101_i128, &5_000u32, &5_000u32);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 101);
+    assert_eq!(alloc.client_refund, 51);
+    assert_eq!(alloc.freelancer_payout, 50);
+}
+
+/// Large prime total — neither leg is ever negative and sum equals total.
+#[test]
+fn test_cancel_escrow_split_refund_large_prime_total_preserved() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let total = 999_983_i128;
+    let alloc = client.cancel_escrow_split_refund(&total, &3_000u32, &7_000u32);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, total);
+    assert!(alloc.client_refund >= 0);
+    assert!(alloc.freelancer_payout >= 0);
+}
+
+/// 1 stroop total: full amount goes to one party, other gets 0 — no fractions.
+#[test]
+fn test_cancel_escrow_split_refund_single_stroop_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // 1 stroop, 50/50 → round_nearest(1 × 5000 / 10_000) = round(0.5) = 1
+    let alloc = client.cancel_escrow_split_refund(&1_i128, &5_000u32, &5_000u32);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 1);
+}
+
+// ── validation guards ─────────────────────────────────────────────────────────
+
+/// total_amount = 0 must be rejected with InvalidAmount.
+#[test]
+fn test_cancel_escrow_split_refund_zero_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_cancel_escrow_split_refund(&0_i128, &5_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// Negative total_amount must be rejected with InvalidAmount.
+#[test]
+fn test_cancel_escrow_split_refund_negative_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_cancel_escrow_split_refund(&-1_i128, &5_000u32, &5_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// BPS that do not sum to 10 000 must be rejected with InvalidRatio.
+#[test]
+fn test_cancel_escrow_split_refund_bps_not_summing_to_scale_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_cancel_escrow_split_refund(&10_000_i128, &4_000u32, &4_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+/// BPS summing to more than 10 000 must be rejected with InvalidRatio.
+#[test]
+fn test_cancel_escrow_split_refund_bps_overflow_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_cancel_escrow_split_refund(&10_000_i128, &6_000u32, &6_000u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+/// Both BPS zero (summing to 0, not 10 000) must be rejected with InvalidRatio.
+#[test]
+fn test_cancel_escrow_split_refund_both_bps_zero_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_cancel_escrow_split_refund(&10_000_i128, &0u32, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+// ── event emission ────────────────────────────────────────────────────────────
+
+/// cancel_escrow_split_refund emits exactly one cxlspref event.
+#[test]
+fn test_cancel_escrow_split_refund_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.cancel_escrow_split_refund(&10_000_i128, &7_000u32, &3_000u32);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cxlspref");
+    let topic_val: Val = topic.into_val(&env);
+    let count = env.events().all().iter().fold(0u32, |acc, e| {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(count, 1);
+}
+
+/// The emitted event carries the correct allocation amounts and BPS values.
+#[test]
+fn test_cancel_escrow_split_refund_event_payload_correct() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.cancel_escrow_split_refund(&10_000_i128, &3_000u32, &7_000u32);
+
+    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cxlspref");
+    let topic_val: Val = topic.into_val(&env);
+    let mut found: Option<CancelSplitRefundCalculatedEvent> = None;
+    for e in env.events().all().iter() {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic_val.get_payload() {
+                found = Some(soroban_sdk::FromVal::from_val(&env, &e.2));
+            }
+        }
+    }
+    let event = found.expect("cxlspref event not found");
+    assert_eq!(event.client_refund, 3_000);
+    assert_eq!(event.freelancer_payout, 7_000);
+    assert_eq!(event.client_refund_bps, 3_000);
+    assert_eq!(event.freelancer_payout_bps, 7_000);
+}
+
+// ── bps echoing ───────────────────────────────────────────────────────────────
+
+/// The BPS values in the returned RefundAllocation must echo the inputs.
+#[test]
+fn test_cancel_escrow_split_refund_bps_echoed_in_allocation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let alloc = client.cancel_escrow_split_refund(&50_000_i128, &2_500u32, &7_500u32);
+    assert_eq!(alloc.client_refund_bps, 2_500);
+    assert_eq!(alloc.freelancer_payout_bps, 7_500);
+}
+
+// ── standalone calculator (no contract state required) ───────────────────────
+
+/// cancel_escrow_split_refund works without the contract being initialized —
+/// it is a pure calculator that does not read or write contract storage.
+#[test]
+fn test_cancel_escrow_split_refund_works_without_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // No initialize or fund call — function must still succeed.
+    let result = client.try_cancel_escrow_split_refund(&5_000_i128, &4_000u32, &6_000u32);
+    assert!(result.is_ok());
+    let alloc = result.unwrap().unwrap();
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 5_000);
+}

@@ -853,6 +853,19 @@ pub struct SplitRefundCalculatedEvent {
     pub freelancer_payout_bps: u32,
 }
 
+/// Emitted by `cancel_escrow_split_refund` when a cancel-specific split-refund
+/// allocation is calculated.  Records the exact basis-point inputs alongside
+/// the computed amounts so downstream indexers can audit every cancellation
+/// distribution without querying contract storage.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancelSplitRefundCalculatedEvent {
+    pub client_refund: i128,
+    pub freelancer_payout: i128,
+    pub client_refund_bps: u32,
+    pub freelancer_payout_bps: u32,
+}
+
 /// Emitted by `multisig_transfer_admin` after a successful proportional
 /// allocation of `total_amount` across all ratio entries.  Downstream
 /// indexers can use this event to audit every admin-triggered multi-party
@@ -5412,6 +5425,82 @@ impl MilestoneEscrow {
         env.events().publish(
             (symbol_short!("epspltref"),),
             SplitRefundCalculatedEvent {
+                client_refund: allocation.client_refund,
+                freelancer_payout: allocation.freelancer_payout,
+                client_refund_bps: allocation.client_refund_bps,
+                freelancer_payout_bps: allocation.freelancer_payout_bps,
+            },
+        );
+
+        Ok(allocation)
+    }
+
+    /// Compute a split-refund allocation for a cancelled escrow.
+    ///
+    /// Defines refund distribution pathways for split-refund claims that arise
+    /// specifically from a `cancel_escrow` initiation.  The function is a pure
+    /// calculator — it does not transfer tokens or mutate storage — so callers
+    /// can safely invoke it to preview the allocation before committing to an
+    /// admin override.
+    ///
+    /// The arithmetic uses `split_round_nearest` so the client share is rounded
+    /// to nearest rather than always floored, and `client_refund + freelancer_payout`
+    /// always equals `total_amount` exactly.
+    ///
+    /// # Parameters
+    /// * `total_amount`          – Total escrowed balance to distribute. Must be > 0.
+    /// * `client_refund_bps`     – Client's share in basis points (0–10 000).
+    /// * `freelancer_payout_bps` – Freelancer's share in basis points (0–10 000).
+    ///   The two BPS values must sum to exactly 10 000.
+    ///
+    /// # Returns
+    /// A `RefundAllocation` with:
+    /// * `client_refund`         = round_nearest(`total_amount` × `client_refund_bps` / 10_000)
+    /// * `freelancer_payout`     = `total_amount` − `client_refund`
+    /// * `client_refund_bps`     = echoed input
+    /// * `freelancer_payout_bps` = echoed input
+    ///
+    /// # Errors
+    /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
+    /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps ≠ 10_000`,
+    ///                     or either value overflows `u32` on addition.
+    pub fn cancel_escrow_split_refund(
+        env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let total_bps = client_refund_bps
+            .checked_add(freelancer_payout_bps)
+            .ok_or(Error::InvalidRatio)?;
+        if total_bps != BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        // Use the shared split_round_nearest primitive: client share is
+        // computed with round-nearest arithmetic; freelancer receives the
+        // exact remainder so the two legs always sum to total_amount.
+        let client_split =
+            Self::split_round_nearest(total_amount, client_refund_bps as i128, BPS_SCALE as i128)?;
+
+        let freelancer_payout = total_amount
+            .checked_sub(client_split.first)
+            .ok_or(Error::InvalidAmount)?;
+
+        let allocation = RefundAllocation {
+            client_refund: client_split.first,
+            freelancer_payout,
+            client_refund_bps,
+            freelancer_payout_bps,
+        };
+
+        env.events().publish(
+            (symbol_short!("cxlspref"),),
+            CancelSplitRefundCalculatedEvent {
                 client_refund: allocation.client_refund,
                 freelancer_payout: allocation.freelancer_payout,
                 client_refund_bps: allocation.client_refund_bps,
