@@ -409,6 +409,14 @@ pub struct PlatformFeeAllocation {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeDistribution {
+    pub client_amount: i128,
+    pub freelancer_amount: i128,
+    pub treasury_amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AutoReleasedEvent {
     pub contract_id: Address,
     pub milestone_index: u32,
@@ -1141,6 +1149,59 @@ impl MilestoneEscrow {
         Ok(RatioSplit {
             first: rounded,
             second: total.checked_sub(rounded).ok_or(Error::InvalidAmount)?,
+        })
+    }
+
+    fn allocate_platform_fee(
+        total_amount: i128,
+        allocation: &PlatformFeeAllocation,
+    ) -> Result<PlatformFeeDistribution, Error> {
+        if total_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let scale = BPS_SCALE as i128;
+        let ratios = [
+            allocation.client_bps as i128,
+            allocation.freelancer_bps as i128,
+            allocation.treasury_bps as i128,
+        ];
+        let mut amounts = [0_i128; 3];
+        let mut remainders = [0_i128; 3];
+        let mut allocated = 0_i128;
+
+        for index in 0..3 {
+            let weighted = total_amount
+                .checked_mul(ratios[index])
+                .ok_or(Error::InvalidAmount)?;
+            amounts[index] = weighted / scale;
+            remainders[index] = weighted % scale;
+            allocated = allocated
+                .checked_add(amounts[index])
+                .ok_or(Error::InvalidAmount)?;
+        }
+
+        // Largest-remainder allocation preserves every unit. Ties are resolved
+        // by field order, making the result deterministic across runtimes.
+        let mut remaining = total_amount
+            .checked_sub(allocated)
+            .ok_or(Error::InvalidAmount)?;
+        while remaining > 0 {
+            let mut best = 0_usize;
+            for index in 1..3 {
+                if remainders[index] > remainders[best] {
+                    best = index;
+                }
+            }
+            amounts[best] = amounts[best].checked_add(1).ok_or(Error::InvalidAmount)?;
+            remainders[best] = -1;
+            remaining -= 1;
+        }
+
+        Ok(PlatformFeeDistribution {
+            client_amount: amounts[0],
+            freelancer_amount: amounts[1],
+            treasury_amount: amounts[2],
         })
     }
 
@@ -2794,6 +2855,42 @@ impl MilestoneEscrow {
         Ok(resolved)
     }
 
+    /// Calculate a cancellation allocation between the client and freelancer.
+    ///
+    /// The client share is rounded to the nearest stroop and the freelancer
+    /// receives the exact remainder, so no value is lost to integer division.
+    /// The ratios must sum to exactly `BPS_SCALE`.
+    pub fn cancel_escrow_split_refund(
+        _env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        if total_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let total_bps = client_refund_bps
+            .checked_add(freelancer_payout_bps)
+            .ok_or(Error::InvalidRatio)?;
+        if total_bps != BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        let client_split = Self::split_round_nearest(
+            total_amount,
+            client_refund_bps as i128,
+            BPS_SCALE as i128,
+        )?;
+
+        Ok(RefundAllocation {
+            client_refund: client_split.first,
+            freelancer_payout: client_split.second,
+            client_refund_bps,
+            freelancer_payout_bps,
+        })
+    }
+
     /// Initiate cancellation of the escrow, freezing it pending an admin
     /// override.
     ///
@@ -2834,6 +2931,15 @@ impl MilestoneEscrow {
         }
         if !meta.funded {
             return Err(Error::NotFunded);
+        }
+
+        // Boundary guard: cancelling against an empty escrow has no funds
+        // to resolve, so block processing until the contract holds a
+        // positive token balance.
+        let token_client = token::Client::new(&env, &meta.token);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance <= 0 {
+            return Err(Error::InvalidAmount);
         }
 
         env.storage().instance().set(&DataKey::CancelLock, &true);
@@ -2987,12 +3093,8 @@ impl MilestoneEscrow {
     /// * `InvalidStatus`   – `CancelLock` is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to refund).
     pub fn admin_override_cancel_refund(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
         Self::require_admin(&env, &admin)?;
-
-        let meta = Self::load_job_meta(&env)?;
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
 
         // Only valid when a cancel lock is active.
         let cancel_locked = env
@@ -3002,6 +3104,11 @@ impl MilestoneEscrow {
             .unwrap_or(false);
         if !cancel_locked {
             return Err(Error::InvalidStatus);
+        }
+
+        let meta = Self::load_job_meta(&env)?;
+        if !meta.funded {
+            return Err(Error::NotFunded);
         }
 
         // Walk every milestone; accumulate remaining balance and mark Refunded.
@@ -3375,6 +3482,23 @@ impl MilestoneEscrow {
             .instance()
             .get(&DataKey::PlatformFeeAllocation)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Split an amount according to the configured platform-fee ratios.
+    ///
+    /// Each component is calculated with checked integer arithmetic. Any
+    /// units left after flooring are assigned by largest remainder, so the
+    /// three returned amounts always sum exactly to `total_amount`.
+    pub fn calculate_platform_fee_split(
+        env: Env,
+        total_amount: i128,
+    ) -> Result<PlatformFeeDistribution, Error> {
+        let allocation: PlatformFeeAllocation = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlatformFeeAllocation)
+            .ok_or(Error::NotInitialized)?;
+        Self::allocate_platform_fee(total_amount, &allocation)
     }
 
     pub fn payment_streaming_milestones(
@@ -4722,6 +4846,7 @@ impl MilestoneEscrow {
     /// Calculates the tax owed on the milestone's remaining gross balance using
     /// the supplied `tax_rate_bps`, writes the result to
     /// `DataKey::TaxWithholdingLock(milestone_index)` and emits an event.
+    /// Both the client and freelancer must authorize the calculation.
     /// The milestone is left in its current state so the normal approval flow
     /// remains intact; the admin override endpoints read the stored record to
     /// resolve any locked condition.
@@ -4744,6 +4869,9 @@ impl MilestoneEscrow {
         tax_rate_bps: u32,
     ) -> Result<TaxWithholdingRecord, Error> {
         let meta = Self::load_job_meta(&env)?;
+
+        meta.client.require_auth();
+        meta.freelancer.require_auth();
 
         if !meta.funded {
             return Err(Error::NotFunded);
@@ -4833,6 +4961,12 @@ impl MilestoneEscrow {
         admin: Address,
         milestone_index: u32,
     ) -> Result<(), Error> {
+        admin.require_auth();
+
+        if !env.storage().persistent().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+
         Self::require_admin(&env, &admin)?;
 
         let meta = Self::load_job_meta(&env)?;
@@ -5095,10 +5229,11 @@ impl MilestoneEscrow {
             Ok((gross_amount, tax_amount, net_amount))
         })();
 
-        // Release lock regardless of success or failure.
+        // Release lock regardless of success or failure.  Remove the key so a
+        // stale `false` entry does not remain on the ledger.
         env.storage()
             .instance()
-            .set(&DataKey::TaxWithholdingExecutionLock, &false);
+            .remove(&DataKey::TaxWithholdingExecutionLock);
 
         let (gross_amount, tax_amount, net_amount) = result?;
 

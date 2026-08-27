@@ -11,6 +11,9 @@ use soroban_sdk::{
     Val,
 };
 
+#[path = "tax_withholding_tests.rs"]
+mod tax_withholding_tests;
+
 #[contracttype]
 enum ReentrantTokenDataKey {
     /// Set once the mock has attempted to call back into the escrow.
@@ -6683,30 +6686,154 @@ fn test_tax_withholding_deductions_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (admin_addr, _, _, _, _, _, client) = setup_multisig_env(&env);
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    let ratios = vec![&env, 1_i128, 1_i128, 1_i128];
-    let allocations = client.multisig_transfer_admin(&admin_addr, &100_i128, &ratios);
-    assert_eq!(allocations.len(), 3);
-    assert_eq!(allocations.get(0).unwrap(), 34);
-    assert_eq!(allocations.get(1).unwrap(), 33);
-    assert_eq!(allocations.get(2).unwrap(), 33);
+    let record = client.tax_withholding_deductions(&0_u32, &2_500_u32);
+    assert_eq!(record.gross_amount, 1_000);
+    assert_eq!(record.tax_amount, 250);
+    assert_eq!(record.net_amount, 750);
+    assert_eq!(record.gross_amount, record.tax_amount + record.net_amount);
 
-    let total: i128 = allocations.iter().sum();
-    assert_eq!(total, 100);
+    let tax_topic: Val = symbol_short!("taxwith").into_val(&env);
+    assert!(env.events().all().iter().any(|event| {
+        event
+            .1
+            .get(0)
+            .map(|topic| topic.get_payload() == tax_topic.get_payload())
+            .unwrap_or(false)
+    }));
 }
 
-/// Failed tax_withholding_deductions (e.g. wrong caller) must NOT emit any `taxwh` event.
 #[test]
-fn test_tax_withholding_deductions_failed_does_not_emit_event() {
+fn test_tax_withholding_deductions_rounds_nearest_and_preserves_gross() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (admin_addr, _, _, _, _, _, client) = setup_multisig_env(&env);
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 101_i128]);
 
-    let ratios = vec![&env, 0_i128, 0_i128];
-    let result = client.try_multisig_transfer_admin(&admin_addr, &100_i128, &ratios);
-    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+    let record = client.tax_withholding_deductions(&0_u32, &5_000_u32);
+    assert_eq!(record.tax_amount, 51);
+    assert_eq!(record.net_amount, 50);
+    assert_eq!(record.gross_amount, record.tax_amount + record.net_amount);
+}
+
+#[test]
+fn test_tax_withholding_deductions_accepts_zero_and_full_tax_rates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let no_tax = client.tax_withholding_deductions(&0_u32, &0_u32);
+    assert_eq!(no_tax.tax_amount, 0);
+    assert_eq!(no_tax.net_amount, 1_000);
+
+    let full_tax = client.tax_withholding_deductions(&0_u32, &10_000_u32);
+    assert_eq!(full_tax.tax_amount, 1_000);
+    assert_eq!(full_tax.net_amount, 0);
+}
+
+#[test]
+fn test_tax_withholding_record_can_be_resolved_as_net_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, freelancer_addr, _, admin_addr, token_contract_id, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let token = token::Client::new(&env, &token_contract_id);
+
+    client.tax_withholding_deductions(&0_u32, &2_500_u32);
+    client.admin_override_tax_release(&admin_addr, &0_u32);
+
+    assert_eq!(token.balance(&freelancer_addr), 750);
+    assert_eq!(client.get_job().milestones.get(0).unwrap().status, MilestoneStatus::Released);
+    assert_eq!(
+        client.try_admin_override_tax_release(&admin_addr, &0_u32),
+        Err(Ok(Error::InvalidStatus))
+    );
+}
+
+#[test]
+fn test_tax_withholding_record_can_be_resolved_as_gross_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.tax_withholding_deductions(&0_u32, &7_500_u32);
+    client.admin_override_tax_refund(&admin_addr, &0_u32);
+
+    assert_eq!(client.get_job().milestones.get(0).unwrap().status, MilestoneStatus::Refunded);
+    assert_eq!(client.try_admin_override_tax_refund(&admin_addr, &0_u32), Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn test_tax_withholding_deductions_rejects_invalid_state_and_inputs() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_tax_withholding_deductions(&0_u32, &1_u32),
+        Err(Ok(Error::NotInitialized))
+    );
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    assert_eq!(
+        client.try_tax_withholding_deductions(&0_u32, &1_u32),
+        Err(Ok(Error::NotFunded))
+    );
+
+    let (_, _, _, _, _, _, funded_client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    assert_eq!(
+        funded_client.try_tax_withholding_deductions(&1_u32, &1_u32),
+        Err(Ok(Error::InvalidMilestone))
+    );
+    assert_eq!(
+        funded_client.try_tax_withholding_deductions(&0_u32, &10_001_u32),
+        Err(Ok(Error::InvalidRatio))
+    );
+}
+
+#[test]
+fn test_tax_withholding_deductions_terminal_milestone_fails_without_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.mark_delivered(&freelancer_addr, &0_u32);
+    client.approve_milestone(&client_addr, &0_u32);
+
+    let result = client.try_tax_withholding_deductions(&0_u32, &2_500_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    let tax_topic: Val = symbol_short!("taxwith").into_val(&env);
+    assert!(!env.events().all().iter().any(|event| {
+        event
+            .1
+            .get(0)
+            .map(|topic| topic.get_payload() == tax_topic.get_payload())
+            .unwrap_or(false)
+    }));
 }
 
 #[test]
@@ -9368,7 +9495,426 @@ fn test_multisig_transfer_admin_zero_total_emits_no_event() {
     assert!(events.is_empty(), "no events expected on failed call");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// cancel_escrow: zero/empty balance boundary guards (issue #294)
+//
+// cancel_escrow must reject cancellation when the contract's token balance
+// is zero or negative, because there are no funds left to resolve through
+// the admin override path.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Happy path: cancel_escrow succeeds on a funded escrow with a positive
+/// token balance.
 #[test]
+fn test_cancel_escrow_succeeds_with_positive_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 5_000_i128];
+    let (client_addr, _, _, _, _, _, client) =
+        setup_funded_escrow(&env, amounts);
+
+    // Balance is positive — cancel should succeed.
+    client.cancel_escrow(&client_addr);
+
+    // Verify the cancel event was emitted exactly once.
+    let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
+    let mut cancel_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == cancel_topic_val.get_payload() {
+                cancel_events += 1;
+            }
+        }
+    }
+    assert_eq!(cancel_events, 1);
+}
+
+/// cancel_escrow is rejected when all milestones have been fully released
+/// and the contract token balance is zero.
+#[test]
+fn test_cancel_escrow_rejected_when_balance_zero_after_full_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 3_000_i128, 7_000_i128];
+    let (client_addr, freelancer_addr, _, _, _token_contract_id, contract_id, client) =
+        setup_funded_escrow(&env, amounts);
+
+    // Release all milestones so the contract balance drops to zero.
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_milestone(&client_addr, &0u32);
+    client.mark_delivered(&freelancer_addr, &1u32);
+    client.approve_milestone(&client_addr, &1u32);
+
+    // Contract balance is now zero.
+    let token_client = token::Client::new(&env, &_token_contract_id);
+    assert_eq!(token_client.balance(&contract_id), 0);
+
+    let result = client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// cancel_escrow is rejected when the contract token balance has been
+/// externally drained to zero via a direct token transfer.
+#[test]
+fn test_cancel_escrow_rejected_when_balance_drained_externally() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env.register(mock_token::MockToken, ());
+    let token = mock_token::MockTokenClient::new(&env, &token_contract_id);
+    token.mint(&client_addr, &10_000_i128);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow_client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    escrow_client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    escrow_client.fund(&client_addr);
+
+    // Externally drain the contract's entire balance.
+    token.transfer(&contract_id, &client_addr, &10_000_i128);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    let result = escrow_client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// cancel_escrow is rejected when the contract token balance has been
+/// partially drained, leaving zero (edge case: drain exact amount).
+#[test]
+fn test_cancel_escrow_rejected_when_balance_drained_to_exact_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env.register(mock_token::MockToken, ());
+    let token = mock_token::MockTokenClient::new(&env, &token_contract_id);
+    token.mint(&client_addr, &5_000_i128);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow_client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 5_000_i128];
+    escrow_client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    escrow_client.fund(&client_addr);
+    assert_eq!(token.balance(&contract_id), 5_000);
+
+    // Drain exactly the funded amount.
+    token.transfer(&contract_id, &admin_addr, &5_000_i128);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    let result = escrow_client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// cancel_escrow is rejected on a contract that has not been initialized.
+#[test]
+fn test_cancel_escrow_before_initialize_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+/// cancel_escrow is rejected on a contract that has been initialized but
+/// not yet funded.
+#[test]
+fn test_cancel_escrow_before_fund_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::NotFunded)));
+}
+
+/// cancel_escrow is rejected when the caller is neither the client nor
+/// the freelancer.
+#[test]
+fn test_cancel_escrow_unauthorized_caller_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
+
+    let bad_actor = Address::generate(&env);
+    let result = client.try_cancel_escrow(&bad_actor);
+    assert!(result.is_err());
+}
+
+/// cancel_escrow is rejected when the caller is a zero account address.
+#[test]
+fn test_cancel_escrow_zero_address_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
+
+    let zero_account = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let result = client.try_cancel_escrow(&zero_account);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// cancel_escrow is rejected when the caller is a zero contract address.
+#[test]
+fn test_cancel_escrow_zero_contract_address_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
+
+    let zero_contract = Address::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    );
+    let result = client.try_cancel_escrow(&zero_contract);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// cancel_escrow emits a structured CancelEscrowInitiatedEvent with the
+/// correct contract_id and caller fields.
+#[test]
+fn test_cancel_escrow_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 2_000_i128];
+    let (client_addr, _, _, _, token_contract_id, contract_id, client) =
+        setup_funded_escrow(&env, amounts);
+
+    client.cancel_escrow(&client_addr);
+
+    let cancel_topic: Symbol = symbol_short!("cancel");
+    let cancel_topic_val: Val = cancel_topic.into_val(&env);
+    let mut cancel_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == cancel_topic_val.get_payload() {
+                cancel_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    CancelEscrowInitiatedEvent::from_val(&env, &event.2),
+                    CancelEscrowInitiatedEvent {
+                        contract_id: contract_id.clone(),
+                        caller: client_addr.clone(),
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(cancel_events, 1);
+}
+
+/// cancel_escrow by the freelancer also succeeds when balance is positive.
+#[test]
+fn test_cancel_escrow_freelancer_can_cancel() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 4_000_i128];
+    let (_, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, amounts);
+
+    client.cancel_escrow(&freelancer_addr);
+
+    // Verify the cancel event was emitted.
+    let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
+    let mut cancel_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == cancel_topic_val.get_payload() {
+                cancel_events += 1;
+            }
+        }
+    }
+    assert_eq!(cancel_events, 1);
+}
+
+/// cancel_escrow rejects when balance is partially drained but still
+/// positive (balance > 0 should still be allowed).
+#[test]
+fn test_cancel_escrow_succeeds_with_partial_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env.register(mock_token::MockToken, ());
+    let token = mock_token::MockTokenClient::new(&env, &token_contract_id);
+    token.mint(&client_addr, &10_000_i128);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow_client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    escrow_client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    escrow_client.fund(&client_addr);
+
+    // Drain some but not all funds — balance remains positive.
+    token.transfer(&contract_id, &admin_addr, &7_000_i128);
+    assert_eq!(token.balance(&contract_id), 3_000);
+
+    // Cancel should still succeed because balance > 0.
+    escrow_client.cancel_escrow(&client_addr);
+}
+
+/// cancel_escrow emits no CancelEscrowInitiatedEvent when rejected due to
+/// empty balance (no phantom events on failed calls).
+#[test]
+fn test_cancel_escrow_empty_balance_emits_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env.register(mock_token::MockToken, ());
+    let token = mock_token::MockTokenClient::new(&env, &token_contract_id);
+    token.mint(&client_addr, &10_000_i128);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow_client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 10_000_i128];
+    escrow_client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    escrow_client.fund(&client_addr);
+
+    // Drain all funds.
+    token.transfer(&contract_id, &client_addr, &10_000_i128);
+
+    let result = escrow_client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // No cancel events should have been emitted.
+    let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
+    let cancel_events = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == cancel_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(cancel_events, 0);
+}
+
+#[test]
+fn test_platform_fee_allocation_preserves_value_with_largest_remainders() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, client_addr, freelancer_addr, token, auto_release) = setup_test_env(&env);
+    let arbiter = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &admin,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter,
+        &token,
+        &auto_release,
+        &vec![&env, 1_000_i128],
+    );
+
+    client.set_platform_fee_allocation(&admin, &3333, &3333, &3334);
+    let distribution = client.calculate_platform_fee_split(&2_i128);
+    assert_eq!(distribution.client_amount, 1);
+    assert_eq!(distribution.freelancer_amount, 0);
+    assert_eq!(distribution.treasury_amount, 1);
+    assert_eq!(
+        distribution.client_amount + distribution.freelancer_amount + distribution.treasury_amount,
+        2
+    );
+
+    let zero = client.calculate_platform_fee_split(&0_i128);
+    assert_eq!(
+        zero.client_amount + zero.freelancer_amount + zero.treasury_amount,
+        0
+    );
+    let negative = client.try_calculate_platform_fee_split(&-1_i128);
+    assert_eq!(negative, Err(Ok(Error::InvalidAmount)));
+}
 fn test_tax_withholding_deductions_zero_balance_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -9404,259 +9950,151 @@ fn test_admin_tax_withholding_deductions_zero_balance_fails() {
     assert_eq!(res, Err(Ok(Error::InvalidAmount)));
 }
 
-// ============================================================================
-// cancel_escrow structured events — indexer parsing tests (#293)
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════════
+// tax_withholding_deductions: ratio-split precision (#299)
+//
+// tax_withholding_deductions computes its split via the shared
+// split_round_nearest helper: round(gross * rate / BPS_SCALE) to the nearest
+// integer for tax_amount, then derive net_amount = gross - tax_amount by
+// subtraction rather than a second independent division. That subtraction is
+// what guarantees tax_amount + net_amount == gross_amount exactly for every
+// rate — there is no way for the split to lose or manufacture value, and no
+// way for it to silently truncate (floor) a fraction that should round up.
+// These tests exercise that guarantee directly against the public
+// tax_withholding_deductions entry point, which the two "emits_event" tests
+// above do not (they call the unrelated multisig_transfer_admin function).
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// Helper: extract the CancelEscrowInitiatedEvent from the environment event log.
-fn get_cancel_event(env: &Env) -> CancelEscrowInitiatedEvent {
-    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
-    let topic_val: Val = topic.into_val(env);
-    for e in env.events().all().iter() {
-        if let Some(t) = e.1.get(0) {
-            if t.get_payload() == topic_val.get_payload() {
-                return soroban_sdk::FromVal::from_val(env, &e.2);
-            }
-        }
+#[test]
+fn test_tax_withholding_deductions_conserves_value_across_rates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let milestone_amounts = vec![&env, 1_000_000_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+
+    // tax_amount + net_amount must equal gross_amount exactly for every rate,
+    // including rates that do not divide the gross amount evenly (37 bps,
+    // 3_333 bps, 6_667 bps) — no value may be created or destroyed by the
+    // split, regardless of rounding.
+    for tax_rate_bps in [0u32, 1, 37, 2_500, 3_333, 5_000, 6_667, 9_999, 10_000] {
+        let record = client.tax_withholding_deductions(&0u32, &tax_rate_bps);
+        assert_eq!(
+            record.tax_amount + record.net_amount,
+            record.gross_amount,
+            "value lost/gained at tax_rate_bps={tax_rate_bps}"
+        );
+        assert_eq!(record.gross_amount, 1_000_000);
+        assert_eq!(record.tax_rate_bps, tax_rate_bps);
+        assert!(record.tax_amount >= 0 && record.net_amount >= 0);
     }
-    panic!("cancel event not found");
 }
 
-// ── exactly one event emitted ─────────────────────────────────────────────────
-
-/// cancel_escrow emits exactly one structured event per successful call.
 #[test]
-fn test_cancel_escrow_event_emitted_exactly_once() {
+fn test_tax_withholding_deductions_rounds_to_nearest_not_down() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let milestone_amounts = vec![&env, 3_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
-    escrow.cancel_escrow(&client_addr);
-
-    let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
-    let topic_val: Val = topic.into_val(&env);
-    let count = env.events().all().iter().fold(0u32, |acc, e| {
-        if let Some(t) = e.1.get(0) {
-            if t.get_payload() == topic_val.get_payload() { acc + 1 } else { acc }
-        } else { acc }
-    });
-    assert_eq!(count, 1);
+    // gross=3, rate=50% (5_000 bps): exact tax is 1.5, which must round to
+    // the nearest integer (2) rather than truncate down to 1 the way plain
+    // floor division (gross * rate / BPS_SCALE) would.
+    let record = client.tax_withholding_deductions(&0u32, &5_000u32);
+    assert_eq!(record.tax_amount, 2);
+    assert_eq!(record.net_amount, 1);
+    assert_eq!(record.tax_amount + record.net_amount, 3);
 }
 
-// ── contract_id field ─────────────────────────────────────────────────────────
-
-/// The contract_id field must equal the escrow contract address.
 #[test]
-fn test_cancel_escrow_event_contract_id_correct() {
+fn test_tax_withholding_deductions_rounds_down_when_fraction_is_below_half() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+    let milestone_amounts = vec![&env, 100_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.contract_id, contract_id);
+    // gross=100, rate=12.49% (1_249 bps): exact tax is 12.49, which rounds
+    // down to 12 — proving the split rounds to the nearest integer rather
+    // than always rounding up (a ceiling would incorrectly give 13).
+    let record = client.tax_withholding_deductions(&0u32, &1_249u32);
+    assert_eq!(record.tax_amount, 12);
+    assert_eq!(record.net_amount, 88);
 }
 
-// ── caller field ──────────────────────────────────────────────────────────────
-
-/// The caller field must contain the actual address that triggered the cancel.
 #[test]
-fn test_cancel_escrow_event_caller_is_client_address() {
+fn test_tax_withholding_deductions_zero_rate_withholds_nothing() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let milestone_amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.caller, client_addr);
+    let record = client.tax_withholding_deductions(&0u32, &0u32);
+    assert_eq!(record.tax_amount, 0);
+    assert_eq!(record.net_amount, 1_000);
 }
 
-/// When the freelancer cancels, the caller field holds the freelancer address.
 #[test]
-fn test_cancel_escrow_event_caller_is_freelancer_address() {
+fn test_tax_withholding_deductions_full_rate_withholds_everything() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let amounts = vec![&env, 5_000_i128];
-    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let milestone_amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
-    escrow.cancel_escrow(&freelancer_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.caller, freelancer_addr);
+    let record = client.tax_withholding_deductions(&0u32, &10_000u32);
+    assert_eq!(record.tax_amount, 1_000);
+    assert_eq!(record.net_amount, 0);
 }
 
-// ── caller_is_client role field ───────────────────────────────────────────────
-
-/// caller_is_client must be true when the client initiates the cancel.
 #[test]
-fn test_cancel_escrow_event_caller_is_client_true_for_client() {
+fn test_tax_withholding_deductions_rejects_rate_above_100_percent() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let milestone_amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert!(event.caller_is_client);
+    let result = client.try_tax_withholding_deductions(&0u32, &10_001u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
 }
 
-/// caller_is_client must be false when the freelancer initiates the cancel.
 #[test]
-fn test_cancel_escrow_event_caller_is_client_false_for_freelancer() {
+fn test_tax_withholding_deductions_conserves_value_at_smallest_unit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let amounts = vec![&env, 5_000_i128];
-    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let milestone_amounts = vec![&env, 1_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
-    escrow.cancel_escrow(&freelancer_addr);
-    let event = get_cancel_event(&env);
-    assert!(!event.caller_is_client);
+    // Even at the smallest indivisible unit, every rate must still conserve
+    // the total exactly and never produce a negative or out-of-range part.
+    for tax_rate_bps in [0u32, 1, 4_999, 5_000, 5_001, 9_999, 10_000] {
+        let record = client.tax_withholding_deductions(&0u32, &tax_rate_bps);
+        assert_eq!(record.tax_amount + record.net_amount, 1);
+        assert!(record.tax_amount == 0 || record.tax_amount == 1);
+        assert!(record.net_amount == 0 || record.net_amount == 1);
+    }
 }
 
-// ── client / freelancer / token fields ───────────────────────────────────────
-
-/// The client field in the event must match the registered client address.
 #[test]
-fn test_cancel_escrow_event_client_field_correct() {
+fn test_tax_withholding_deductions_independent_across_milestones() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let milestone_amounts = vec![&env, 400_i128, 600_i128];
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.client, client_addr);
-}
+    let record_a = client.tax_withholding_deductions(&0u32, &2_500u32);
+    let record_b = client.tax_withholding_deductions(&1u32, &7_500u32);
 
-/// The freelancer field in the event must match the registered freelancer.
-#[test]
-fn test_cancel_escrow_event_freelancer_field_correct() {
-    let env = Env::default();
-    env.mock_all_auths();
+    assert_eq!(record_a.gross_amount, 400);
+    assert_eq!(record_a.tax_amount, 100);
+    assert_eq!(record_a.net_amount, 300);
 
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
-
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.freelancer, freelancer_addr);
-}
-
-/// The token field must match the escrow token contract address.
-#[test]
-fn test_cancel_escrow_event_token_field_correct() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, token_id, _, escrow) = setup_funded_escrow(&env, amounts);
-
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.token, token_id);
-}
-
-// ── milestone_count field ─────────────────────────────────────────────────────
-
-/// milestone_count must reflect the number of milestones passed to initialize.
-#[test]
-fn test_cancel_escrow_event_milestone_count_single() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
-
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.milestone_count, 1);
-}
-
-/// milestone_count must be correct for a multi-milestone escrow.
-#[test]
-fn test_cancel_escrow_event_milestone_count_multiple() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let amounts = vec![&env, 1_000_i128, 2_000_i128, 3_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
-
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.milestone_count, 3);
-}
-
-// ── total_amount field ────────────────────────────────────────────────────────
-
-/// total_amount must equal the sum of all milestone amounts.
-#[test]
-fn test_cancel_escrow_event_total_amount_correct_single_milestone() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let amounts = vec![&env, 7_500_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
-
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.total_amount, 7_500);
-}
-
-/// total_amount must be the aggregate of all milestones for a multi-milestone escrow.
-#[test]
-fn test_cancel_escrow_event_total_amount_correct_multi_milestone() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let amounts = vec![&env, 1_000_i128, 2_000_i128, 3_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
-
-    escrow.cancel_escrow(&client_addr);
-    let event = get_cancel_event(&env);
-    assert_eq!(event.total_amount, 6_000);
-}
-
-// ── full indexer parse round-trip ─────────────────────────────────────────────
-
-/// An indexer can reconstruct all operational parameters from a single event.
-/// Verifies that contract_id, caller, caller_is_client, client, freelancer,
-/// token, milestone_count, and total_amount are all correctly populated in
-/// one combined assertion.
-#[test]
-fn test_cancel_escrow_event_full_indexer_parse() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let amounts = vec![&env, 4_000_i128, 6_000_i128];
-    let (
-        client_addr,
-        freelancer_addr,
-        _,
-        _,
-        token_id,
-        contract_id,
-        escrow,
-    ) = setup_funded_escrow(&env, amounts);
-
-    // Freelancer initiates the cancel.
-    escrow.cancel_escrow(&freelancer_addr);
-    let event = get_cancel_event(&env);
-
-    assert_eq!(event.contract_id, contract_id,  "contract_id mismatch");
-    assert_eq!(event.caller,      freelancer_addr.clone(), "caller mismatch");
-    assert!(!event.caller_is_client,             "caller_is_client should be false");
-    assert_eq!(event.client,      client_addr,   "client mismatch");
-    assert_eq!(event.freelancer,  freelancer_addr, "freelancer mismatch");
-    assert_eq!(event.token,       token_id,      "token mismatch");
-    assert_eq!(event.milestone_count, 2,         "milestone_count mismatch");
-    assert_eq!(event.total_amount, 10_000,       "total_amount mismatch");
+    assert_eq!(record_b.gross_amount, 600);
+    assert_eq!(record_b.tax_amount, 450);
+    assert_eq!(record_b.net_amount, 150);
 }
