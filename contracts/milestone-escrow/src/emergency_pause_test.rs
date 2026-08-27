@@ -16,14 +16,14 @@ fn test_emergency_pause_happy_path_and_event() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, admin_addr, _, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
         setup_funded_escrow(&env, milestone_amounts);
 
     // Initial state: not paused
     assert!(!client.is_emergency_paused());
 
     // Call pause
-    client.emergency_pause(&admin_addr);
+    client.emergency_pause(&client_addr, &freelancer_addr);
 
     // Verify event immediately
     let events = env.events().all();
@@ -31,7 +31,8 @@ fn test_emergency_pause_happy_path_and_event() {
     let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("empause"));
     let parsed_event = EmergencyPausedEvent::from_val(&env, &last_event.2);
-    assert_eq!(parsed_event.admin, admin_addr);
+    assert_eq!(parsed_event.client, client_addr);
+    assert_eq!(parsed_event.freelancer, freelancer_addr);
     assert_eq!(parsed_event.contract_id, client.address);
 
     // Verify status
@@ -44,13 +45,14 @@ fn test_emergency_unpause_happy_path_and_event() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, admin_addr, _, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
         setup_funded_escrow(&env, milestone_amounts);
 
     // Pause first
-    client.emergency_pause(&admin_addr);
+    client.emergency_pause(&client_addr, &freelancer_addr);
+    assert!(client.is_emergency_paused());
 
-    // Unpause
+    // Call unpause
     client.emergency_unpause(&admin_addr);
 
     // Verify event immediately
@@ -114,11 +116,18 @@ fn test_emergency_pause_unauthorized() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (client_addr, _, _, _, _, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
         setup_funded_escrow(&env, milestone_amounts);
 
-    // Call pause as client (should fail)
-    let res = client.try_emergency_pause(&client_addr);
+    // Call pause as admin (should fail, missing signatures from client/freelancer)
+    let res = client.try_emergency_pause(&admin_addr, &admin_addr);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+
+    // Single-signature attempt: passing only client as both or wrong freelancer
+    let res = client.try_emergency_pause(&client_addr, &client_addr);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+
+    let res = client.try_emergency_pause(&freelancer_addr, &freelancer_addr);
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
 }
 
@@ -156,7 +165,7 @@ fn test_emergency_pause_admin_override_invalid_state() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, admin_addr, _, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
         setup_funded_escrow(&env, milestone_amounts);
 
     // Initially not paused. Calling override to false should fail.
@@ -164,7 +173,7 @@ fn test_emergency_pause_admin_override_invalid_state() {
     assert_eq!(res, Err(Ok(Error::InvalidStatus)));
 
     // Pause it
-    client.emergency_pause(&admin_addr);
+    client.emergency_pause(&client_addr, &freelancer_addr);
 
     // Already paused. Calling override to true should fail.
     let res = client.try_emergency_pause_admin_override(&admin_addr, &true);
