@@ -3845,22 +3845,28 @@ impl MilestoneEscrow {
     /// Record an approval from one of the registered signers for the given
     /// proposal.  Idempotent — calling twice from the same signer has no
     /// effect and is not an error.
+    ///
+    /// # Checks (in order)
+    /// Authorization and source-state guards run **before** any job or
+    /// token ledger entry is read or written, so a rejected call cannot
+    /// mutate storage:
+    /// 1. `signer.require_auth()` — the transaction must be signed by
+    ///    `signer` (`Unauthorized` if missing).
+    /// 2. `signer` must be one of the registered multisig signers
+    ///    (`Unauthorized`).
+    /// 3. Contract token balance must be > 0 (`MultiSigEmptyBalance`).
+    ///
+    /// # Errors
+    /// * `NotInitialized`       – `multisig_approval_init` has not been called.
+    /// * `Unauthorized`         – `signer` did not sign, or is not a
+    ///   registered signer.
+    /// * `MultiSigEmptyBalance` – Contract token balance is ≤ 0.
     pub fn multisig_approve(
         env: Env,
         signer: Address,
         proposal_id: u32,
     ) -> Result<MultiSigApprovalState, Error> {
         signer.require_auth();
-
-        // Boundary guard: an approval collected against an empty escrow has
-        // no funds behind it, so block processing until the contract holds
-        // a positive token balance.
-        let meta = Self::load_job_meta(&env)?;
-        let token_client = token::Client::new(&env, &meta.token);
-        let contract_balance = token_client.balance(&env.current_contract_address());
-        if contract_balance <= 0 {
-            return Err(Error::MultiSigEmptyBalance);
-        }
 
         let signers: Vec<Address> = env
             .storage()
@@ -3874,11 +3880,22 @@ impl MilestoneEscrow {
             .get(&DataKey::MultiSigThreshold)
             .ok_or(Error::NotInitialized)?;
 
-        // Find the signer's index in the list (O(n) but n ≤ 32).
+        // Reject callers who are not registered signers before touching any
+        // job/token ledger entry (find the signer's index, O(n) but n ≤ 32).
         let signer_index = signers
             .iter()
             .position(|s| s == signer)
             .ok_or(Error::Unauthorized)?;
+
+        // Boundary guard: an approval collected against an empty escrow has
+        // no funds behind it, so block processing until the contract holds
+        // a positive token balance.
+        let meta = Self::load_job_meta(&env)?;
+        let token_client = token::Client::new(&env, &meta.token);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance <= 0 {
+            return Err(Error::MultiSigEmptyBalance);
+        }
 
         // Read the current bitmap from temporary storage (default: 0 = no approvals).
         let mut bitmap: u32 = env
