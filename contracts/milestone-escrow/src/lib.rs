@@ -3120,10 +3120,10 @@ impl MilestoneEscrow {
         }
 
         // CEI: clear the lock and reset yield before the external transfer.
-        env.storage().instance().set(&DataKey::CancelLock, &false);
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldAccrued, &0_i128);
+        env.storage().instance().remove(&DataKey::CancelLock);
+        if env.storage().persistent().has(&DataKey::YieldAccrued) {
+            env.storage().persistent().remove(&DataKey::YieldAccrued);
+        }
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(
