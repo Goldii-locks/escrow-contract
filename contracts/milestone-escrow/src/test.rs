@@ -5619,6 +5619,49 @@ fn test_upgrade_admin_auth_check_passes() {
     assert_ne!(result, Err(Ok(Error::Unauthorized)));
 }
 
+/// Issue #352: an unauthorized caller must be rejected by the guard clause
+/// at the very top of `upgrade`, before the version counter (the only
+/// storage key `upgrade` mutates on success) is touched.
+#[test]
+fn test_upgrade_unauthorized_caller_mutates_no_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let version_before = client.version();
+
+    let bad_actor = Address::generate(&env);
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&bad_actor, &fake_hash);
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.version(), version_before);
+}
+
+/// Issue #352: `upgrade` must be blocked while the contract is
+/// emergency-paused, failing with the specific `Paused` error rather than
+/// proceeding to the WASM upgrade / version bump.
+#[test]
+fn test_upgrade_while_paused_fails_with_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.emergency_pause(&admin_addr);
+    assert!(client.is_emergency_paused());
+
+    let version_before = client.version();
+
+    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade(&admin_addr, &fake_hash);
+
+    assert_eq!(result, Err(Ok(Error::Paused)));
+    assert_eq!(client.version(), version_before);
+    assert!(client.is_emergency_paused());
+}
+
 // ============================================================================
 // add_whitelisted_token ΓÇö comprehensive boundary / negative / edge-case tests
 // ============================================================================
