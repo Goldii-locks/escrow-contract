@@ -4450,7 +4450,11 @@ impl MilestoneEscrow {
     /// * `NotFunded`       – Escrow has not been funded; nothing to release.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
-    /// * `InvalidAmount`   – Remaining balance is ≤ 0 (sanity guard).
+    /// * `InvalidAmount`   – Remaining balance is ≤ 0, or the subtraction
+    ///                       `amount − released_amount` overflows `i128`
+    ///                       (e.g. when `released_amount > amount`).  All
+    ///                       arithmetic uses checked operations so no input
+    ///                       can cause a panic or silent integer wrap.
     pub fn admin_override_release(
         env: Env,
         admin: Address,
@@ -4475,6 +4479,9 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        // Use checked_sub so that any i128 overflow (e.g. released_amount >
+        // amount, or extreme values such as i128::MIN / i128::MAX) returns
+        // Error::InvalidAmount rather than panicking or wrapping silently.
         let remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
@@ -4490,9 +4497,17 @@ impl MilestoneEscrow {
         Self::store_milestone_released(&env, milestone_index);
 
         // Reset accrued yield on emergency override
-        env.storage()
+        if env
+            .storage()
             .persistent()
-            .set(&DataKey::YieldAccrued, &0_i128);
+            .get::<_, i128>(&DataKey::YieldAccrued)
+            .unwrap_or(0)
+            != 0
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::YieldAccrued, &0_i128);
+        }
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(
@@ -4536,7 +4551,11 @@ impl MilestoneEscrow {
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
-    /// * `InvalidAmount`   – Remaining balance is ≤ 0 (sanity guard).
+    /// * `InvalidAmount`   – Remaining balance is ≤ 0, or the subtraction
+    ///                       `amount − released_amount` overflows `i128`
+    ///                       (e.g. when `released_amount > amount`).  All
+    ///                       arithmetic uses checked operations so no input
+    ///                       can cause a panic or silent integer wrap.
     pub fn admin_override_refund(
         env: Env,
         admin: Address,
@@ -4560,6 +4579,9 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        // Use checked_sub so that any i128 overflow (e.g. released_amount >
+        // amount, or extreme values such as i128::MIN / i128::MAX) returns
+        // Error::InvalidAmount rather than panicking or wrapping silently.
         let remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
@@ -4573,10 +4595,19 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Refunded;
         Self::store_milestone(&env, milestone_index, &milestone);
 
-        // Reset accrued yield on emergency override
-        env.storage()
+        // Reset accrued yield on emergency override — only write when the
+        // stored value is non-zero to avoid an unnecessary ledger mutation.
+        if env
+            .storage()
             .persistent()
-            .set(&DataKey::YieldAccrued, &0_i128);
+            .get::<_, i128>(&DataKey::YieldAccrued)
+            .unwrap_or(0)
+            != 0
+        {
+            env.storage()
+                .persistent()
+                .set(&DataKey::YieldAccrued, &0_i128);
+        }
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &meta.client, &remaining);
