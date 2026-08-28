@@ -13,7 +13,7 @@ fn test_emergency_pause_happy_path_and_event() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     // Initial state: not paused
     assert!(!client.is_emergency_paused());
@@ -41,7 +41,7 @@ fn test_emergency_unpause_happy_path_and_event() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     // Pause first
     client.emergency_pause(&client_addr, &freelancer_addr);
@@ -69,7 +69,7 @@ fn test_emergency_pause_admin_override_happy_path_and_event() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     // Override to paused (true)
     client.emergency_pause_admin_override(&admin_addr, &true);
@@ -110,7 +110,7 @@ fn test_emergency_pause_unauthorized() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (client_addr, _, _, _, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     // Call pause as admin (should fail, missing signatures from client/freelancer)
     let res = client.try_emergency_pause(&admin_addr, &admin_addr);
@@ -156,7 +156,7 @@ fn test_emergency_pause_admin_override_invalid_state() {
     env.mock_all_auths();
 
     let milestone_amounts = vec![&env, 1000_i128];
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, milestone_amounts);
 
     // Initially not paused. Calling override to false should fail.
     let res = client.try_emergency_pause_admin_override(&admin_addr, &false);

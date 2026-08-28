@@ -71,18 +71,20 @@ pub enum Error {
     /// A guarded endpoint was called while an emergency pause transition is
     /// mid-execution and holds `DataKey::EmergencyPauseLock`.
     EmergencyPauseInProgress = 28,
+    /// Configured fees exceed the maximum allowed limits (e.g. treasury > 20% or client > 50%)
+    FeeTooHigh = 29,
     /// `emergency_pause` was called while the contract is already paused.
     /// Re-pausing is rejected rather than silently no-opping so an operator
     /// cannot mistake a redundant call for having taken fresh action.
-    AlreadyPaused = 29,
+    AlreadyPaused = 30,
     /// `emergency_unpause`, or a pause-gated endpoint such as
     /// `emergency_pause_claim_refund`, was called while the contract is
     /// not paused.
-    NotPaused = 30,
+    NotPaused = 31,
     /// A weight vector passed to `emergency_pause_allocation` was
     /// empty, exceeded the party cap, contained a negative weight, or summed
     /// to zero.
-    InvalidAllocationWeights = 31,
+    InvalidAllocationWeights = 32,
 }
 
 const MAX_TREASURY_FEE_BPS: u32 = 2000;
@@ -284,8 +286,9 @@ pub enum DataKey {
     // that concurrent/reentrant calls observe the in-progress state and bail
     // out rather than interleaving state mutations.
     //
-    // Appended at the end of `DataKey` so existing variant discriminants stay
-    // stable (serialization compatibility for already-written ledger entries).
+    // Appended at the end of `DataKey` so existing variant discriminants
+    // stay stable (serialization compatibility for already-written ledger
+    // entries).
     /// Instance: held while `tax_withholding_deductions` executes.
     ///
     /// Distinct from `TaxWithholdingLock(u32)` above, which is a *per-milestone
@@ -1124,6 +1127,59 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::InterestYieldState, state);
+    }
+
+    /// Calculate net distributions for a split refund by applying the platform
+    /// fee allocation only to the freelancer's payout portion. The client's refund
+    /// is fee-exempt.
+    pub fn split_refund_net_distribution(
+        env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+        fee_allocation: PlatformFeeAllocation,
+    ) -> Result<SplitRefundFeeDistribution, Error> {
+        // 1. Get gross split
+        let gross_split = Self::multisig_split_refund(
+            env.clone(),
+            total_amount,
+            client_refund_bps,
+            freelancer_payout_bps,
+        )?;
+
+        // 2. Client net is their gross refund (fee-exempt)
+        let client_net_refund = gross_split.client_refund;
+
+        // 3. Freelancer gross payout is subject to platform fee
+        let gross_payout = gross_split.freelancer_payout;
+
+        // Calculate fee shares using the fee_allocation
+        let client_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.client_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        let treasury_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.treasury_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        // Freelancer net is what's left
+        let freelancer_net_payout = gross_payout
+            .checked_sub(client_fee_share)
+            .and_then(|v| v.checked_sub(treasury_fee_share))
+            .ok_or(Error::InvalidAmount)?;
+
+        Ok(SplitRefundFeeDistribution {
+            client_net_refund,
+            client_fee_share,
+            freelancer_net_payout,
+            treasury_fee_share,
+        })
     }
 
     fn ensure_interest_yield_unlocked(env: &Env) -> Result<(), Error> {
@@ -3212,8 +3268,14 @@ impl MilestoneEscrow {
     /// * `Unauthorized`              – `admin` is not the stored admin.
     /// * `EmergencyPauseInProgress`  – A pause transition is already running.
     /// * `AlreadyPaused`             – The contract is already paused.
-    pub fn emergency_pause(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+    pub fn emergency_pause(env: Env, client: Address, freelancer: Address) -> Result<(), Error> {
+        let meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
         Self::assert_emergency_pause_not_locked(&env)?;
 
         if Self::is_emergency_paused(env.clone()) {

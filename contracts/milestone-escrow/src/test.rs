@@ -9889,11 +9889,11 @@ fn test_platform_fee_allocation_preserves_value_with_largest_remainders() {
         &vec![&env, 1_000_i128],
     );
 
-    client.set_platform_fee_allocation(&admin, &3333, &3333, &3334);
+    client.set_platform_fee_allocation(&admin, &4000, &4000, &2000);
     let distribution = client.calculate_platform_fee_split(&2_i128);
     assert_eq!(distribution.client_amount, 1);
-    assert_eq!(distribution.freelancer_amount, 0);
-    assert_eq!(distribution.treasury_amount, 1);
+    assert_eq!(distribution.freelancer_amount, 1);
+    assert_eq!(distribution.treasury_amount, 0);
     assert_eq!(
         distribution.client_amount + distribution.freelancer_amount + distribution.treasury_amount,
         2
