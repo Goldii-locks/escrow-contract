@@ -165,7 +165,7 @@ impl ReentrantToken {
     }
 }
 
-fn setup_funded_escrow(
+pub(crate) fn setup_funded_escrow(
     env: &Env,
     milestone_amounts: soroban_sdk::Vec<i128>,
 ) -> (
@@ -7487,7 +7487,8 @@ fn test_multisig_approval_init_succeeds() {
 }
 
 /// Initialisation: a second call to `multisig_approval_init` must be rejected
-/// with `AlreadyInitialized`.
+/// with `AlreadyInitialized` (the illegal source state for this one-time
+/// setup function), and no storage entry is mutated by the rejected call.
 #[test]
 fn test_multisig_approval_init_duplicate_fails() {
     let env = Env::default();
@@ -7496,9 +7497,18 @@ fn test_multisig_approval_init_duplicate_fails() {
     let (client, admin, _signers) = setup_multisig(&env, 2);
 
     let extra = Address::generate(&env);
-    let new_signers = vec![&env, extra];
+    let new_signers = vec![&env, extra.clone()];
     let result = client.try_multisig_approval_init(&admin, &new_signers, &1u32);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+
+    // No storage entry was mutated: the original threshold (2, not the
+    // attempted 1) is still in effect.
+    let state = client.try_is_multisig_approved(&0u32).unwrap().unwrap();
+    assert_eq!(state.threshold, 2);
+
+    // The new signer from the rejected call was never written either.
+    let approve_result = client.try_multisig_approve(&extra, &0u32);
+    assert_eq!(approve_result, Err(Ok(Error::Unauthorized)));
 }
 
 /// Initialisation: zero signers must be rejected.
@@ -7787,7 +7797,9 @@ fn test_multisig_approve_emits_structured_event() {
     assert_eq!(matched, 1);
 }
 
-/// Admin: unauthorised caller cannot initialise multisig.
+/// Admin: unauthorised caller cannot initialise multisig, and no storage
+/// entry is mutated by the rejected attempt (the original signer set and
+/// threshold from `setup_multisig` remain in effect).
 #[test]
 fn test_multisig_approval_init_unauthorized_fails() {
     let env = Env::default();
@@ -7799,6 +7811,16 @@ fn test_multisig_approval_init_unauthorized_fails() {
     let new_signers = vec![&env, impostor.clone()];
     let result = client.try_multisig_approval_init(&impostor, &new_signers, &1u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // No storage entry was mutated: the original threshold (2, not the
+    // impostor's attempted 1) is still in effect.
+    let state = client.try_is_multisig_approved(&0u32).unwrap().unwrap();
+    assert_eq!(state.threshold, 2);
+
+    // The impostor was never written into the signer set either: they
+    // cannot approve as if they were a registered signer.
+    let approve_result = client.try_multisig_approve(&impostor, &0u32);
+    assert_eq!(approve_result, Err(Ok(Error::Unauthorized)));
 }
 
 // ============================================================================
