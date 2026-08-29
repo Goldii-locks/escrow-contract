@@ -85,7 +85,7 @@ fn illegal_unlocked_source_state_returns_invalid_status_and_does_not_mutate_stor
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, _, client) =
+    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     let before = snapshot_refund_ledger(&env, &client, &token_id, &client_addr);
@@ -126,7 +126,7 @@ fn locked_admin_override_refunds_client_and_clears_lock() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, _, client) =
+    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 

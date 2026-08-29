@@ -4307,9 +4307,11 @@ impl MilestoneEscrow {
     }
 }
 
+#[cfg(test)]
 mod test;
 mod test_emergency_pause;
 mod test_payment_streaming_milestones;
+#[cfg(test)]
 mod admin_override_cancel_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
