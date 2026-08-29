@@ -5,7 +5,7 @@
 //! return their specific typed error, and neither path may mutate storage.
 
 use super::*;
-use crate::{Error, MilestoneStatus};
+use crate::{DataKey, Error, MilestoneStatus};
 use soroban_sdk::token;
 use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Val};
 
@@ -61,7 +61,7 @@ fn unauthorized_caller_returns_unauthorized_and_does_not_mutate_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, _, client) =
+    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     // Lock first so a skipped auth check would otherwise proceed to write.
     client.multisig_lock(&admin_addr);
@@ -139,4 +139,9 @@ fn locked_admin_override_refunds_client_and_clears_lock() {
     assert_eq!(after.released_amount, 1_000);
     assert_eq!(after.client_balance, before.client_balance + 1_000);
     assert_eq!(after.contract_balance, before.contract_balance - 1_000);
+
+    let lock: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::MultisigLocked)
+    });
+    assert_eq!(lock, None);
 }

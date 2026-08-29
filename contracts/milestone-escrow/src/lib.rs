@@ -4991,7 +4991,6 @@ impl MilestoneEscrow {
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
-        Self::store_milestone_released(&env, milestone_index);
 
         // Remove the lock entry.
         env.storage()
@@ -5150,11 +5149,6 @@ impl MilestoneEscrow {
     /// the same name; this one carries the `admin_` prefix used by the other
     /// admin-gated endpoints.
     ///
-    /// This function sets a lock (`TaxWithholdingExecutionLock`) while executing to
-    /// prevent concurrent state mutations.  The lock is automatically cleared
-    /// when the calculation completes, ensuring that normal escrow operations
-    /// remain blocked only for the duration of the tax calculation.
-    ///
     /// # Parameters
     /// * `admin`           – Must match `DataKey::Admin`.
     /// * `milestone_index` – Target milestone for tax calculation.
@@ -5190,46 +5184,27 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        // Acquire lock before any state reads to prevent concurrent mutations.
-        env.storage()
-            .instance()
-            .set(&DataKey::TaxWithholdingExecutionLock, &true);
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
 
-        // Ensure lock is released even if the function returns early due to error.
-        // We use a defer-like pattern by clearing the lock before returning.
-        let result = (|| {
-            if milestone_index >= meta.milestone_count {
-                return Err(Error::InvalidMilestone);
-            }
+        let milestone = Self::load_milestone(&env, milestone_index)?;
 
-            let milestone = Self::load_milestone(&env, milestone_index)?;
+        if milestone.amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
 
-            if milestone.amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
+        if tax_rate_bps > 10_000 {
+            return Err(Error::InvalidRatio);
+        }
 
-            if tax_rate_bps > 10_000 {
-                return Err(Error::InvalidRatio);
-            }
+        let gross_amount = milestone.amount;
+        let tax_amount = (gross_amount * (tax_rate_bps as i128)) / (BPS_SCALE as i128);
+        let net_amount = gross_amount - tax_amount;
 
-            let gross_amount = milestone.amount;
-            let tax_amount = (gross_amount * (tax_rate_bps as i128)) / (BPS_SCALE as i128);
-            let net_amount = gross_amount - tax_amount;
-
-            if net_amount < 0 {
-                return Err(Error::InvalidAmount);
-            }
-
-            Ok((gross_amount, tax_amount, net_amount))
-        })();
-
-        // Release lock regardless of success or failure.  Remove the key so a
-        // stale `false` entry does not remain on the ledger.
-        env.storage()
-            .instance()
-            .remove(&DataKey::TaxWithholdingExecutionLock);
-
-        let (gross_amount, tax_amount, net_amount) = result?;
+        if net_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
 
         // Emit structured event for indexers.
         env.events().publish(
@@ -5438,9 +5413,7 @@ impl MilestoneEscrow {
         Self::store_milestone(&env, milestone_index, &milestone);
 
         // Clear the multisig lock flag now that the deadlock is resolved.
-        env.storage()
-            .instance()
-            .set(&DataKey::MultisigLocked, &false);
+        env.storage().instance().remove(&DataKey::MultisigLocked);
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &meta.client, &remaining);
