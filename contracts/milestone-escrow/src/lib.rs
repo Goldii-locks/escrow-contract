@@ -209,6 +209,10 @@ pub enum DataKey {
     /// cleared by `multisig_admin_override_release` or
     /// `multisig_admin_override_refund`.
     MultisigLocked,
+    /// Temporary: cumulative extension added to a milestone's auto-release
+    /// deadline.  Written by `extend_milestone_deadline` and read by
+    /// `claim_auto_release` / `time_until_auto_release`; stored temporarily so
+    /// repeated deadline adjustments do not add persistent ledger footprint.
     MilestoneTimeExtension(u32),
     CancelLock,
     // ── tax_withholding_deductions storage keys ──────────────────────────────
@@ -1246,8 +1250,13 @@ impl MilestoneEscrow {
 
     fn load_time_extension(env: &Env, index: u32) -> u64 {
         env.storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::MilestoneTimeExtension(index))
+            .or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get(&DataKey::MilestoneTimeExtension(index))
+            })
             .unwrap_or(0)
     }
 
@@ -1950,7 +1959,7 @@ impl MilestoneEscrow {
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
 
-        env.storage().persistent().set(
+        env.storage().temporary().set(
             &DataKey::MilestoneTimeExtension(milestone_index),
             &new_extension,
         );
@@ -4307,10 +4316,10 @@ impl MilestoneEscrow {
     }
 }
 
+mod admin_override_cancel_tests;
 mod test;
 mod test_emergency_pause;
 mod test_payment_streaming_milestones;
-mod admin_override_cancel_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //

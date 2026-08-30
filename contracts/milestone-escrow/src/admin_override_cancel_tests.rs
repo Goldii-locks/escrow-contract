@@ -18,7 +18,7 @@
 
 use super::*;
 use crate::{DataKey, Error, MilestoneEscrowClient, MilestoneStatus};
-use soroban_sdk::{token, vec, Address, Env};
+use soroban_sdk::{testutils::Address as _, token, vec, Address, Env};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Issue #383: admin_override_cancel_release storage footprint
@@ -118,8 +118,7 @@ fn test_cancel_release_requires_cancel_lock() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     let result = client.try_admin_override_cancel_release(&admin_addr);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
@@ -131,8 +130,7 @@ fn test_cancel_release_unauthorized_caller_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, _, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.cancel_escrow(&client_addr);
 
     let attacker = Address::generate(&env);
@@ -225,8 +223,7 @@ fn test_cancel_refund_requires_cancel_lock() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     let result = client.try_admin_override_cancel_refund(&admin_addr);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
@@ -324,8 +321,7 @@ fn test_cancel_refund_multiple_milestones_sum_correctly() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 100_i128, 200_i128, 300_i128, 400_i128];
-    let (client_addr, _, _, admin_addr, token_id, _, client) =
-        setup_funded_escrow(&env, amounts);
+    let (client_addr, _, _, admin_addr, token_id, _, client) = setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&client_addr);
 
@@ -357,4 +353,3 @@ fn test_cancel_refund_minimum_valid_amount() {
 
     assert_eq!(token.balance(&client_addr), client_before + 1);
 }
-

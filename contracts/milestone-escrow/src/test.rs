@@ -165,7 +165,7 @@ impl ReentrantToken {
     }
 }
 
-fn setup_funded_escrow(
+pub(crate) fn setup_funded_escrow(
     env: &Env,
     milestone_amounts: soroban_sdk::Vec<i128>,
 ) -> (
@@ -462,6 +462,41 @@ fn test_apply_dispute_arbitration_split_odd_amounts() {
 
     // Using nearest rounding the single unit should go to client (ties round up)
     assert_eq!(alloc.client_refund + alloc.freelancer_payout, 1_i128);
+}
+
+#[test]
+fn test_apply_dispute_arbitration_split_rejects_i128_extremes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 1_i128];
+    let (
+        client_addr,
+        _freelancer_addr,
+        arbiter_addr,
+        _admin_addr,
+        _token_contract_id,
+        _contract_id,
+        client,
+    ) = setup_funded_escrow(&env, amounts.clone());
+
+    let mut milestone = client.get_job().milestones.get(0).unwrap();
+    milestone.status = MilestoneStatus::Disputed;
+
+    milestone.amount = i128::MAX;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Milestone(0u32), &milestone);
+    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &10_000u32);
+    assert_eq!(result.unwrap_err().unwrap(), Error::InvalidAmount);
+
+    milestone.amount = i128::MIN;
+    milestone.released_amount = 0;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Milestone(0u32), &milestone);
+    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &10_000u32);
+    assert_eq!(result.unwrap_err().unwrap(), Error::InvalidAmount);
 }
 
 #[test]
@@ -9151,6 +9186,28 @@ fn test_escrow_interest_yield_max_rate_succeeds() {
     // 100% rate = 10,000 bps
     let yield_amt = client.escrow_interest_yield(&10_000_i128, &10_000_i128, &31_536_000_i128);
     assert_eq!(yield_amt, 10_000);
+}
+
+#[test]
+fn test_admin_accrue_yield_rejects_i128_extremes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let amounts = vec![&env, 1_000_i128];
+    let (_client, _freelancer, _arbiter, admin, _token, _contract_id, escrow) =
+        setup_funded_escrow(&env, amounts);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::YieldAccrued, &i128::MAX);
+    let result = escrow.try_admin_accrue_yield(&admin, &0u32, &1_i128);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::YieldAccrued, &0_i128);
+    let result = escrow.try_admin_accrue_yield(&admin, &0u32, &i128::MIN);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]
