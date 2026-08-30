@@ -1,4 +1,5 @@
 use super::*;
+use crate::test::setup_funded_escrow;
 
 #[test]
 fn positive_ratios_preserve_amount_across_boundaries() {

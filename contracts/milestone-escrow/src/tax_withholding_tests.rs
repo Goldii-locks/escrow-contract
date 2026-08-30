@@ -1,4 +1,5 @@
 use super::*;
+use crate::test::setup_funded_escrow;
 use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
 
 macro_rules! withholding_auth {

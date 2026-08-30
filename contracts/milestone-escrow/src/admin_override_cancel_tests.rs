@@ -18,7 +18,9 @@
 
 use super::*;
 use crate::{DataKey, Error, MilestoneEscrowClient, MilestoneStatus};
+use crate::test::setup_funded_escrow;
 use soroban_sdk::{token, vec, Address, Env};
+use soroban_sdk::testutils::Address as _;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Issue #383: admin_override_cancel_release storage footprint
@@ -357,4 +359,3 @@ fn test_cancel_refund_minimum_valid_amount() {
 
     assert_eq!(token.balance(&client_addr), client_before + 1);
 }
-

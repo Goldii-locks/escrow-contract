@@ -6,7 +6,9 @@
 
 use super::*;
 use crate::{Error, MilestoneStatus};
+use crate::test::setup_funded_escrow;
 use soroban_sdk::token;
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Val};
 
 fn refund_event_count(env: &Env) -> u32 {
