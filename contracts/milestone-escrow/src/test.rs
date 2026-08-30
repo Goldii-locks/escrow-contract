@@ -6365,6 +6365,169 @@ fn test_platform_fee_allocation_admin_override_unlocks_locked_allocation() {
     assert_eq!(allocation.treasury_bps, 1000);
 }
 
+// ── issue #396: structured event for pf_alloc_admin_override ────────────────
+
+/// Count `pfovrride` events currently visible in the test env.
+fn pfovrride_event_count(env: &Env) -> u32 {
+    let topic_val: Val = symbol_short!("pfovrride").into_val(env);
+    let mut count = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == topic_val.get_payload() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Parse the most recent event, asserting it is a `pfovrride` event.
+fn last_pfovrride_event(env: &Env) -> PlatformFeeAllocationOverrideEvent {
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    let topic: Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
+    assert_eq!(topic, symbol_short!("pfovrride"));
+    PlatformFeeAllocationOverrideEvent::from_val(env, &last.2)
+}
+
+/// Initialize an escrow with a *locked* platform-fee allocation.
+/// Returns `(admin, contract_id, client)`.
+fn setup_locked_pf_alloc(env: &Env) -> (Address, Address, MilestoneEscrowClient<'_>) {
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter_addr = Address::generate(env);
+    let admin_addr = Address::generate(env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+
+    let amounts = vec![env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+    client.lock_platform_fee_allocation(&admin_addr);
+
+    (admin_addr, contract_id, client)
+}
+
+#[test]
+fn test_pf_alloc_admin_override_event_reconciles_with_persisted_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin_addr, contract_id, client) = setup_locked_pf_alloc(&env);
+
+    client.pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+
+    assert_eq!(pfovrride_event_count(&env), 1);
+    let ev = last_pfovrride_event(&env);
+
+    // Acting address + contract identity.
+    assert_eq!(ev.admin, admin_addr);
+    assert_eq!(ev.contract_id, contract_id);
+
+    // Every value field equals the allocation the call persisted.
+    let persisted = client.get_platform_fee_allocation();
+    assert_eq!(ev.client_bps, persisted.client_bps);
+    assert_eq!(ev.freelancer_bps, persisted.freelancer_bps);
+    assert_eq!(ev.treasury_bps, persisted.treasury_bps);
+    assert_eq!(ev.locked, persisted.locked);
+
+    // Concrete expected values: new ratios, summing to BPS_SCALE, unlocked.
+    assert_eq!(ev.client_bps, 1500);
+    assert_eq!(ev.freelancer_bps, 7500);
+    assert_eq!(ev.treasury_bps, 1000);
+    assert_eq!(ev.client_bps + ev.freelancer_bps + ev.treasury_bps, 10_000);
+    assert!(!ev.locked);
+}
+
+#[test]
+fn test_pf_alloc_admin_override_no_event_on_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin_addr, _contract_id, client) = setup_locked_pf_alloc(&env);
+    let attacker = Address::generate(&env);
+
+    let res = client.try_pf_alloc_admin_override(&attacker, &1500_u32, &7500_u32, &1000_u32);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    assert_eq!(pfovrride_event_count(&env), 0);
+}
+
+#[test]
+fn test_pf_alloc_admin_override_no_event_on_invalid_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin_addr, _contract_id, client) = setup_pf_alloc_escrow_unlocked(&env);
+
+    // Allocation is set but NOT locked → override is rejected.
+    let res = client.try_pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+    assert_eq!(res, Err(Ok(Error::InvalidStatus)));
+    assert_eq!(pfovrride_event_count(&env), 0);
+}
+
+#[test]
+fn test_pf_alloc_admin_override_no_event_on_invalid_ratio() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin_addr, _contract_id, client) = setup_locked_pf_alloc(&env);
+
+    // Ratios that do not sum to BPS_SCALE are rejected before any write.
+    let res = client.try_pf_alloc_admin_override(&admin_addr, &1000_u32, &1000_u32, &1000_u32);
+    assert_eq!(res, Err(Ok(Error::InvalidRatio)));
+    assert_eq!(pfovrride_event_count(&env), 0);
+
+    // The locked allocation is untouched.
+    let allocation = client.get_platform_fee_allocation();
+    assert_eq!(allocation.client_bps, 2000);
+    assert_eq!(allocation.freelancer_bps, 7000);
+    assert_eq!(allocation.treasury_bps, 1000);
+    assert!(allocation.locked);
+}
+
+/// Initialize an escrow with a platform-fee allocation set but left *unlocked*.
+fn setup_pf_alloc_escrow_unlocked(env: &Env) -> (Address, Address, MilestoneEscrowClient<'_>) {
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter_addr = Address::generate(env);
+    let admin_addr = Address::generate(env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+
+    let amounts = vec![env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+
+    (admin_addr, contract_id, client)
+}
+
 /// Verify multisig_split_refund with 70/30 split calculates correctly.
 #[test]
 fn test_multisig_split_refund_uneven_split() {

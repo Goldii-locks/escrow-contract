@@ -415,6 +415,25 @@ pub struct PlatformFeeDistribution {
     pub treasury_amount: i128,
 }
 
+/// Emitted by `pf_alloc_admin_override` when the admin replaces a *locked*
+/// platform-fee allocation. Every field reconciles with the state the call
+/// persisted under `DataKey::PlatformFeeAllocation`: `client_bps` /
+/// `freelancer_bps` / `treasury_bps` are the new ratios (which always sum to
+/// `BPS_SCALE`) and `locked` is `false` because the override unlocks the
+/// allocation in the same step. Emitted only on the success path.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeAllocationOverrideEvent {
+    /// Admin that authorised and applied the override (the acting address).
+    pub admin: Address,
+    pub contract_id: Address,
+    pub client_bps: u32,
+    pub freelancer_bps: u32,
+    pub treasury_bps: u32,
+    /// Lock flag persisted with the allocation; always `false` after an override.
+    pub locked: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AutoReleasedEvent {
@@ -3469,6 +3488,20 @@ impl MilestoneEscrow {
             .instance()
             .set(&DataKey::PlatformFeeAllocationLock, &false);
 
+        if result.is_ok() {
+            env.events().publish(
+                (symbol_short!("pfovrride"),),
+                PlatformFeeAllocationOverrideEvent {
+                    admin: admin.clone(),
+                    contract_id: env.current_contract_address(),
+                    client_bps,
+                    freelancer_bps,
+                    treasury_bps,
+                    locked: false,
+                },
+            );
+        }
+
         result
     }
 
@@ -4310,7 +4343,6 @@ impl MilestoneEscrow {
 mod test;
 mod test_emergency_pause;
 mod test_payment_streaming_milestones;
-mod admin_override_cancel_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
