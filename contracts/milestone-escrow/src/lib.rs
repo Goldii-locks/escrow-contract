@@ -562,13 +562,21 @@ pub struct EmergencyUnpausedEvent {
     pub contract_id: Address,
 }
 
-/// Emitted by `emergency_pause_admin_override` when the admin overrides the pause state.
+/// Emitted by `emergency_pause_admin_override` when the admin overrides the
+/// pause state. Every field reconciles with the state the call persisted:
+/// `paused` is the new value written to `DataKey::EmergencyPaused`, `previous`
+/// is the value it replaced, and the call always leaves
+/// `DataKey::EmergencyPauseLock` cleared. Emitted only on the success path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyPauseAdminOverrideEvent {
+    /// Admin that authorised and applied the override (the acting address).
     pub admin: Address,
     pub contract_id: Address,
+    /// Pause flag persisted by this call (`DataKey::EmergencyPaused`).
     pub paused: bool,
+    /// Pause flag that was in effect immediately before this call.
+    pub previous: bool,
 }
 
 // ── tax_withholding_deductions types and events ──────────────────────────────
@@ -3392,6 +3400,7 @@ impl MilestoneEscrow {
                     admin: admin.clone(),
                     contract_id: env.current_contract_address(),
                     paused,
+                    previous: current,
                 },
             );
         }
