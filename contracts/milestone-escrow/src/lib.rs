@@ -3481,6 +3481,17 @@ impl MilestoneEscrow {
         result
     }
 
+    /// Admin override that replaces a *locked* platform-fee allocation and
+    /// unlocks it in the same step.
+    ///
+    /// Storage footprint: the call writes exactly one instance-storage map
+    /// key, `DataKey::PlatformFeeAllocation`. Unlike `set_platform_fee_allocation`
+    /// / `lock_platform_fee_allocation`, it does not take the
+    /// `PlatformFeeAllocationLock` re-entrancy guard: the body performs a
+    /// single unconditional `set` with no external or cross-contract calls
+    /// between validation and the write, so there is no re-entrancy window to
+    /// protect, and omitting the guard's set-true / set-false pair keeps the
+    /// invocation to a single written key.
     pub fn pf_alloc_admin_override(
         env: Env,
         admin: Address,
@@ -3504,28 +3515,17 @@ impl MilestoneEscrow {
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &true);
+        env.storage().instance().set(
+            &DataKey::PlatformFeeAllocation,
+            &PlatformFeeAllocation {
+                client_bps,
+                freelancer_bps,
+                treasury_bps,
+                locked: false,
+            },
+        );
 
-        let result = (|| {
-            env.storage().instance().set(
-                &DataKey::PlatformFeeAllocation,
-                &PlatformFeeAllocation {
-                    client_bps,
-                    freelancer_bps,
-                    treasury_bps,
-                    locked: false,
-                },
-            );
-            Ok(())
-        })();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &false);
-
-        result
+        Ok(())
     }
 
     pub fn get_platform_fee_allocation(env: Env) -> Result<PlatformFeeAllocation, Error> {
