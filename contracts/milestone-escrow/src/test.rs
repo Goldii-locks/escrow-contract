@@ -11,6 +11,8 @@ use soroban_sdk::{
     Val,
 };
 
+#[path = "arbitration_split_event_tests.rs"]
+mod arbitration_split_event_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]

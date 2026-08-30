@@ -386,6 +386,41 @@ pub struct DisputeResolvedEvent {
     pub status: MilestoneStatus,
 }
 
+/// Immutable record of a successful `apply_dispute_arbitration_split` call.
+///
+/// Every field reconciles exactly with the state the call persisted:
+/// `client_refund` / `freelancer_payout` are the amounts actually transferred
+/// (capped to the contract balance), `client_refund_bps` is the value written
+/// under `ArbitrationSplitBps(milestone_index)`, `released_amount` is the
+/// milestone's cumulative release after the split, and `status` is the terminal
+/// milestone status stored by the call. Emitted only on the success path.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArbitrationSplitAppliedEvent {
+    /// Address of this escrow contract.
+    pub contract_id: Address,
+    /// Arbiter that authorised and applied the split (the acting address).
+    pub arbiter: Address,
+    /// Milestone the split was applied to.
+    pub milestone_index: u32,
+    pub client: Address,
+    pub freelancer: Address,
+    pub token: Address,
+    /// Amount actually refunded to the client.
+    pub client_refund: i128,
+    /// Amount actually paid to the freelancer.
+    pub freelancer_payout: i128,
+    /// Basis points of the disputed balance awarded to the client. Matches the
+    /// value persisted under `ArbitrationSplitBps(milestone_index)`.
+    pub client_refund_bps: u32,
+    /// Basis points awarded to the freelancer (`10_000 - client_refund_bps`).
+    pub freelancer_payout_bps: u32,
+    /// Cumulative amount released on the milestone after this split.
+    pub released_amount: i128,
+    /// Terminal milestone status after the split (`Refunded` or `Released`).
+    pub status: MilestoneStatus,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaxWithholdingDeductionsEvent {
@@ -2839,6 +2874,27 @@ impl MilestoneEscrow {
             },
         );
 
+        // Dedicated structured record of this arbitration split: the acting
+        // arbiter plus every value persisted by the call (transferred amounts,
+        // the stored client_refund_bps, cumulative release, terminal status).
+        env.events().publish(
+            (symbol_short!("arbsplit"),),
+            ArbitrationSplitAppliedEvent {
+                contract_id: env.current_contract_address(),
+                arbiter: meta.arbiter.clone(),
+                milestone_index,
+                client: meta.client.clone(),
+                freelancer: meta.freelancer.clone(),
+                token: meta.token.clone(),
+                client_refund,
+                freelancer_payout,
+                client_refund_bps,
+                freelancer_payout_bps: allocation.freelancer_payout_bps,
+                released_amount: milestone.released_amount,
+                status: milestone.status.clone(),
+            },
+        );
+
         Ok(resolved)
     }
 
@@ -4310,7 +4366,6 @@ impl MilestoneEscrow {
 mod test;
 mod test_emergency_pause;
 mod test_payment_streaming_milestones;
-mod admin_override_cancel_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
