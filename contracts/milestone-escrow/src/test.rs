@@ -4,6 +4,8 @@ use super::*;
 mod cancel_escrow_test;
 #[path = "emergency_pause_test.rs"]
 mod emergency_pause_test;
+#[path = "emergency_pause_admin_override_tests.rs"]
+mod emergency_pause_admin_override_tests;
 use crate::Error::NotFunded;
 use soroban_sdk::{
     contract, contractimpl, contracttype, testutils::Address as _, testutils::EnvTestConfig,
