@@ -11,6 +11,8 @@ use soroban_sdk::{
     Val,
 };
 
+#[path = "admin_pause_escrow_tests.rs"]
+mod admin_pause_escrow_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]
