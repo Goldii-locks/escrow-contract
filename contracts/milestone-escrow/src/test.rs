@@ -9738,7 +9738,7 @@ fn test_cancel_escrow_emits_structured_event() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 2_000_i128];
-    let (client_addr, _, _, _, token_contract_id, contract_id, client) =
+    let (client_addr, freelancer_addr, _, _, token_contract_id, contract_id, client) =
         setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&client_addr);
@@ -9756,6 +9756,12 @@ fn test_cancel_escrow_emits_structured_event() {
                     CancelEscrowInitiatedEvent {
                         contract_id: contract_id.clone(),
                         caller: client_addr.clone(),
+                        caller_is_client: true,
+                        client: client_addr.clone(),
+                        freelancer: freelancer_addr.clone(),
+                        token: token_contract_id.clone(),
+                        milestone_count: 1,
+                        total_amount: 2_000_i128,
                     }
                 );
             }
