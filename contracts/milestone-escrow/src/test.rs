@@ -11,6 +11,8 @@ use soroban_sdk::{
     Val,
 };
 
+#[path = "admin_override_refund_tests.rs"]
+mod admin_override_refund_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]
@@ -165,7 +167,7 @@ impl ReentrantToken {
     }
 }
 
-fn setup_funded_escrow(
+pub fn setup_funded_escrow(
     env: &Env,
     milestone_amounts: soroban_sdk::Vec<i128>,
 ) -> (

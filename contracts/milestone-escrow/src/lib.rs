@@ -4310,6 +4310,7 @@ impl MilestoneEscrow {
 mod test;
 mod test_emergency_pause;
 mod test_payment_streaming_milestones;
+#[cfg(test)]
 mod admin_override_cancel_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
@@ -4548,6 +4549,7 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
     /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Paused`          – Contract is paused.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
@@ -4558,6 +4560,16 @@ impl MilestoneEscrow {
         milestone_index: u32,
     ) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
+
+        // Reject illegal source state before any job/milestone ledger I/O.
+        let paused = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            return Err(Error::Paused);
+        }
 
         let meta = Self::load_job_meta(&env)?;
         if !meta.funded {

@@ -19,6 +19,8 @@
 use super::*;
 use crate::{DataKey, Error, MilestoneEscrowClient, MilestoneStatus};
 use soroban_sdk::{token, vec, Address, Env};
+use soroban_sdk::testutils::Address as _;
+use crate::test::setup_funded_escrow;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Issue #383: admin_override_cancel_release storage footprint
