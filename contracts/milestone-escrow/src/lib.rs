@@ -5177,11 +5177,33 @@ impl MilestoneEscrow {
         milestone_index: u32,
         tax_rate_bps: u32,
     ) -> Result<(i128, i128, i128), Error> {
+        // Authorization: only the stored admin may invoke this endpoint.  Any
+        // caller that is not the stored admin is rejected with `Unauthorized`,
+        // and a contract that has never been initialised is rejected with
+        // `NotInitialized`, before any ledger entry is read or written.
         Self::require_admin(&env, &admin)?;
 
         let meta = Self::load_job_meta(&env)?;
         if !meta.funded {
             return Err(Error::NotFunded);
+        }
+
+        // Precondition guards: reject illegal source states (out-of-range
+        // milestone, non-positive milestone amount, tax rate above full scale,
+        // empty contract balance) with their specific typed error before any
+        // ledger entry is written.
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let milestone = Self::load_milestone(&env, milestone_index)?;
+
+        if milestone.amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if tax_rate_bps > BPS_SCALE {
+            return Err(Error::InvalidRatio);
         }
 
         let token_client = token::Client::new(&env, &meta.token);
@@ -5190,46 +5212,23 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        // Acquire lock before any state reads to prevent concurrent mutations.
+        let gross_amount = milestone.amount;
+        let tax_amount = (gross_amount * (tax_rate_bps as i128)) / (BPS_SCALE as i128);
+        let net_amount = gross_amount - tax_amount;
+
+        if net_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Only once every guard above has passed do we touch the ledger: the
+        // execution lock is set and immediately cleared.  Every rejected path
+        // returns with no storage entry mutated.
         env.storage()
             .instance()
             .set(&DataKey::TaxWithholdingExecutionLock, &true);
-
-        // Ensure lock is released even if the function returns early due to error.
-        // We use a defer-like pattern by clearing the lock before returning.
-        let result = (|| {
-            if milestone_index >= meta.milestone_count {
-                return Err(Error::InvalidMilestone);
-            }
-
-            let milestone = Self::load_milestone(&env, milestone_index)?;
-
-            if milestone.amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-
-            if tax_rate_bps > 10_000 {
-                return Err(Error::InvalidRatio);
-            }
-
-            let gross_amount = milestone.amount;
-            let tax_amount = (gross_amount * (tax_rate_bps as i128)) / (BPS_SCALE as i128);
-            let net_amount = gross_amount - tax_amount;
-
-            if net_amount < 0 {
-                return Err(Error::InvalidAmount);
-            }
-
-            Ok((gross_amount, tax_amount, net_amount))
-        })();
-
-        // Release lock regardless of success or failure.  Remove the key so a
-        // stale `false` entry does not remain on the ledger.
         env.storage()
             .instance()
             .remove(&DataKey::TaxWithholdingExecutionLock);
-
-        let (gross_amount, tax_amount, net_amount) = result?;
 
         // Emit structured event for indexers.
         env.events().publish(
