@@ -2872,42 +2872,6 @@ impl MilestoneEscrow {
         Ok(resolved)
     }
 
-    /// Calculate a cancellation allocation between the client and freelancer.
-    ///
-    /// The client share is rounded to the nearest stroop and the freelancer
-    /// receives the exact remainder, so no value is lost to integer division.
-    /// The ratios must sum to exactly `BPS_SCALE`.
-    pub fn cancel_escrow_split_refund(
-        _env: Env,
-        total_amount: i128,
-        client_refund_bps: u32,
-        freelancer_payout_bps: u32,
-    ) -> Result<RefundAllocation, Error> {
-        if total_amount < 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let total_bps = client_refund_bps
-            .checked_add(freelancer_payout_bps)
-            .ok_or(Error::InvalidRatio)?;
-        if total_bps != BPS_SCALE {
-            return Err(Error::InvalidRatio);
-        }
-
-        let client_split = Self::split_round_nearest(
-            total_amount,
-            client_refund_bps as i128,
-            BPS_SCALE as i128,
-        )?;
-
-        Ok(RefundAllocation {
-            client_refund: client_split.first,
-            freelancer_payout: client_split.second,
-            client_refund_bps,
-            freelancer_payout_bps,
-        })
-    }
-
     /// Initiate cancellation of the escrow, freezing it pending an admin
     /// override.
     ///
@@ -2964,7 +2928,99 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        env.storage().instance().set(&DataKey::CancelLock, &true);
+        let cancel_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false);
+        if cancel_locked {
+            return Err(Error::EscrowLocked);
+        }
+
+        let bit = if caller == meta.client { 1u32 } else { 2u32 };
+        let current_mask = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::CancelApproval)
+            .unwrap_or(0);
+        if current_mask & bit != 0 {
+            return Err(Error::InvalidStatus);
+        }
+
+        let new_mask = current_mask | bit;
+        if new_mask == 3 {
+            env.storage().instance().remove(&DataKey::CancelApproval);
+            env.storage().instance().set(&DataKey::CancelLock, &true);
+            env.events().publish(
+                (symbol_short!("cancel"),),
+                CancelEscrowInitiatedEvent {
+                    contract_id: env.current_contract_address(),
+                    caller,
+                },
+            );
+            return Ok(());
+        }
+
+        env.storage().instance().set(&DataKey::CancelApproval, &new_mask);
+        env.events().publish(
+            (symbol_short!("cxlappr"),),
+            CancelApprovalRecordedEvent {
+                contract_id: env.current_contract_address(),
+                caller,
+                approval_mask: new_mask,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Revoke a previously recorded cancellation approval before the final
+    /// second-party lock is set.
+    pub fn revoke_cancel_approval(env: Env, caller: Address) -> Result<(), Error> {
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if caller == zero_account || caller == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
+        caller.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+
+        if caller != meta.client && caller != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+
+        let cancel_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false);
+        if cancel_locked {
+            return Err(Error::EscrowLocked);
+        }
+
+        let bit = if caller == meta.client { 1u32 } else { 2u32 };
+        let current_mask = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::CancelApproval)
+            .unwrap_or(0);
+        if current_mask & bit == 0 {
+            return Err(Error::InvalidStatus);
+        }
+
+        let new_mask = current_mask & !bit;
+        if new_mask == 0 {
+            env.storage().instance().remove(&DataKey::CancelApproval);
+        } else {
+            env.storage().instance().set(&DataKey::CancelApproval, &new_mask);
+        }
 
         env.events().publish(
             (symbol_short!("cancelrev"),),
@@ -4900,18 +4956,17 @@ impl MilestoneEscrow {
             return Err(Error::InvalidRatio);
         }
 
-        let token_client = token::Client::new(&env, &meta.token);
-        let contract_balance = token_client.balance(&env.current_contract_address());
-        if contract_balance <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
         let milestone = Self::load_milestone(&env, milestone_index)?;
-
         if milestone.status == MilestoneStatus::Released
             || milestone.status == MilestoneStatus::Refunded
         {
             return Err(Error::InvalidStatus);
+        }
+
+        let token_client = token::Client::new(&env, &meta.token);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance <= 0 {
+            return Err(Error::InvalidAmount);
         }
 
         let gross_amount = milestone
@@ -4978,8 +5033,6 @@ impl MilestoneEscrow {
         admin: Address,
         milestone_index: u32,
     ) -> Result<(), Error> {
-        admin.require_auth();
-
         if !env.storage().persistent().has(&DataKey::Admin) {
             return Err(Error::NotInitialized);
         }

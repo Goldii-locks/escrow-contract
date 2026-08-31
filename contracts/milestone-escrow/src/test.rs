@@ -9511,13 +9511,28 @@ fn test_cancel_escrow_succeeds_with_positive_balance() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, client) =
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
         setup_funded_escrow(&env, amounts);
 
-    // Balance is positive — cancel should succeed.
+    // First signature records approval and must not lock the escrow.
     client.cancel_escrow(&client_addr);
+    let approval_topic_val: Val = symbol_short!("cxlappr").into_val(&env);
+    let mut approval_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == approval_topic_val.get_payload() {
+                approval_events += 1;
+            }
+        }
+    }
+    assert_eq!(approval_events, 1);
 
-    // Verify the cancel event was emitted exactly once.
+    // Duplicate same-party signature is rejected.
+    let result = client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Second signature finalizes the cancellation and locks the escrow.
+    client.cancel_escrow(&freelancer_addr);
     let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
     let mut cancel_events = 0u32;
     for event in env.events().all().iter() {
@@ -9528,6 +9543,14 @@ fn test_cancel_escrow_succeeds_with_positive_balance() {
         }
     }
     assert_eq!(cancel_events, 1);
+
+    let is_locked = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(is_locked);
 }
 
 /// cancel_escrow is rejected when all milestones have been fully released
@@ -9738,10 +9761,11 @@ fn test_cancel_escrow_emits_structured_event() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 2_000_i128];
-    let (client_addr, _, _, _, token_contract_id, contract_id, client) =
+    let (client_addr, freelancer_addr, _, _, _, contract_id, client) =
         setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let cancel_topic: Symbol = symbol_short!("cancel");
     let cancel_topic_val: Val = cancel_topic.into_val(&env);
@@ -9755,7 +9779,7 @@ fn test_cancel_escrow_emits_structured_event() {
                     CancelEscrowInitiatedEvent::from_val(&env, &event.2),
                     CancelEscrowInitiatedEvent {
                         contract_id: contract_id.clone(),
-                        caller: client_addr.clone(),
+                        caller: freelancer_addr.clone(),
                     }
                 );
             }
@@ -9771,12 +9795,22 @@ fn test_cancel_escrow_freelancer_can_cancel() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 4_000_i128];
-    let (_, freelancer_addr, _, _, _, _, client) =
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
         setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&freelancer_addr);
+    let approval_topic_val: Val = symbol_short!("cxlappr").into_val(&env);
+    let mut approval_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == approval_topic_val.get_payload() {
+                approval_events += 1;
+            }
+        }
+    }
+    assert_eq!(approval_events, 1);
 
-    // Verify the cancel event was emitted.
+    client.cancel_escrow(&client_addr);
     let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
     let mut cancel_events = 0u32;
     for event in env.events().all().iter() {
