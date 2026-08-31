@@ -265,12 +265,18 @@ fn test_cancel_refund_all_terminal_returns_invalid_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, token_id, _, client) =
         setup_funded_escrow(&env, vec![&env, 2_000_i128]);
 
     // Fully release the single milestone via normal path.
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_milestone(&client_addr, &0u32);
+
+    // Replenish the contract with a token donation so the cancel boundary
+    // guard passes, while every milestone is already terminal (Released) and
+    // there is nothing left to refund.
+    let token_admin = token::StellarAssetClient::new(&env, &token_id);
+    token_admin.mint(&client.address, &1_i128);
 
     client.cancel_escrow(&client_addr);
 

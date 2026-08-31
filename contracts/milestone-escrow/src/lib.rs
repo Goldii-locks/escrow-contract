@@ -3066,11 +3066,11 @@ impl MilestoneEscrow {
     /// entitled to a full refund (e.g. no work was delivered).
     ///
     /// # Checks (in order)
-    /// 1. `admin.require_auth()` — SDK-level signature check.
-    /// 2. `require_admin` — verified admin key matches `DataKey::Admin`.
-    /// 3. Contract must be initialised (`NotInitialized`).
-    /// 4. Escrow must be funded (`NotFunded`).
-    /// 5. `CancelLock` must be active (`InvalidStatus`).
+    /// 1. `require_admin` — SDK-level `require_auth` + verified admin key
+    ///    matches `DataKey::Admin`.
+    /// 2. Contract must be initialised (`NotInitialized`).
+    /// 3. Escrow must be funded (`NotFunded`).
+    /// 4. `CancelLock` must be active (`InvalidStatus`).
     ///
     /// # Effects
     /// - Every milestone in a non-terminal status is moved to `Refunded` and
@@ -3087,7 +3087,6 @@ impl MilestoneEscrow {
     /// * `InvalidStatus`   – `CancelLock` is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to refund).
     pub fn admin_override_cancel_refund(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         // Only valid when a cancel lock is active.
