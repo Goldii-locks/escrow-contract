@@ -872,7 +872,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPauseLock"
+                              "symbol": "EpLk"
                             }
                           ]
                         },
@@ -884,7 +884,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPaused"
+                              "symbol": "Ep"
                             }
                           ]
                         },

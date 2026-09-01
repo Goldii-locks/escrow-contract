@@ -95,7 +95,9 @@ pub enum DataKey {
     Admin,
     Version,
     WhitelistedTokens,
-    EmergencyPaused,
+    /// Instance: whether the escrow is emergency-paused.  Short key `Ep`
+    /// (2 chars vs 16) to minimise on-ledger symbol bytes.
+    Ep,
     PlatformFeeAllocation,
     /// Temporary key: records the ledger timestamp at which a milestone was
     /// marked delivered.  Written by `mark_delivered`, consumed by
@@ -441,7 +443,7 @@ impl MilestoneEscrow {
         let paused = env
             .storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPaused)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false);
         if paused {
             return Err(Error::Paused);
@@ -709,7 +711,7 @@ impl MilestoneEscrow {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &false);
+            .set(&DataKey::Ep, &false);
         env.storage().instance().set(
             &DataKey::PlatformFeeAllocation,
             &PlatformFeeAllocation {
@@ -1652,7 +1654,7 @@ impl MilestoneEscrow {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &true);
+            .set(&DataKey::Ep, &true);
 
         env.events().publish(
             (symbol_short!("empause"),),
@@ -1669,7 +1671,7 @@ impl MilestoneEscrow {
         Self::require_admin(&env, &admin)?;
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &false);
+            .set(&DataKey::Ep, &false);
 
         env.events().publish(
             (symbol_short!("emunpause"),),
@@ -1692,7 +1694,7 @@ impl MilestoneEscrow {
         let current = env
             .storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPaused)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false);
 
         if current == paused {
@@ -1701,7 +1703,7 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &paused);
+            .set(&DataKey::Ep, &paused);
 
         env.events().publish(
             (symbol_short!("emoverrid"),),
@@ -1718,7 +1720,7 @@ impl MilestoneEscrow {
     pub fn is_emergency_paused(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::EmergencyPaused)
+            .get(&DataKey::Ep)
             .unwrap_or(false)
     }
 

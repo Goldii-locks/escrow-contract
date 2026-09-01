@@ -69,7 +69,7 @@ pub enum Error {
     /// mid-execution and holds `DataKey::PlatformFeeAllocationLock`.
     PlatformFeeAllocationInProgress = 27,
     /// A guarded endpoint was called while an emergency pause transition is
-    /// mid-execution and holds `DataKey::EmergencyPauseLock`.
+    /// mid-execution and holds `DataKey::EpLk`.
     EmergencyPauseInProgress = 28,
     /// `emergency_pause` was called while the contract is already paused.
     /// Re-pausing is rejected rather than silently no-opping so an operator
@@ -156,7 +156,9 @@ pub enum DataKey {
     Admin,
     Version,
     WhitelistedTokens,
-    EmergencyPaused,
+    /// Instance: whether the escrow is emergency-paused.  Short key `Ep`
+    /// (2 chars vs 16) to minimise on-ledger symbol bytes.
+    Ep,
     PlatformFeeAllocation,
     /// Temporary key: records the ledger timestamp at which a milestone was
     /// marked delivered.  Written by `mark_delivered`, consumed by
@@ -283,7 +285,8 @@ pub enum DataKey {
     /// Instance: held while a platform-fee allocation executes.
     PlatformFeeAllocationLock,
     /// Instance: held while an emergency pause/resume transition executes.
-    EmergencyPauseLock,
+    /// Short key `EpLk` (4 chars vs 19) to minimise on-ledger symbol bytes.
+    EpLk,
 }
 
 #[contracttype]
@@ -971,7 +974,7 @@ impl MilestoneEscrow {
         let paused = env
             .storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPaused)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false);
         if paused {
             return Err(Error::Paused);
@@ -1024,7 +1027,7 @@ impl MilestoneEscrow {
         let locked: bool = env
             .storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPauseLock)
+            .get::<_, bool>(&DataKey::EpLk)
             .unwrap_or(false);
         if locked {
             return Err(Error::EmergencyPauseInProgress);
@@ -1480,7 +1483,7 @@ impl MilestoneEscrow {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPaused, &false);
+            .set(&DataKey::Ep, &false);
         env.storage().instance().set(
             &DataKey::PlatformFeeAllocation,
             &PlatformFeeAllocation {
@@ -3182,7 +3185,7 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Freeze the escrow: set `DataKey::EmergencyPaused`, blocking every
+    /// Freeze the escrow: set `DataKey::Ep`, blocking every
     /// endpoint guarded by `ensure_not_paused`.
     ///
     /// # Business rules
@@ -3217,18 +3220,18 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &true);
+            .set(&DataKey::EpLk, &true);
 
         let result = (|| {
             env.storage()
                 .instance()
-                .set(&DataKey::EmergencyPaused, &true);
+                .set(&DataKey::Ep, &true);
             Ok(())
         })();
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &false);
+            .set(&DataKey::EpLk, &false);
 
         if result.is_ok() {
             env.events().publish(
@@ -3268,18 +3271,18 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &true);
+            .set(&DataKey::EpLk, &true);
 
         let result = (|| {
             env.storage()
                 .instance()
-                .set(&DataKey::EmergencyPaused, &false);
+                .set(&DataKey::Ep, &false);
             Ok(())
         })();
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &false);
+            .set(&DataKey::EpLk, &false);
 
         if result.is_ok() {
             env.events().publish(
@@ -3304,7 +3307,7 @@ impl MilestoneEscrow {
         let current = env
             .storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPaused)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false);
 
         if current == paused {
@@ -3315,18 +3318,18 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &true);
+            .set(&DataKey::EpLk, &true);
 
         let result = (|| {
             env.storage()
                 .instance()
-                .set(&DataKey::EmergencyPaused, &paused);
+                .set(&DataKey::Ep, &paused);
             Ok(())
         })();
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &false);
+            .set(&DataKey::EpLk, &false);
 
         if result.is_ok() {
             env.events().publish(
@@ -3345,7 +3348,7 @@ impl MilestoneEscrow {
     pub fn is_emergency_paused(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::EmergencyPaused)
+            .get(&DataKey::Ep)
             .unwrap_or(false)
     }
 
@@ -4758,7 +4761,7 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &true);
+            .set(&DataKey::EpLk, &true);
 
         let result = (|| {
             let already_paused: bool = env
@@ -4784,7 +4787,7 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &false);
+            .set(&DataKey::EpLk, &false);
 
         result
     }
@@ -4805,7 +4808,7 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &true);
+            .set(&DataKey::EpLk, &true);
 
         let result = (|| {
             let currently_paused: bool = env
@@ -4831,7 +4834,7 @@ impl MilestoneEscrow {
 
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &false);
+            .set(&DataKey::EpLk, &false);
 
         result
     }
