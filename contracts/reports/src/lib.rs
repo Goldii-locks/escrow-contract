@@ -1640,18 +1640,21 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Upgrade the contract's WASM to `new_wasm_hash`.
+    ///
+    /// # Business rules
+    /// Caller authorization and pause/lock preconditions are checked before
+    /// any storage mutation or WASM upgrade, so a rejected call leaves the
+    /// contract's storage and installed code untouched.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Admin key has never been stored.
+    /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `Paused`         – The contract is currently emergency-paused.
+    /// * `EscrowLocked`   – A cancel is in progress and holds the cancel lock.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        admin.require_auth();
-
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
+        Self::require_admin(&env, &admin)?;
+        Self::ensure_not_paused(&env)?;
 
         env.deployer().update_current_contract_wasm(new_wasm_hash);
 
