@@ -1146,6 +1146,16 @@ impl MilestoneEscrow {
         Ok(meta)
     }
 
+    /// Reject the call before any other ledger access if the contract has not
+    /// been initialised. `initialize` is the only path that sets
+    /// `DataKey::Version`, so its presence is the initialisation marker.
+    fn require_initialized(env: &Env) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Version) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(())
+    }
+
     /// Verify that the caller is either the stored client or freelancer for
     /// this escrow.  Used by `raise_dispute` to ensure only authorised parties
     /// can initiate a dispute.  Returns the loaded `JobMeta` on success so the
@@ -4650,6 +4660,7 @@ impl MilestoneEscrow {
         new_admin: Address,
         proposal_id: u32,
     ) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
         Self::require_admin(&env, &admin)?;
 
         let zero_account = Address::from_str(
