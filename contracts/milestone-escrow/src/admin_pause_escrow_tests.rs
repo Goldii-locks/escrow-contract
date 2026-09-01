@@ -93,7 +93,7 @@ fn is_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::EmergencyPauseLock)
+            .get::<_, bool>(&DataKey::EpLk)
             .unwrap_or(false)
     })
 }
@@ -138,7 +138,7 @@ fn pause_rejects_when_emergency_lock_held() {
     env.as_contract(&contract_id, || {
         env.storage()
             .instance()
-            .set(&DataKey::EmergencyPauseLock, &true);
+            .set(&DataKey::EpLk, &true);
     });
 
     assert_eq!(
@@ -159,16 +159,18 @@ fn pause_is_idempotent_when_already_paused() {
     let (client, admin) = initialised_escrow(&env);
     let contract_id = client.address.clone();
 
-    // First pause — the happy path.
+    // First pause — the happy path. The event tally is read before the
+    // storage helpers below: they go through env.as_contract, and
+    // env.events().all() reports the most recent invocation rather than a
+    // running total.
     assert_eq!(client.try_admin_pause_escrow(&admin), Ok(Ok(())));
+    assert_eq!(pause_event_count(&env), 1);
     assert!(is_paused(&env, &contract_id));
     assert!(!is_lock_held(&env, &contract_id));
-    assert_eq!(pause_event_count(&env), 1);
 
-    // Second pause — must be a no-op.
+    // Second pause — must be a no-op, so its invocation emits nothing at all.
     assert_eq!(client.try_admin_pause_escrow(&admin), Ok(Ok(())));
-    // Still only one pause event (the second call emits nothing).
-    assert_eq!(pause_event_count(&env), 1);
+    assert_eq!(pause_event_count(&env), 0);
     // Lock not left behind.
     assert!(!is_lock_held(&env, &contract_id));
 }
@@ -186,13 +188,15 @@ fn pause_sets_flag_emits_event_and_clears_lock() {
 
     assert_eq!(client.try_admin_pause_escrow(&admin), Ok(Ok(())));
 
-    // Paused flag set.
-    assert!(is_paused(&env, &contract_id));
-    // Lock not left behind.
-    assert!(!is_lock_held(&env, &contract_id));
-    // Exactly one pause event with correct payload.
+    // Exactly one pause event with correct payload — read first, before the
+    // env.as_contract helpers below.
     assert_eq!(pause_event_count(&env), 1);
     let event = last_pause_event(&env);
     assert_eq!(event.admin, admin);
     assert_eq!(event.contract_id, contract_id);
+
+    // Paused flag set.
+    assert!(is_paused(&env, &contract_id));
+    // Lock not left behind.
+    assert!(!is_lock_held(&env, &contract_id));
 }

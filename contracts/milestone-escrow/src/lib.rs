@@ -5032,47 +5032,27 @@ impl MilestoneEscrow {
             return Ok(());
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EmergencyPauseLock, &true);
-        env.storage().instance().set(&DataKey::Paused, &true);
-            .set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::EpLk, &true);
 
         let result = (|| {
-            let already_paused: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::Paused)
-                .unwrap_or(false);
-
             env.storage().instance().set(&DataKey::Paused, &true);
 
-            if !already_paused {
-                env.events().publish(
-                    (symbol_short!("pause"),),
-                    EscrowPausedEvent {
-                        admin: admin.clone(),
-                        contract_id: env.current_contract_address(),
-                    },
-                );
-            }
+            // The early return above means this only runs on a real
+            // transition, so the event is unconditional here.
+            env.events().publish(
+                (symbol_short!("pause"),),
+                EscrowPausedEvent {
+                    admin: admin.clone(),
+                    contract_id: env.current_contract_address(),
+                },
+            );
 
             Ok(())
         })();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &false);
+        env.storage().instance().set(&DataKey::EpLk, &false);
 
-        env.events().publish(
-            (symbol_short!("pause"),),
-            EscrowPausedEvent {
-                admin,
-                contract_id: env.current_contract_address(),
-            },
-        );
-
-        Ok(())
+        result
     }
 
     /// Resume a previously paused escrow, re-enabling all normal user-facing
