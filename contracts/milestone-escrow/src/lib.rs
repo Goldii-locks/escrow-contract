@@ -224,6 +224,12 @@ pub enum DataKey {
     MilestoneTimeExtension(u32),
     /// Instance key for the cancel_escrow lock.
     CancelLock,
+    /// Persistent: bitmask recording which parties have approved a pending
+    /// cancel-escrow request.  Bit 0 (value 1) = client has approved;
+    /// bit 1 (value 2) = freelancer has approved.  Written by `cancel_escrow`
+    /// when a party signals intent, cleared when both bits are set (lock fires)
+    /// or when `revoke_cancel_approval` removes a party's bit.
+    CancelApproval,
     // ── tax_withholding_deductions storage keys ──────────────────────────────
     /// Persistent: tax rate in basis points (1 bp = 0.01 %) set by
     /// `admin_set_tax_rate`.  Range 0–10 000 (0 %–100 %).
@@ -599,6 +605,31 @@ pub struct CancelEscrowInitiatedEvent {
     /// for amounts already released; indexers that need unreleased balance
     /// should subtract separately-indexed release events.
     pub total_amount: i128,
+}
+
+/// Emitted by `cancel_escrow` when a party records their cancellation approval
+/// but the counter-party has not yet approved (single-signature stage).
+/// Lets indexers track partial cancel intent without treating it as a finalized
+/// cancel.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancelApprovalRecordedEvent {
+    pub contract_id: Address,
+    pub caller: Address,
+    /// Current bitmask after recording this approval.
+    /// bit 0 = client approved, bit 1 = freelancer approved.
+    pub approval_mask: u32,
+}
+
+/// Emitted by `revoke_cancel_approval` when a party withdraws their
+/// cancellation approval before the lock fires.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancelApprovalRevokedEvent {
+    pub contract_id: Address,
+    pub caller: Address,
+    /// Updated bitmask after removing this party's bit.
+    pub approval_mask: u32,
 }
 
 /// Emitted by `admin_override_cancel_release` when the admin resolves a locked
@@ -3076,22 +3107,27 @@ impl MilestoneEscrow {
     /// Initiate cancellation of the escrow, freezing it pending an admin
     /// override.
     ///
-    /// Either the client or the freelancer may call this. Sets a
-    /// compact `C` lock that blocks normal operations until the admin resolves
-    /// it via `admin_override_cancel_release` or
-    /// `admin_override_cancel_refund`. This function itself does not move
-    /// any funds.
+    /// The first caller (client or freelancer) records their approval in a
+    /// persistent `CancelApproval` bitmask and emits `CancelApprovalRecordedEvent`.
+    /// The `CancelLock` is **not** set on a single-signature call — both parties
+    /// must call before the escrow is frozen.  This prevents either party from
+    /// unilaterally locking the other out.
+    ///
+    /// Once the second party calls, both bits in the mask are set, the
+    /// `CancelLock` is activated, the approval record is cleared, and the
+    /// `CancelEscrowInitiatedEvent` is emitted.
     ///
     /// # Parameters
-    /// * `caller` – Must be either the job's client or freelancer. Must
-    ///              authorize the call.
+    /// * `caller` – Must be either the job's client or freelancer.
     ///
     /// # Errors
     /// * `InvalidAddress` – `caller` is a zero address.
     /// * `NotInitialized` – Contract has not been initialized.
-    /// * `Unauthorized`   – `caller` is neither the client nor the
-    ///                      freelancer.
+    /// * `Unauthorized`   – `caller` is neither the client nor the freelancer.
     /// * `NotFunded`      – The escrow has not been funded yet.
+    /// * `EscrowLocked`   – Both parties already approved; lock is already active.
+    /// * `InvalidStatus`  – `caller` has already recorded their approval in this
+    ///                      round (duplicate single-party call).
     pub fn cancel_escrow(env: Env, caller: Address) -> Result<(), Error> {
         let zero_account = Address::from_str(
             &env,
@@ -3144,19 +3180,103 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        env.storage().instance().set(&DataKey::CancelLock, &true);
+        let bit = if caller == meta.client { 1u32 } else { 2u32 };
+        let current_mask = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::CancelApproval)
+            .unwrap_or(0);
+        if current_mask & bit != 0 {
+            return Err(Error::InvalidStatus);
+        }
+
+        let new_mask = current_mask | bit;
+        if new_mask == 3 {
+            env.storage().instance().remove(&DataKey::CancelApproval);
+            env.storage().instance().set(&DataKey::CancelLock, &true);
+            env.events().publish(
+                (symbol_short!("cancel"),),
+                CancelEscrowInitiatedEvent {
+                    contract_id: env.current_contract_address(),
+                    caller_is_client: caller == meta.client,
+                    client: meta.client.clone(),
+                    freelancer: meta.freelancer.clone(),
+                    token: meta.token.clone(),
+                    milestone_count: meta.milestone_count,
+                    total_amount: meta.total_amount,
+                    caller,
+                },
+            );
+            return Ok(());
+        }
+
+        env.storage().instance().set(&DataKey::CancelApproval, &new_mask);
+        env.events().publish(
+            (symbol_short!("cxlappr"),),
+            CancelApprovalRecordedEvent {
+                contract_id: env.current_contract_address(),
+                caller,
+                approval_mask: new_mask,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Revoke a previously recorded cancellation approval before the final
+    /// second-party lock is set.
+    pub fn revoke_cancel_approval(env: Env, caller: Address) -> Result<(), Error> {
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if caller == zero_account || caller == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
+        caller.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+
+        if caller != meta.client && caller != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+
+        let cancel_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false);
+        if cancel_locked {
+            return Err(Error::EscrowLocked);
+        }
+
+        let bit = if caller == meta.client { 1u32 } else { 2u32 };
+        let current_mask = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::CancelApproval)
+            .unwrap_or(0);
+        if current_mask & bit == 0 {
+            return Err(Error::InvalidStatus);
+        }
+
+        let new_mask = current_mask & !bit;
+        if new_mask == 0 {
+            env.storage().instance().remove(&DataKey::CancelApproval);
+        } else {
+            env.storage().instance().set(&DataKey::CancelApproval, &new_mask);
+        }
 
         env.events().publish(
-            (symbol_short!("cancel"),),
-            CancelEscrowInitiatedEvent {
+            (symbol_short!("cancelrev"),),
+            CancelApprovalRevokedEvent {
                 contract_id: env.current_contract_address(),
-                caller_is_client: caller == meta.client,
-                client: meta.client.clone(),
-                freelancer: meta.freelancer.clone(),
-                token: meta.token.clone(),
-                milestone_count: meta.milestone_count,
-                total_amount: meta.total_amount,
                 caller,
+                approval_mask: new_mask,
             },
         );
 

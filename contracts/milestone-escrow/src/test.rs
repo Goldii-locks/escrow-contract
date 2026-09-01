@@ -237,6 +237,7 @@ fn test_cancel_escrow_uses_compact_lock_key() {
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let lock = env.as_contract(&contract_id, || {
         env.storage()
@@ -10553,12 +10554,28 @@ fn test_cancel_escrow_succeeds_with_positive_balance() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, amounts);
 
-    // Balance is positive — cancel should succeed.
+    // First signature records approval and must not lock the escrow.
     client.cancel_escrow(&client_addr);
+    let approval_topic_val: Val = symbol_short!("cxlappr").into_val(&env);
+    let mut approval_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == approval_topic_val.get_payload() {
+                approval_events += 1;
+            }
+        }
+    }
+    assert_eq!(approval_events, 1);
 
-    // Verify the cancel event was emitted exactly once.
+    // Duplicate same-party signature is rejected.
+    let result = client.try_cancel_escrow(&client_addr);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+
+    // Second signature finalizes the cancellation and locks the escrow.
+    client.cancel_escrow(&freelancer_addr);
     let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
     let mut cancel_events = 0u32;
     for event in env.events().all().iter() {
@@ -10569,6 +10586,14 @@ fn test_cancel_escrow_succeeds_with_positive_balance() {
         }
     }
     assert_eq!(cancel_events, 1);
+
+    let is_locked = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    });
+    assert!(is_locked);
 }
 
 /// cancel_escrow is rejected when all milestones have been fully released
@@ -10783,6 +10808,7 @@ fn test_cancel_escrow_emits_structured_event() {
         setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let cancel_topic: Symbol = symbol_short!("cancel");
     let cancel_topic_val: Val = cancel_topic.into_val(&env);
@@ -10796,8 +10822,8 @@ fn test_cancel_escrow_emits_structured_event() {
                     CancelEscrowInitiatedEvent::from_val(&env, &event.2),
                     CancelEscrowInitiatedEvent {
                         contract_id: contract_id.clone(),
-                        caller: client_addr.clone(),
-                        caller_is_client: true,
+                        caller: freelancer_addr.clone(),
+                        caller_is_client: false,
                         client: client_addr.clone(),
                         freelancer: freelancer_addr.clone(),
                         token: token_contract_id.clone(),
@@ -10818,11 +10844,22 @@ fn test_cancel_escrow_freelancer_can_cancel() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 4_000_i128];
-    let (_, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&freelancer_addr);
+    let approval_topic_val: Val = symbol_short!("cxlappr").into_val(&env);
+    let mut approval_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == approval_topic_val.get_payload() {
+                approval_events += 1;
+            }
+        }
+    }
+    assert_eq!(approval_events, 1);
 
-    // Verify the cancel event was emitted.
+    client.cancel_escrow(&client_addr);
     let cancel_topic_val: Val = symbol_short!("cancel").into_val(&env);
     let mut cancel_events = 0u32;
     for event in env.events().all().iter() {
@@ -11689,8 +11726,8 @@ fn test_cancel_escrow_while_paused_fails() {
 
 // ── duplicate-cancel guard ────────────────────────────────────────────────────
 
-/// A second call to cancel_escrow after the lock is already set must return
-/// EscrowLocked, preventing duplicate lock-sets or race conditions.
+/// The same party signing twice must be rejected with InvalidStatus: one
+/// party cannot supply both signatures the lock now requires.
 #[test]
 fn test_cancel_escrow_duplicate_call_fails() {
     let env = Env::default();
@@ -11699,15 +11736,16 @@ fn test_cancel_escrow_duplicate_call_fails() {
     let amounts = vec![&env, 5_000_i128];
     let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
-    // First call succeeds.
+    // First call records the client's approval.
     escrow.cancel_escrow(&client_addr);
 
-    // Second call must be rejected.
+    // A repeat from the same party must be rejected.
     let result = escrow.try_cancel_escrow(&client_addr);
-    assert_eq!(result, Err(Ok(Error::EscrowLocked)));
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
-/// Freelancer calling cancel after client already locked it also gets EscrowLocked.
+/// Once both parties have signed and the lock is set, any further call --
+/// including from the party that completed it -- gets EscrowLocked.
 #[test]
 fn test_cancel_escrow_freelancer_duplicate_after_client_fails() {
     let env = Env::default();
@@ -11717,6 +11755,7 @@ fn test_cancel_escrow_freelancer_duplicate_after_client_fails() {
     let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
 
     let result = escrow.try_cancel_escrow(&freelancer_addr);
     assert_eq!(result, Err(Ok(Error::EscrowLocked)));
@@ -11783,6 +11822,7 @@ fn test_cancel_escrow_blocks_fund() {
     // Fund first so cancel_escrow is callable, then verify downstream ops blocked.
     escrow.fund(&client_addr);
     escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
 
     // fund requires not-locked, so a refunded-and-re-initialized path would
     // also be blocked.  Verify mark_delivered is blocked as a proxy.
@@ -11800,6 +11840,7 @@ fn test_cancel_escrow_blocks_mark_delivered() {
     let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
 
     let result = escrow.try_mark_delivered(&freelancer_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::EscrowLocked)));
@@ -11812,9 +11853,10 @@ fn test_cancel_escrow_blocks_approve_milestone() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
 
     let result = escrow.try_approve_milestone(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::EscrowLocked)));
@@ -11827,9 +11869,10 @@ fn test_cancel_escrow_blocks_raise_dispute() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
 
     let result = escrow.try_raise_dispute(&client_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::EscrowLocked)));
@@ -11844,9 +11887,10 @@ fn test_cancel_escrow_emits_exactly_one_event() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     escrow.cancel_escrow(&client_addr);
+    escrow.cancel_escrow(&freelancer_addr);
 
     let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
     let topic_val: Val = topic.into_val(&env);
@@ -11868,8 +11912,10 @@ fn test_cancel_escrow_event_contains_correct_caller() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (_, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
+    // The "cancel" event is emitted by the signature that completes the lock.
+    escrow.cancel_escrow(&client_addr);
     escrow.cancel_escrow(&freelancer_addr);
 
     let topic: soroban_sdk::Symbol = soroban_sdk::symbol_short!("cancel");
