@@ -530,24 +530,24 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPauseLock"
+                              "symbol": "Ep"
                             }
                           ]
                         },
                         "val": {
-                          "bool": false
+                          "bool": true
                         }
                       },
                       {
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPaused"
+                              "symbol": "EpLk"
                             }
                           ]
                         },
                         "val": {
-                          "bool": true
+                          "bool": false
                         }
                       },
                       {

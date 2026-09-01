@@ -260,11 +260,15 @@ fn refund_valid_amount_equals_amount_minus_released_amount() {
 
     client.multisig_admin_override_refund(&admin_addr, &0u32);
 
+    // Read the event tally first: every later `client.*` / `token.*` call is
+    // itself a contract invocation, and the test env's event buffer reflects
+    // the most recent one.
+    assert_eq!(refund_event_count(&env), 1);
+
     assert!(!client.is_multisig_locked());
     let job = client.get_job();
     let ms = job.milestones.get(0).unwrap();
     assert_eq!(ms.status, MilestoneStatus::Refunded);
     assert_eq!(ms.released_amount, 1_000);
     assert_eq!(token.balance(&client_addr), client_before + 600);
-    assert_eq!(refund_event_count(&env), 1);
 }
