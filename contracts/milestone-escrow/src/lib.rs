@@ -4860,6 +4860,7 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
     /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Paused`          – Contract is paused.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
@@ -4874,6 +4875,9 @@ impl MilestoneEscrow {
         milestone_index: u32,
     ) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
+
+        // Reject illegal source state before any job/milestone ledger I/O.
+        Self::assert_not_paused(&env)?;
 
         let meta = Self::load_job_meta(&env)?;
         if !meta.funded {

@@ -21,6 +21,8 @@ mod admin_tax_withholding_guards_tests;
 mod execute_admin_transfer_tests;
 #[path = "arbitration_split_event_tests.rs"]
 mod arbitration_split_event_tests;
+#[path = "admin_override_refund_tests.rs"]
+mod admin_override_refund_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_split_refund_tests.rs"]
