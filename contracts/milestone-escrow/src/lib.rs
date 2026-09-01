@@ -3009,6 +3009,26 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
 
+        // Reject if the contract is emergency-paused.
+        let emergency_paused = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Ep)
+            .unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Reject a duplicate cancel — CancelLock already active.
+        let already_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false);
+        if already_locked {
+            return Err(Error::EscrowLocked);
+        }
+
         caller.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -4225,11 +4245,17 @@ impl MilestoneEscrow {
     /// `is_multisig_approved` reports the threshold met.
     ///
     /// # Errors
+    /// * `NotInitialized`          – Contract has never been initialised, so
+    ///   there is no admin to transfer from.
     /// * `NoPendingAdminTransfer`  – No transfer is currently proposed.
-    /// * `NotInitialized`          – Multisig has not been initialised.
     /// * `MultiSigThresholdNotMet` – Approvals collected so far are below the
     ///   required threshold.
     pub fn execute_admin_transfer(env: Env) -> Result<(), Error> {
+        // Precondition guard: reject an uninitialised contract (no admin ever
+        // stored, so nothing can be transferred) with `NotInitialized` before
+        // any pending-transfer or approval storage is read or written.
+        let old_admin = Self::load_admin(&env)?;
+
         let pending: PendingAdminTransfer = env
             .storage()
             .persistent()
@@ -4241,7 +4267,6 @@ impl MilestoneEscrow {
             return Err(Error::MultiSigThresholdNotMet);
         }
 
-        let old_admin = Self::load_admin(&env)?;
         env.storage()
             .persistent()
             .set(&DataKey::Admin, &pending.new_admin);
