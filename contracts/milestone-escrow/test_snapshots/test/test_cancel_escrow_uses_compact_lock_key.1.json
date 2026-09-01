@@ -527,7 +527,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "C"
+                              "symbol": "CancelLock"
                             }
                           ]
                         },
@@ -539,7 +539,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPaused"
+                              "symbol": "Ep"
                             }
                           ]
                         },
