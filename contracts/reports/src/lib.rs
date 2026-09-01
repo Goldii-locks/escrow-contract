@@ -564,6 +564,21 @@ impl MilestoneEscrow {
 
     fn load_time_extension(env: &Env, index: u32) -> u64 {
         env.storage()
+            .temporary()
+            .get(&DataKey::MilestoneTimeExtension(index))
+            .or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get(&DataKey::MilestoneTimeExtension(index))
+            })
+            .unwrap_or(0)
+    }
+
+    /// Load the cumulative extension for a milestone from temporary storage,
+    /// falling back to the persistent key for pre-migration entries.
+    #[allow(dead_code)]
+    fn load_time_extension_legacy(env: &Env, index: u32) -> u64 {
+        env.storage()
             .persistent()
             .get(&DataKey::MilestoneTimeExtension(index))
             .unwrap_or(0)
@@ -1129,7 +1144,7 @@ impl MilestoneEscrow {
         let new_extension = current_extension.checked_add(extra_seconds).ok_or(Error::InvalidExtension)?;
 
         env.storage()
-            .persistent()
+            .temporary()
             .set(&DataKey::MilestoneTimeExtension(milestone_index), &new_extension);
 
         env.events().publish(
