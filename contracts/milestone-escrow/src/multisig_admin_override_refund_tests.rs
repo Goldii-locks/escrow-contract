@@ -142,3 +142,135 @@ fn locked_admin_override_refunds_client_and_clears_lock() {
     assert_eq!(after.client_balance, before.client_balance + 1_000);
     assert_eq!(after.contract_balance, before.contract_balance - 1_000);
 }
+
+// ── arithmetic hardening (issue #395) ────────────────────────────────────────
+
+/// Overwrite the persistent `Milestone(index)` entry directly with an
+/// adversarial value. `amount` / `released_amount` are signed i128 values that
+/// the normal flow would never produce, so they are injected straight into
+/// storage to prove the checked arithmetic returns a typed error instead of
+/// panicking or wrapping.
+fn set_milestone_raw(env: &Env, contract_id: &Address, index: u32, milestone: &Milestone) {
+    env.as_contract(contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(index), milestone);
+    });
+}
+
+fn unlocked_milestone(amount: i128, released_amount: i128) -> Milestone {
+    Milestone {
+        amount,
+        released_amount,
+        status: MilestoneStatus::Pending,
+        delivered_at: 0,
+    }
+}
+
+/// A milestone whose `amount` is `i128::MIN` must be rejected with
+/// `Error::InvalidAmount` before any arithmetic runs — it must not panic or
+/// wrap.
+#[test]
+fn refund_negative_amount_returns_invalid_amount_without_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin_addr);
+
+    let milestone = unlocked_milestone(i128::MIN, 0);
+    set_milestone_raw(&env, &contract_id, 0, &milestone);
+
+    let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    assert!(client.is_multisig_locked());
+    assert_eq!(refund_event_count(&env), 0);
+}
+
+/// A negative `released_amount` (e.g. `i128::MIN`) is a pathological operand:
+/// subtracting it could overflow `i128::MAX`. It must be rejected with
+/// `Error::InvalidAmount` rather than panic.
+#[test]
+fn refund_negative_released_amount_returns_invalid_amount_without_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin_addr);
+
+    let milestone = unlocked_milestone(i128::MAX, i128::MIN);
+    set_milestone_raw(&env, &contract_id, 0, &milestone);
+
+    let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    assert!(client.is_multisig_locked());
+    assert_eq!(refund_event_count(&env), 0);
+}
+
+/// `amount == i128::MAX` with a positive `released_amount` would previously
+/// risk wrapping; the checked_sub + `remaining <= 0` guards must yield
+/// `Error::InvalidAmount` for any over-full (or equal) released_amount.
+#[test]
+fn refund_released_exceeds_amount_returns_invalid_amount_without_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin_addr);
+
+    let milestone = unlocked_milestone(i128::MAX, i128::MAX);
+    set_milestone_raw(&env, &contract_id, 0, &milestone);
+
+    // released_amount == amount → remaining == 0 → InvalidAmount.
+    let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert!(client.is_multisig_locked());
+
+    // released_amount > amount → remaining < 0 → InvalidAmount (no wrap).
+    let milestone2 = unlocked_milestone(100, 200);
+    set_milestone_raw(&env, &contract_id, 0, &milestone2);
+    let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert!(client.is_multisig_locked());
+
+    assert_eq!(refund_event_count(&env), 0);
+}
+
+/// Valid amounts must produce results identical to before the hardening.
+/// A partially-released milestone refunds exactly `amount - released_amount`.
+#[test]
+fn refund_valid_amount_equals_amount_minus_released_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin_addr);
+
+    // Inject an already partially-released milestone (released 400 of 1000).
+    // Remaining refund == 1000 - 400 == 600.
+    let milestone = unlocked_milestone(1_000, 400);
+    set_milestone_raw(&env, &contract_id, 0, &milestone);
+
+    let token = token::Client::new(&env, &token_id);
+    let client_before = token.balance(&client_addr);
+
+    client.multisig_admin_override_refund(&admin_addr, &0u32);
+
+    // Read the event tally first: every later `client.*` / `token.*` call is
+    // itself a contract invocation, and the test env's event buffer reflects
+    // the most recent one.
+    assert_eq!(refund_event_count(&env), 1);
+
+    assert!(!client.is_multisig_locked());
+    let job = client.get_job();
+    let ms = job.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Refunded);
+    assert_eq!(ms.released_amount, 1_000);
+    assert_eq!(token.balance(&client_addr), client_before + 600);
+}

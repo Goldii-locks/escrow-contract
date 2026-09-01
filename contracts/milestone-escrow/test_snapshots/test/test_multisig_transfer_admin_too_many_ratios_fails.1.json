@@ -1990,7 +1990,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPaused"
+                              "symbol": "Ep"
                             }
                           ]
                         },
