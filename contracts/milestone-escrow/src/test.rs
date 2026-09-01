@@ -8303,6 +8303,50 @@ fn test_multisig_approve_emits_structured_event() {
     assert_eq!(matched, 1);
 }
 
+/// Auth guard: an unregistered signer is rejected with `Unauthorized` and
+/// leaves the proposal's approval bitmap untouched.
+#[test]
+fn test_multisig_approve_unauthorized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, _signers) = setup_multisig(&env, 2);
+
+    let impostor = Address::generate(&env);
+    let result = client.try_multisig_approve(&impostor, &50u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let state = client.is_multisig_approved(&50u32);
+    assert!(!state.approved);
+    assert_eq!(state.approvals, 0);
+    assert_eq!(state.bitmap, 0);
+}
+
+/// Precondition guard: an illegal source state (zero contract balance) is
+/// rejected with `MultiSigEmptyBalance` and leaves the proposal's approval
+/// bitmap untouched.
+#[test]
+fn test_multisig_approve_illegal_source_state_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deliberately unfunded: setup_escrow_for_multisig initialises the job
+    // but never calls `fund`, so the contract token balance is zero.
+    let (client, admin) = setup_escrow_for_multisig(&env);
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signers = vec![&env, signer1.clone(), signer2.clone()];
+    client.multisig_approval_init(&admin, &signers, &2u32);
+
+    let result = client.try_multisig_approve(&signer1, &51u32);
+    assert_eq!(result, Err(Ok(Error::MultiSigEmptyBalance)));
+
+    let state = client.is_multisig_approved(&51u32);
+    assert!(!state.approved);
+    assert_eq!(state.approvals, 0);
+    assert_eq!(state.bitmap, 0);
+}
+
 /// Admin: unauthorised caller cannot initialise multisig, and no storage
 /// entry is mutated by the rejected attempt (the original signer set and
 /// threshold from `setup_multisig` remain in effect).
