@@ -13,6 +13,8 @@ use soroban_sdk::{
 
 #[path = "admin_tax_withholding_guards_tests.rs"]
 mod admin_tax_withholding_guards_tests;
+#[path = "execute_admin_transfer_tests.rs"]
+mod execute_admin_transfer_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_split_refund_tests.rs"]
