@@ -9206,6 +9206,9 @@ fn test_escrow_interest_yield_overflow_fails() {
 
     let res = client.try_escrow_interest_yield(&i128::MAX, &10_000_i128, &31_536_000_i128);
     assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+
+    let res_min = client.try_escrow_interest_yield(&i128::MIN, &10_000_i128, &31_536_000_i128);
+    assert_eq!(res_min, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]
