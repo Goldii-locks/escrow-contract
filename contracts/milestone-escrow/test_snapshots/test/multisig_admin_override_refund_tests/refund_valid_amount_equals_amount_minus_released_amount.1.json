@@ -677,18 +677,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "MultisigLocked"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "bool": false
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "PlatformFeeAllocation"
                             }
                           ]
