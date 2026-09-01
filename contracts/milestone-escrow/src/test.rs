@@ -10706,3 +10706,314 @@ fn test_multisig_split_refund_illegal_source_state_fails() {
     let result = client.try_multisig_split_refund(&admin_addr, &1_000_i128, &5_000_u32, &5_000_u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
+
+#[test]
+fn test_set_platform_fee_allocation_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+
+    let pf_set_topic: Symbol = symbol_short!("pf_set");
+    let pf_set_topic_val: Val = pf_set_topic.into_val(&env);
+    let mut pf_set_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == pf_set_topic_val.get_payload() {
+                pf_set_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    PlatformFeeAllocationSetEvent::from_val(&env, &event.2),
+                    PlatformFeeAllocationSetEvent {
+                        admin: admin_addr.clone(),
+                        client_bps: 2000,
+                        freelancer_bps: 7000,
+                        treasury_bps: 1000,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(pf_set_events, 1, "expected exactly one pf_set event");
+}
+
+#[test]
+fn test_lock_platform_fee_allocation_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.set_platform_fee_allocation(&admin_addr, &3000_u32, &6000_u32, &1000_u32);
+    client.lock_platform_fee_allocation(&admin_addr);
+
+    let pf_lock_topic: Symbol = symbol_short!("pf_lock");
+    let pf_lock_topic_val: Val = pf_lock_topic.into_val(&env);
+    let mut pf_lock_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == pf_lock_topic_val.get_payload() {
+                pf_lock_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    PlatformFeeAllocationLockedEvent::from_val(&env, &event.2),
+                    PlatformFeeAllocationLockedEvent {
+                        admin: admin_addr.clone(),
+                        client_bps: 3000,
+                        freelancer_bps: 6000,
+                        treasury_bps: 1000,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(pf_lock_events, 1, "expected exactly one pf_lock event");
+}
+
+#[test]
+fn test_pf_alloc_admin_override_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+    client.lock_platform_fee_allocation(&admin_addr);
+
+    // Admin overrides the locked allocation
+    client.pf_alloc_admin_override(&admin_addr, &1000_u32, &8000_u32, &1000_u32);
+
+    let pf_ovr_topic: Symbol = symbol_short!("pf_ovr");
+    let pf_ovr_topic_val: Val = pf_ovr_topic.into_val(&env);
+    let mut pf_ovr_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == pf_ovr_topic_val.get_payload() {
+                pf_ovr_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    PlatformFeeAllocationOverrideEvent::from_val(&env, &event.2),
+                    PlatformFeeAllocationOverrideEvent {
+                        admin: admin_addr.clone(),
+                        client_bps: 1000,
+                        freelancer_bps: 8000,
+                        treasury_bps: 1000,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(pf_ovr_events, 1, "expected exactly one pf_ovr event");
+}
+
+#[test]
+fn test_calculate_platform_fee_split_emits_structured_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    // 20/70/10 split on 1000 tokens
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+    let distribution = client.calculate_platform_fee_split(&1000_i128);
+    assert_eq!(distribution.client_amount, 200);
+    assert_eq!(distribution.freelancer_amount, 700);
+    assert_eq!(distribution.treasury_amount, 100);
+
+    let pf_split_topic: Symbol = symbol_short!("pf_split");
+    let pf_split_topic_val: Val = pf_split_topic.into_val(&env);
+    let mut pf_split_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == pf_split_topic_val.get_payload() {
+                pf_split_events += 1;
+                assert_eq!(event.1.len(), 1);
+                assert_eq!(
+                    PlatformFeeSplitCalculatedEvent::from_val(&env, &event.2),
+                    PlatformFeeSplitCalculatedEvent {
+                        total_amount: 1000,
+                        client_amount: 200,
+                        freelancer_amount: 700,
+                        treasury_amount: 100,
+                    }
+                );
+            }
+        }
+    }
+    assert_eq!(
+        pf_split_events, 1,
+        "expected exactly one pf_split event"
+    );
+}
+
+#[test]
+fn test_set_platform_fee_allocation_fails_does_not_emit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    // Invalid BPS that don't sum to 10000
+    let result = client.try_set_platform_fee_allocation(&admin_addr, &3000_u32, &3000_u32, &3000_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+
+    let pf_set_topic: Symbol = symbol_short!("pf_set");
+    let pf_set_topic_val: Val = pf_set_topic.into_val(&env);
+    let pf_set_count = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == pf_set_topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(pf_set_count, 0, "should not emit pf_set event on failure");
+}
+
+#[test]
+fn test_platform_fee_split_rounds_to_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    client.set_platform_fee_allocation(&admin_addr, &3333_u32, &3333_u32, &3334_u32);
+    let distribution = client.calculate_platform_fee_split(&1_i128);
+    // With total_amount=1, floor(1*3333/10000)=0, floor(1*3333/10000)=0, floor(1*3334/10000)=0
+    // largest remainder gives the remainder to client (first)
+    assert_eq!(distribution.client_amount + distribution.freelancer_amount + distribution.treasury_amount, 1);
+
+    let pf_split_topic: Symbol = symbol_short!("pf_split");
+    let pf_split_topic_val: Val = pf_split_topic.into_val(&env);
+    let mut pf_split_events = 0u32;
+    for event in env.events().all().iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == pf_split_topic_val.get_payload() {
+                pf_split_events += 1;
+            }
+        }
+    }
+    assert_eq!(pf_split_events, 1, "expected exactly one pf_split event");
+}

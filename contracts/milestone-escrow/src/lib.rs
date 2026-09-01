@@ -424,8 +424,52 @@ pub struct PlatformFeeDistribution {
     pub treasury_amount: i128,
 }
 
+/// Emitted by `set_platform_fee_allocation` when the admin successfully
+/// updates the platform-fee BPS configuration.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeAllocationSetEvent {
+    pub admin: Address,
+    pub client_bps: u32,
+    pub freelancer_bps: u32,
+    pub treasury_bps: u32,
+}
+
+/// Emitted by `lock_platform_fee_allocation` when the admin locks the
+/// current platform-fee configuration, preventing further non-override
+/// modifications.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeAllocationLockedEvent {
+    pub admin: Address,
+    pub client_bps: u32,
+    pub freelancer_bps: u32,
+    pub treasury_bps: u32,
+}
+
+/// Emitted by `pf_alloc_admin_override` when the admin force-updates a
+/// locked platform-fee configuration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeAllocationOverrideEvent {
+    pub admin: Address,
+    pub client_bps: u32,
+    pub freelancer_bps: u32,
+    pub treasury_bps: u32,
+}
+
+/// Emitted by `calculate_platform_fee_split` with the resulting per-party
+/// token amounts so downstream indexers can audit the split without
+/// re-querying contract storage.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeSplitCalculatedEvent {
+    pub total_amount: i128,
+    pub client_amount: i128,
+    pub freelancer_amount: i128,
+    pub treasury_amount: i128,
+}
+
 pub struct AutoReleasedEvent {
     pub contract_id: Address,
     pub milestone_index: u32,
@@ -3438,6 +3482,19 @@ impl MilestoneEscrow {
                     locked: false,
                 },
             );
+
+            // Emit a structured event so downstream indexers can track
+            // every platform-fee configuration change without polling storage.
+            env.events().publish(
+                (symbol_short!("pf_set"),),
+                PlatformFeeAllocationSetEvent {
+                    admin: admin.clone(),
+                    client_bps,
+                    freelancer_bps,
+                    treasury_bps,
+                },
+            );
+
             Ok(())
         })();
 
@@ -3463,6 +3520,19 @@ impl MilestoneEscrow {
                 .instance()
                 .get(&DataKey::PlatformFeeAllocation)
                 .ok_or(Error::NotInitialized)?;
+
+            // Emit a structured event so downstream indexers can track
+            // lock state changes without polling storage.
+            env.events().publish(
+                (symbol_short!("pf_lock"),),
+                PlatformFeeAllocationLockedEvent {
+                    admin: admin.clone(),
+                    client_bps: current.client_bps,
+                    freelancer_bps: current.freelancer_bps,
+                    treasury_bps: current.treasury_bps,
+                },
+            );
+
             current.locked = true;
             env.storage()
                 .instance()
@@ -3514,6 +3584,19 @@ impl MilestoneEscrow {
                     locked: false,
                 },
             );
+
+            // Emit a structured event so downstream indexers can track
+            // admin override changes without polling storage.
+            env.events().publish(
+                (symbol_short!("pf_ovr"),),
+                PlatformFeeAllocationOverrideEvent {
+                    admin: admin.clone(),
+                    client_bps,
+                    freelancer_bps,
+                    treasury_bps,
+                },
+            );
+
             Ok(())
         })();
 
@@ -3545,7 +3628,21 @@ impl MilestoneEscrow {
             .instance()
             .get(&DataKey::PlatformFeeAllocation)
             .ok_or(Error::NotInitialized)?;
-        Self::allocate_platform_fee(total_amount, &allocation)
+        let distribution = Self::allocate_platform_fee(total_amount, &allocation)?;
+
+        // Emit a structured event so downstream indexers can audit the
+        // per-party split without re-querying contract storage.
+        env.events().publish(
+            (symbol_short!("pf_split"),),
+            PlatformFeeSplitCalculatedEvent {
+                total_amount,
+                client_amount: distribution.client_amount,
+                freelancer_amount: distribution.freelancer_amount,
+                treasury_amount: distribution.treasury_amount,
+            },
+        );
+
+        Ok(distribution)
     }
 
     pub fn payment_streaming_milestones(
