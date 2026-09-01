@@ -5088,7 +5088,9 @@ impl MilestoneEscrow {
     /// * `NotInitialized`   – Contract not initialised.
     /// * `NotFunded`        – Escrow not yet funded.
     /// * `InvalidMilestone` – `milestone_index` is out of range.
-    /// * `InvalidStatus`    – Milestone is already terminal (Released/Refunded).
+    /// * `InvalidStatus`    – Milestone is not Pending/Delivered/PartiallyReleased
+    ///                        (i.e. it is Released, Refunded, or Disputed —
+    ///                        disputed funds are frozen pending `resolve_dispute`).
     /// * `InvalidRatio`     – `tax_rate_bps > 10_000`.
     /// * `InvalidAmount`    – Remaining balance is zero or arithmetic overflow.
     pub fn tax_withholding_deductions(
@@ -5112,10 +5114,24 @@ impl MilestoneEscrow {
         }
 
         let milestone = Self::load_milestone(&env, milestone_index)?;
-        if milestone.status == MilestoneStatus::Released
-            || milestone.status == MilestoneStatus::Refunded
-        {
-            return Err(Error::InvalidStatus);
+
+        // Only Pending/Delivered/PartiallyReleased milestones may have tax
+        // withheld — mirrors the state machine `raise_dispute_inner` and
+        // `resolve_dispute` already enforce elsewhere in this file. A
+        // Disputed milestone's funds are frozen pending arbitration, so
+        // computing (and persisting) a tax split for it here would let this
+        // entry point move money around a dispute the same way `resolve_dispute`
+        // is meant to gate exclusively. An exhaustive match (rather than the
+        // two equality checks this replaced) also means a future new
+        // `MilestoneStatus` variant fails to compile here instead of silently
+        // falling through as allowed.
+        match milestone.status {
+            MilestoneStatus::Pending
+            | MilestoneStatus::Delivered
+            | MilestoneStatus::PartiallyReleased => {}
+            MilestoneStatus::Released | MilestoneStatus::Refunded | MilestoneStatus::Disputed => {
+                return Err(Error::InvalidStatus)
+            }
         }
 
         let token_client = token::Client::new(&env, &meta.token);
