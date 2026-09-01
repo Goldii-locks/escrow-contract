@@ -135,7 +135,7 @@ fn deadline_extension_overflow_is_rejected() {
     let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
     escrow.mark_delivered(&freelancer_addr, &0);
 
-    escrow.extend_milestone_deadline(&client_addr, &0, &u64::MAX);
+    escrow.extend_milestone_deadline(&client_addr, &0, &u32::MAX);
     assert_eq!(
         escrow.try_extend_milestone_deadline(&client_addr, &0, &1),
         Err(Ok(Error::InvalidExtension))

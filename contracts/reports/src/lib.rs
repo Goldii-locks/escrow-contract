@@ -29,7 +29,12 @@ pub enum Error {
     InvalidRatio = 14,
     InvalidExtension = 15,
     EscrowLocked = 16,
+    /// Configured fees exceed the maximum allowed limits (e.g. treasury > 20% or client > 50%)
+    FeeTooHigh = 29,
 }
+
+const MAX_TREASURY_FEE_BPS: u32 = 2000;
+const MAX_CLIENT_FEE_BPS: u32 = 5000;
 
 const BPS_SCALE: u32 = 10_000;
 
@@ -88,6 +93,16 @@ pub struct RefundAllocation {
     pub freelancer_payout_bps: u32,
 }
 
+/// Result of a split-refund fee distribution, detailing the net amounts and fee shares.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitRefundFeeDistribution {
+    pub client_net_refund: i128,
+    pub client_fee_share: i128,
+    pub freelancer_net_payout: i128,
+    pub treasury_fee_share: i128,
+}
+
 #[contracttype]
 pub enum DataKey {
     Job,
@@ -132,7 +147,8 @@ pub enum DataKey {
     /// raise_dispute, resolve_dispute) so that an emergency admin investigation
     /// cannot be interfered with.
     Paused,
-    MilestoneTimeExtension(u32),
+    MultisigLocked,
+    TimeExt(u32),
     CancelLock,
     // ── multisig approval compact storage keys ─────────────────────────────
     /// The full list of registered multisig signers (instance storage, written
@@ -197,8 +213,8 @@ pub struct DeadlineExtendedEvent {
     pub contract_id: Address,
     pub milestone_index: u32,
     pub client: Address,
-    pub extra_seconds: u64,
-    pub new_extension: u64,
+    pub extra_seconds: u32,
+    pub new_extension: u32,
 }
 
 #[contracttype]
@@ -395,11 +411,12 @@ pub struct EscrowResumedEvent {
     pub contract_id: Address,
 }
 
-/// Emitted by `emergency_pause` when the admin pauses the escrow.
+/// Emitted by `emergency_pause` when the escrow is paused by the client and freelancer.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyPausedEvent {
-    pub admin: Address,
+    pub client: Address,
+    pub freelancer: Address,
     pub contract_id: Address,
 }
 
@@ -477,6 +494,10 @@ impl MilestoneEscrow {
         freelancer_bps: u32,
         treasury_bps: u32,
     ) -> Result<(), Error> {
+        if treasury_bps > MAX_TREASURY_FEE_BPS || client_bps > MAX_CLIENT_FEE_BPS {
+            return Err(Error::FeeTooHigh);
+        }
+
         let total = client_bps
             .checked_add(freelancer_bps)
             .and_then(|v| v.checked_add(treasury_bps))
@@ -562,25 +583,11 @@ impl MilestoneEscrow {
             .set(&DataKey::MilestoneReleased(index), &true);
     }
 
-    fn load_time_extension(env: &Env, index: u32) -> u64 {
+    fn load_time_extension(env: &Env, index: u32) -> u32 {
         env.storage()
             .temporary()
-            .get(&DataKey::MilestoneTimeExtension(index))
-            .or_else(|| {
-                env.storage()
-                    .persistent()
-                    .get(&DataKey::MilestoneTimeExtension(index))
-            })
-            .unwrap_or(0)
-    }
-
-    /// Load the cumulative extension for a milestone from temporary storage,
-    /// falling back to the persistent key for pre-migration entries.
-    #[allow(dead_code)]
-    fn load_time_extension_legacy(env: &Env, index: u32) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MilestoneTimeExtension(index))
+            .get(&DataKey::TimeExt(index))
+            .or_else(|| env.storage().persistent().get(&DataKey::TimeExt(index)))
             .unwrap_or(0)
     }
 
@@ -1117,7 +1124,7 @@ impl MilestoneEscrow {
         env: Env,
         client: Address,
         milestone_index: u32,
-        extra_seconds: u64,
+        extra_seconds: u32,
     ) -> Result<(), Error> {
         Self::assert_not_paused(&env)?;
         client.require_auth();
@@ -1141,11 +1148,13 @@ impl MilestoneEscrow {
         }
 
         let current_extension = Self::load_time_extension(&env, milestone_index);
-        let new_extension = current_extension.checked_add(extra_seconds).ok_or(Error::InvalidExtension)?;
+        let new_extension = current_extension
+            .checked_add(extra_seconds)
+            .ok_or(Error::InvalidExtension)?;
 
         env.storage()
             .temporary()
-            .set(&DataKey::MilestoneTimeExtension(milestone_index), &new_extension);
+            .set(&DataKey::TimeExt(milestone_index), &new_extension);
 
         env.events().publish(
             (symbol_short!("extend"),),
@@ -1231,7 +1240,7 @@ impl MilestoneEscrow {
 
         let deadline = delivered_at
             .checked_add(meta.auto_release_seconds)
-            .and_then(|d| d.checked_add(extension))
+            .and_then(|d| d.checked_add(extension as u64))
             .ok_or(Error::InvalidAmount)?;
         let current = env.ledger().timestamp();
         if current < deadline {
@@ -1291,7 +1300,7 @@ impl MilestoneEscrow {
         let delivered_at =
             Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
         let extension = Self::load_time_extension(&env, milestone_index);
-        let deadline = delivered_at + meta.auto_release_seconds + extension;
+        let deadline = delivered_at + meta.auto_release_seconds + (extension as u64);
         let current = env.ledger().timestamp();
         (deadline as i64) - (current as i64)
     }
@@ -1681,8 +1690,14 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    pub fn emergency_pause(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+    pub fn emergency_pause(env: Env, client: Address, freelancer: Address) -> Result<(), Error> {
+        let meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
         env.storage()
             .instance()
             .set(&DataKey::Ep, &true);
@@ -1690,7 +1705,8 @@ impl MilestoneEscrow {
         env.events().publish(
             (symbol_short!("empause"),),
             EmergencyPausedEvent {
-                admin: admin.clone(),
+                client,
+                freelancer,
                 contract_id: env.current_contract_address(),
             },
         );
@@ -1838,6 +1854,59 @@ impl MilestoneEscrow {
             .instance()
             .get(&DataKey::PlatformFeeAllocation)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Calculate net distributions for a split refund by applying the platform
+    /// fee allocation only to the freelancer's payout portion. The client's refund
+    /// is fee-exempt.
+    pub fn split_refund_net_distribution(
+        env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+        fee_allocation: PlatformFeeAllocation,
+    ) -> Result<SplitRefundFeeDistribution, Error> {
+        // 1. Get gross split
+        let gross_split = Self::multisig_split_refund(
+            env.clone(),
+            total_amount,
+            client_refund_bps,
+            freelancer_payout_bps,
+        )?;
+
+        // 2. Client net is their gross refund (fee-exempt)
+        let client_net_refund = gross_split.client_refund;
+
+        // 3. Freelancer gross payout is subject to platform fee
+        let gross_payout = gross_split.freelancer_payout;
+
+        // Calculate fee shares using the fee_allocation
+        let client_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.client_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        let treasury_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.treasury_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        // Freelancer net is what's left
+        let freelancer_net_payout = gross_payout
+            .checked_sub(client_fee_share)
+            .and_then(|v| v.checked_sub(treasury_fee_share))
+            .ok_or(Error::InvalidAmount)?;
+
+        Ok(SplitRefundFeeDistribution {
+            client_net_refund,
+            client_fee_share,
+            freelancer_net_payout,
+            treasury_fee_share,
+        })
     }
 
     pub fn payment_streaming_milestones(

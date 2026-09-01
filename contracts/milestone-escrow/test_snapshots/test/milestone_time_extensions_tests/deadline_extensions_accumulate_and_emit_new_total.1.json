@@ -175,7 +175,7 @@
                   "u32": 0
                 },
                 {
-                  "u64": 100
+                  "u32": 100
                 }
               ]
             }
@@ -200,7 +200,7 @@
                   "u32": 0
                 },
                 {
-                  "u64": 250
+                  "u32": 250
                 }
               ]
             }
@@ -659,7 +659,7 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "MilestoneTimeExtension"
+                  "symbol": "TimeExt"
                 },
                 {
                   "u32": 0
@@ -679,7 +679,7 @@
                 "key": {
                   "vec": [
                     {
-                      "symbol": "MilestoneTimeExtension"
+                      "symbol": "TimeExt"
                     },
                     {
                       "u32": 0
@@ -688,7 +688,7 @@
                 },
                 "durability": "temporary",
                 "val": {
-                  "u64": 350
+                  "u32": 350
                 }
               }
             },
