@@ -720,12 +720,12 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "CancelLock"
+                              "symbol": "CancelApproval"
                             }
                           ]
                         },
                         "val": {
-                          "bool": true
+                          "u32": 1
                         }
                       },
                       {

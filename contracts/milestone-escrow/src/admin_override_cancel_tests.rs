@@ -35,10 +35,11 @@ fn test_cancel_release_happy_path_no_temporary_released_flag() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, freelancer_addr, _, admin_addr, token_id, contract_id, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 3_000_i128, 7_000_i128]);
 
     client.cancel_escrow(&freelancer_addr);
+    client.cancel_escrow(&client_addr);
 
     let token = token::Client::new(&env, &token_id);
     let freelancer_before = token.balance(&freelancer_addr);
@@ -94,6 +95,7 @@ fn test_cancel_release_skips_terminal_milestones_no_flag() {
     client.approve_milestone(&client_addr, &0u32);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let token = token::Client::new(&env, &token_id);
     let freelancer_before = token.balance(&freelancer_addr);
@@ -133,8 +135,9 @@ fn test_cancel_release_unauthorized_caller_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let attacker = Address::generate(&env);
     let result = client.try_admin_override_cancel_release(&attacker);
@@ -147,9 +150,10 @@ fn test_cancel_release_resets_yield_accrued() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, _, contract_id, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 5_000_i128]);
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
     client.admin_override_cancel_release(&admin_addr);
 
     let yield_after: i128 = env.as_contract(&contract_id, || {
@@ -172,10 +176,11 @@ fn test_cancel_refund_happy_path_produces_correct_amounts() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, token_id, _, client) =
         setup_funded_escrow(&env, vec![&env, 4_000_i128, 6_000_i128]);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let token = token::Client::new(&env, &token_id);
     let client_before = token.balance(&client_addr);
@@ -209,6 +214,7 @@ fn test_cancel_refund_skips_terminal_milestones() {
     client.approve_milestone(&client_addr, &0u32);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let token = token::Client::new(&env, &token_id);
     let client_before = token.balance(&client_addr);
@@ -239,9 +245,10 @@ fn test_cancel_refund_unauthorized_caller_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, _, token_id, _, client) =
+    let (client_addr, freelancer_addr, _, _, token_id, _, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let token = token::Client::new(&env, &token_id);
     let client_balance_before = token.balance(&client_addr);
@@ -277,6 +284,7 @@ fn test_cancel_refund_all_terminal_returns_invalid_amount() {
     token_admin.mint(&contract_id, &1_000_i128);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let result = client.try_admin_override_cancel_refund(&admin_addr);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
@@ -288,9 +296,10 @@ fn test_cancel_refund_resets_yield_accrued() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, _, contract_id, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 5_000_i128]);
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
     client.admin_override_cancel_refund(&admin_addr);
 
     let yield_after: i128 = env.as_contract(&contract_id, || {
@@ -308,9 +317,10 @@ fn test_cancel_refund_clears_cancel_lock() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, _, contract_id, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
     client.admin_override_cancel_refund(&admin_addr);
 
     let locked: bool = env.as_contract(&contract_id, || {
@@ -330,9 +340,10 @@ fn test_cancel_refund_multiple_milestones_sum_correctly() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 100_i128, 200_i128, 300_i128, 400_i128];
-    let (client_addr, _, _, admin_addr, token_id, _, client) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, token_id, _, client) = setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let token = token::Client::new(&env, &token_id);
     let client_before = token.balance(&client_addr);
@@ -350,10 +361,11 @@ fn test_cancel_refund_minimum_valid_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, token_id, _, client) =
         setup_funded_escrow(&env, vec![&env, 1_i128]);
 
     client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
 
     let token = token::Client::new(&env, &token_id);
     let client_before = token.balance(&client_addr);
