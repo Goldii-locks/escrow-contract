@@ -1384,6 +1384,11 @@ impl MilestoneEscrow {
         env.storage()
             .temporary()
             .get(&DataKey::MilestoneTimeExtension(index))
+            .or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get(&DataKey::MilestoneTimeExtension(index))
+            })
             .unwrap_or(0)
     }
 
