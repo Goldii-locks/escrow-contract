@@ -3303,6 +3303,63 @@ fn test_multisig_override_refund_clears_locked_flag() {
     assert!(!client.is_multisig_locked());
 }
 
+/// Verify `multisig_admin_override_release` keeps a minimal ledger footprint.
+///
+/// The override path persists exactly two distinct storage keys on success:
+///   * `Milestone(index)`  (persistent) — terminal `Released` status
+///   * `MultisigLocked`    (instance)   — cleared once the deadlock is resolved
+///
+/// In particular it must NOT write the `MilestoneReleased(index)` temporary
+/// flag that the normal `approve_milestone` path uses as a cheap completion
+/// signal. That flag is dead-on-this-path (`is_milestone_released_flag` has no
+/// callers) and the persisted `Released` status is authoritative, so writing it
+/// would only enlarge the ledger footprint of the call unnecessarily.
+#[test]
+fn test_multisig_admin_override_release_reduced_storage_footprint() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, freelancer_addr, _, admin_addr, token_id, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let token = token::Client::new(&env, &token_id);
+
+    // Put the workflow in the locked state the override is meant to resolve.
+    client.multisig_lock(&admin_addr);
+    assert!(client.is_multisig_locked());
+
+    // No terminal flag may exist before the call.
+    let flag_before: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .get(&DataKey::MilestoneReleased(0u32))
+    });
+    assert_eq!(flag_before, None);
+
+    client.multisig_admin_override_release(&admin_addr, &0u32);
+
+    // The temporary completion flag must NOT be written by the override path.
+    let flag_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .get(&DataKey::MilestoneReleased(0u32))
+    });
+    assert_eq!(flag_after, None);
+
+    // The two persistent/instance keys carry the whole result:
+    // milestone terminal state + lock cleared.
+    assert!(!client.is_multisig_locked());
+    let job = client.get_job();
+    let ms = job.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Released);
+    assert_eq!(ms.released_amount, 1_000);
+    assert_eq!(token.balance(&freelancer_addr), 1_000);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // A second override must be rejected — the persistent status is Released.
+    let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
 /// Verify multisig override release on already-settled milestone fails.
 #[test]
 fn test_multisig_admin_override_release_on_released_fails() {

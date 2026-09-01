@@ -5361,11 +5361,18 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        // CEI: commit state before external call.
+        // CEI: commit state before external call. Only `Milestone(index)`
+        // (persistent) is written here. Unlike the normal approval path, we
+        // deliberately skip the `MilestoneReleased(index)` temporary flag:
+        // nothing reads it on this override path (`is_milestone_released_flag`
+        // is dead code), and the terminal `Released` status already persisted on
+        // the milestone is the authoritative completion signal. Skipping it
+        // keeps the ledger footprint of this call to two distinct keys
+        // (`Milestone(index)` + `MultisigLocked`), matching the already-lean
+        // `multisig_admin_override_refund` path.
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
-        Self::store_milestone_released(&env, milestone_index);
 
         // Clear the multisig lock flag now that the deadlock is resolved.
         env.storage()
