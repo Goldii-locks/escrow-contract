@@ -2688,7 +2688,7 @@ fn test_extend_milestone_deadline_succeeds() {
     let initial_time = escrow.time_until_auto_release(&0u32);
 
     // Extend by 1000 seconds
-    escrow.extend_milestone_deadline(&client_addr, &0u32, &1000u64);
+    escrow.extend_milestone_deadline(&client_addr, &0u32, &1000u32);
 
     let new_time = escrow.time_until_auto_release(&0u32);
     assert_eq!(new_time, initial_time + 1000);
@@ -2704,7 +2704,7 @@ fn test_extend_milestone_deadline_not_client_fails() {
     escrow.mark_delivered(&freelancer_addr, &0u32);
 
     // freelancer tries to extend
-    let result = escrow.try_extend_milestone_deadline(&freelancer_addr, &0u32, &1000u64);
+    let result = escrow.try_extend_milestone_deadline(&freelancer_addr, &0u32, &1000u32);
     assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
 }
 
@@ -2716,7 +2716,7 @@ fn test_extend_milestone_deadline_invalid_status_fails() {
     let (client_addr, _, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     // milestone is Pending, not Delivered
-    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &1000u64);
+    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &1000u32);
     assert_eq!(result.unwrap_err().unwrap(), Error::InvalidStatus);
 }
 
@@ -2729,7 +2729,7 @@ fn test_extend_milestone_deadline_zero_seconds_fails() {
 
     escrow.mark_delivered(&freelancer_addr, &0u32);
 
-    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &0u64);
+    let result = escrow.try_extend_milestone_deadline(&client_addr, &0u32, &0u32);
     assert_eq!(result.unwrap_err().unwrap(), Error::InvalidExtension);
 }
 
@@ -6223,9 +6223,9 @@ fn test_upgrade_while_paused_fails_with_typed_error() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    client.emergency_pause(&admin_addr);
+    client.emergency_pause(&client_addr, &freelancer_addr);
     assert!(client.is_emergency_paused());
 
     let version_before = client.version();
@@ -7296,6 +7296,72 @@ fn test_pf_alloc_admin_override_failure_path_writes_nothing() {
     }));
 }
 
+#[test]
+fn test_platform_fee_allocation_treasury_exceeds_max_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    
+    // Treasury at 2001 bps (> 2000)
+    let result = client.try_set_platform_fee_allocation(&admin_addr, &0_u32, &7999_u32, &2001_u32);
+    assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
+
+#[test]
+fn test_platform_fee_allocation_client_exceeds_max_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    
+    // Client at 5001 bps (> 5000)
+    let result = client.try_set_platform_fee_allocation(&admin_addr, &5001_u32, &4999_u32, &0_u32);
+    assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
+}
+
 /// Verify multisig_split_refund with 70/30 split calculates correctly.
 #[test]
 fn test_multisig_split_refund_uneven_split() {
@@ -7433,6 +7499,56 @@ fn test_multisig_split_refund_emits_event() {
     assert_eq!(
         client.try_payment_streaming_milestones(&100_i128, &4_i128, &3_i128),
         Err(Ok(Error::InvalidRatio))
+    );
+}
+
+#[test]
+fn test_split_refund_net_distribution() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // Platform Fee Allocation:
+    // Client: 10% (1000 bps)
+    // Freelancer: 80% (8000 bps)
+    // Treasury: 10% (1000 bps)
+    let fee_allocation = PlatformFeeAllocation {
+        client_bps: 1000,
+        freelancer_bps: 8000,
+        treasury_bps: 1000,
+        locked: false,
+    };
+
+    // Split Refund: 1000 total.
+    // Client refund: 50% (5000 bps) -> 500 gross refund
+    // Freelancer payout: 50% (5000 bps) -> 500 gross payout
+    let distribution = client.split_refund_net_distribution(
+        &1000_i128,
+        &5000_u32,
+        &5000_u32,
+        &fee_allocation,
+    );
+
+    // Client net refund is fee-exempt: 500
+    assert_eq!(distribution.client_net_refund, 500);
+
+    // Fees are applied on the 500 gross payout to freelancer:
+    // Client fee share: 10% of 500 = 50
+    // Treasury fee share: 10% of 500 = 50
+    // Freelancer net payout: 80% of 500 = 400
+    assert_eq!(distribution.client_fee_share, 50);
+    assert_eq!(distribution.treasury_fee_share, 50);
+    assert_eq!(distribution.freelancer_net_payout, 400);
+
+    // Total should add up to original amount (1000)
+    assert_eq!(
+        distribution.client_net_refund
+            + distribution.client_fee_share
+            + distribution.treasury_fee_share
+            + distribution.freelancer_net_payout,
+        1000
     );
 }
 
@@ -10982,11 +11098,11 @@ fn test_platform_fee_allocation_preserves_value_with_largest_remainders() {
         &vec![&env, 1_000_i128],
     );
 
-    client.set_platform_fee_allocation(&admin, &3333, &3333, &3334);
+    client.set_platform_fee_allocation(&admin, &4000, &4000, &2000);
     let distribution = client.calculate_platform_fee_split(&2_i128);
     assert_eq!(distribution.client_amount, 1);
-    assert_eq!(distribution.freelancer_amount, 0);
-    assert_eq!(distribution.treasury_amount, 1);
+    assert_eq!(distribution.freelancer_amount, 1);
+    assert_eq!(distribution.treasury_amount, 0);
     assert_eq!(
         distribution.client_amount + distribution.freelancer_amount + distribution.treasury_amount,
         2
@@ -11559,9 +11675,11 @@ fn test_platform_fee_split_rounds_to_zero() {
         &amounts,
     );
 
-    client.set_platform_fee_allocation(&admin_addr, &3333_u32, &3333_u32, &3334_u32);
+    // Treasury is capped at MAX_TREASURY_FEE_BPS, so an even-thirds split is no
+    // longer configurable; 40/40/20 still floors every share to zero.
+    client.set_platform_fee_allocation(&admin_addr, &4000_u32, &4000_u32, &2000_u32);
     let distribution = client.calculate_platform_fee_split(&1_i128);
-    // With total_amount=1, floor(1*3333/10000)=0, floor(1*3333/10000)=0, floor(1*3334/10000)=0
+    // With total_amount=1, floor(1*4000/10000)=0, floor(1*4000/10000)=0, floor(1*2000/10000)=0
     // largest remainder gives the remainder to client (first)
     assert_eq!(distribution.client_amount + distribution.freelancer_amount + distribution.treasury_amount, 1);
 
@@ -11718,9 +11836,9 @@ fn test_cancel_escrow_while_paused_fails() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, _, _, admin_addr, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
-    escrow.emergency_pause(&admin_addr);
+    escrow.emergency_pause(&client_addr, &freelancer_addr);
 
     let result = escrow.try_cancel_escrow(&client_addr);
     assert_eq!(result, Err(Ok(Error::Paused)));
@@ -12007,8 +12125,8 @@ fn test_emergency_unpause_unauthorized_no_mutation() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-    client.emergency_pause(&admin_addr);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.emergency_pause(&client_addr, &freelancer_addr);
     assert!(client.is_emergency_paused());
 
     let attacker = Address::generate(&env);
@@ -12052,8 +12170,8 @@ fn test_transfer_admin_unauthorized_no_mutation() {
 
     // Original admin retains control; the proposed new admin does not.
     assert_eq!(
-        client.try_emergency_pause(&admin_addr),
-        Ok(Ok(())),
+        client.try_emergency_unpause(&admin_addr),
+        Err(Ok(Error::NotPaused)),
         "original admin must still be authorised after rejected transfer"
     );
     assert_eq!(
@@ -12090,8 +12208,8 @@ fn test_transfer_admin_illegal_source_state_no_mutation() {
     assert_eq!(pending.new_admin, pending_new_admin);
     assert_eq!(pending.proposal_id, 1u32);
     assert_eq!(
-        client.try_emergency_pause(&admin_addr),
-        Ok(Ok(())),
+        client.try_emergency_unpause(&admin_addr),
+        Err(Ok(Error::NotPaused)),
         "direct transfer must not rotate admin while a proposal is pending"
     );
 }
@@ -12124,8 +12242,8 @@ fn test_transfer_admin_zero_address_rejected_no_mutation() {
     let result = client.try_transfer_admin(&admin_addr, &zero_account);
     assert_eq!(result, Err(Ok(Error::InvalidAddress)));
     assert_eq!(
-        client.try_emergency_pause(&admin_addr),
-        Ok(Ok(())),
+        client.try_emergency_unpause(&admin_addr),
+        Err(Ok(Error::NotPaused)),
         "zero-address rejection must leave the admin key unchanged"
     );
 }

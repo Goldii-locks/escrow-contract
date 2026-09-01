@@ -92,7 +92,13 @@ pub enum Error {
     /// A guarded endpoint was called while `payment_streaming_milestones` is
     /// mid-execution and holds `DataKey::PaymentStreamingExecutionLock`.
     PaymentStreamingInProgress = 34,
+    /// A platform-fee allocation exceeded its per-party cap: treasury above
+    /// `MAX_TREASURY_FEE_BPS` or client above `MAX_CLIENT_FEE_BPS`.
+    FeeTooHigh = 35,
 }
+
+const MAX_TREASURY_FEE_BPS: u32 = 2000;
+const MAX_CLIENT_FEE_BPS: u32 = 5000;
 
 const BPS_SCALE: u32 = 10_000;
 
@@ -156,6 +162,16 @@ pub struct RefundAllocation {
     pub freelancer_payout: i128,
     pub client_refund_bps: u32,
     pub freelancer_payout_bps: u32,
+}
+
+/// Result of a split-refund fee distribution, detailing the net amounts and fee shares.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitRefundFeeDistribution {
+    pub client_net_refund: i128,
+    pub client_fee_share: i128,
+    pub freelancer_net_payout: i128,
+    pub treasury_fee_share: i128,
 }
 
 #[contracttype]
@@ -227,7 +243,9 @@ pub enum DataKey {
     /// `claim_auto_release` and `time_until_auto_release`. Uses temporary
     /// storage because the extension is deadline-scoped workflow state whose
     /// ledger footprint cost should not persist beyond the auto-release window.
-    MilestoneTimeExtension(u32),
+    ///
+    /// Short key `TimeExt` (7 chars vs 22) to minimise on-ledger symbol bytes.
+    TimeExt(u32),
     /// Instance key for the cancel_escrow lock.
     CancelLock,
     /// Persistent: bitmask recording which parties have approved a pending
@@ -296,8 +314,9 @@ pub enum DataKey {
     // that concurrent/reentrant calls observe the in-progress state and bail
     // out rather than interleaving state mutations.
     //
-    // Appended at the end of `DataKey` so existing variant discriminants stay
-    // stable (serialization compatibility for already-written ledger entries).
+    // Appended at the end of `DataKey` so existing variant discriminants
+    // stay stable (serialization compatibility for already-written ledger
+    // entries).
     /// Instance: held while `tax_withholding_deductions` executes.
     ///
     /// Distinct from `TaxWithholdingLock(u32)` above, which is a *per-milestone
@@ -362,8 +381,8 @@ pub struct DeadlineExtendedEvent {
     pub contract_id: Address,
     pub milestone_index: u32,
     pub client: Address,
-    pub extra_seconds: u64,
-    pub new_extension: u64,
+    pub extra_seconds: u32,
+    pub new_extension: u32,
 }
 
 #[contracttype]
@@ -667,11 +686,12 @@ pub struct AdminCancelOverrideRefundEvent {
     pub total_refunded: i128,
 }
 
-/// Emitted by `emergency_pause` when the admin pauses the escrow.
+/// Emitted by `emergency_pause` when the escrow is paused by the client and freelancer.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyPausedEvent {
-    pub admin: Address,
+    pub client: Address,
+    pub freelancer: Address,
     pub contract_id: Address,
 }
 
@@ -1272,6 +1292,10 @@ impl MilestoneEscrow {
         if total != BPS_SCALE {
             return Err(Error::InvalidRatio);
         }
+
+        if treasury_bps > MAX_TREASURY_FEE_BPS || client_bps > MAX_CLIENT_FEE_BPS {
+            return Err(Error::FeeTooHigh);
+        }
         Ok(())
     }
 
@@ -1334,6 +1358,61 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::InterestYieldState, state);
+    }
+
+    /// Calculate net distributions for a split refund by applying the platform
+    /// fee allocation only to the freelancer's payout portion. The client's refund
+    /// is fee-exempt.
+    pub fn split_refund_net_distribution(
+        env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+        fee_allocation: PlatformFeeAllocation,
+    ) -> Result<SplitRefundFeeDistribution, Error> {
+        // 1. Get gross split. Uses the pure allocator rather than
+        // multisig_split_refund, which additionally requires the admin key and
+        // an active multisig lock -- neither applies to this calculation.
+        let gross_split = Self::cancel_escrow_split_refund(
+            env.clone(),
+            total_amount,
+            client_refund_bps,
+            freelancer_payout_bps,
+        )?;
+
+        // 2. Client net is their gross refund (fee-exempt)
+        let client_net_refund = gross_split.client_refund;
+
+        // 3. Freelancer gross payout is subject to platform fee
+        let gross_payout = gross_split.freelancer_payout;
+
+        // Calculate fee shares using the fee_allocation
+        let client_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.client_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        let treasury_fee_share = Self::split_round_nearest(
+            gross_payout,
+            fee_allocation.treasury_bps as i128,
+            BPS_SCALE as i128,
+        )?
+        .first;
+
+        // Freelancer net is what's left
+        let freelancer_net_payout = gross_payout
+            .checked_sub(client_fee_share)
+            .and_then(|v| v.checked_sub(treasury_fee_share))
+            .ok_or(Error::InvalidAmount)?;
+
+        Ok(SplitRefundFeeDistribution {
+            client_net_refund,
+            client_fee_share,
+            freelancer_net_payout,
+            treasury_fee_share,
+        })
     }
 
     fn ensure_interest_yield_unlocked(env: &Env) -> Result<(), Error> {
@@ -1472,15 +1551,11 @@ impl MilestoneEscrow {
             .set(&DataKey::MilestoneReleased(index), &true);
     }
 
-    fn load_time_extension(env: &Env, index: u32) -> u64 {
+    fn load_time_extension(env: &Env, index: u32) -> u32 {
         env.storage()
             .temporary()
-            .get(&DataKey::MilestoneTimeExtension(index))
-            .or_else(|| {
-                env.storage()
-                    .persistent()
-                    .get(&DataKey::MilestoneTimeExtension(index))
-            })
+            .get(&DataKey::TimeExt(index))
+            .or_else(|| env.storage().persistent().get(&DataKey::TimeExt(index)))
             .unwrap_or(0)
     }
 
@@ -2184,7 +2259,7 @@ impl MilestoneEscrow {
         env: Env,
         client: Address,
         milestone_index: u32,
-        extra_seconds: u64,
+        extra_seconds: u32,
     ) -> Result<(), Error> {
         Self::assert_not_paused(&env)?;
         Self::assert_tax_withholding_not_locked(&env)?;
@@ -2219,7 +2294,7 @@ impl MilestoneEscrow {
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
         env.storage().temporary().set(
-            &DataKey::MilestoneTimeExtension(milestone_index),
+            &DataKey::TimeExt(milestone_index),
             &new_extension,
         );
 
@@ -2289,9 +2364,9 @@ impl MilestoneEscrow {
 
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
 
-        // CHECK 2: Milestone must be in the Delivered state.  Any other status â€”
+        // CHECK 2: Milestone must be in the Delivered state.  Any other status —
         // including Released (double-claim), Disputed, Refunded, Pending, or
-        // PartiallyReleased â€” is rejected here, making the guard the sole
+        // PartiallyReleased — is rejected here, making the guard the sole
         // gatekeeper against double-execution and out-of-sequence calls.
         if milestone.status != MilestoneStatus::Delivered {
             return Err(Error::InvalidStatus);
@@ -2312,7 +2387,7 @@ impl MilestoneEscrow {
 
         let deadline = delivered_at
             .checked_add(meta.auto_release_seconds)
-            .and_then(|d| d.checked_add(extension))
+            .and_then(|d| d.checked_add(extension as u64))
             .ok_or(Error::InvalidAmount)?;
         let current = env.ledger().timestamp();
         if current < deadline {
@@ -2372,7 +2447,7 @@ impl MilestoneEscrow {
         let delivered_at =
             Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
         let extension = Self::load_time_extension(&env, milestone_index);
-        let deadline = delivered_at + meta.auto_release_seconds + extension;
+        let deadline = delivered_at + meta.auto_release_seconds + (extension as u64);
         let current = env.ledger().timestamp();
         (deadline as i64) - (current as i64)
     }
@@ -3604,12 +3679,14 @@ impl MilestoneEscrow {
     /// Bad setups are rejected before any state is written, each with a
     /// distinct error variant:
     ///
-    /// 1. The contract must be initialised — `require_admin` loads the stored
-    ///    admin key and returns `NotInitialized` when it is absent.  Pausing
-    ///    an uninitialised contract would write a flag no endpoint could ever
-    ///    clear through the normal admin path.
-    /// 2. The caller must be the stored admin, both at the SDK level
-    ///    (`admin.require_auth()`) and by key comparison (`Unauthorized`).
+    /// 1. The contract must be initialised — `load_job_meta` returns
+    ///    `NotInitialized` when no job is stored.  Pausing an uninitialised
+    ///    contract would write a flag no endpoint could ever clear.
+    /// 2. Both parties must sign: the supplied addresses must match the job's
+    ///    stored `client` and `freelancer` (`Unauthorized`), and each must
+    ///    authorise the call (`require_auth`).  Neither party -- nor the admin
+    ///    -- can freeze the escrow alone; the admin's unilateral path is
+    ///    `emergency_pause_admin_override`.
     /// 3. No pause transition may already be mid-execution
     ///    (`EmergencyPauseInProgress`).
     /// 4. The contract must not already be paused (`AlreadyPaused`).  A
@@ -3618,12 +3695,19 @@ impl MilestoneEscrow {
     ///    freeze was in fact already in place.
     ///
     /// # Errors
-    /// * `NotInitialized`            – Admin key has never been stored.
-    /// * `Unauthorized`              – `admin` is not the stored admin.
+    /// * `NotInitialized`            – No job has been stored.
+    /// * `Unauthorized`              – `client` / `freelancer` do not match the
+    ///                                 addresses recorded on the job.
     /// * `EmergencyPauseInProgress`  – A pause transition is already running.
     /// * `AlreadyPaused`             – The contract is already paused.
-    pub fn emergency_pause(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+    pub fn emergency_pause(env: Env, client: Address, freelancer: Address) -> Result<(), Error> {
+        let meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
         Self::assert_emergency_pause_not_locked(&env)?;
 
         if Self::is_emergency_paused(env.clone()) {
@@ -3649,7 +3733,8 @@ impl MilestoneEscrow {
             env.events().publish(
                 (symbol_short!("empause"),),
                 EmergencyPausedEvent {
-                    admin: admin.clone(),
+                    client,
+                    freelancer,
                     contract_id: env.current_contract_address(),
                 },
             );

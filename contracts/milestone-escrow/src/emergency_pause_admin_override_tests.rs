@@ -57,8 +57,8 @@ fn override_true_to_false_clears_paused_flag() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-    client.emergency_pause(&admin_addr);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.emergency_pause(&client_addr, &freelancer_addr);
 
     assert!(client.is_emergency_paused(), "contract must be paused before override");
 
@@ -139,8 +139,8 @@ fn no_op_paused_to_true_returns_invalid_status() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-    client.emergency_pause(&admin_addr);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.emergency_pause(&client_addr, &freelancer_addr);
 
     assert!(client.is_emergency_paused());
     let result = client.try_emergency_pause_admin_override(&admin_addr, &true);
@@ -189,9 +189,9 @@ fn emergency_pause_does_not_block_subsequent_override() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    client.emergency_pause(&admin_addr);
+    client.emergency_pause(&client_addr, &freelancer_addr);
     assert!(client.is_emergency_paused());
 
     // Override to unpaused — must succeed regardless of what emergency_pause did.
@@ -222,7 +222,7 @@ fn interleaved_sequence_produces_correct_final_state() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.emergency_pause_admin_override(&admin_addr, &true);   // override → paused
     assert!(client.is_emergency_paused());
@@ -230,7 +230,7 @@ fn interleaved_sequence_produces_correct_final_state() {
     client.emergency_unpause(&admin_addr);                        // standard unpause
     assert!(!client.is_emergency_paused());
 
-    client.emergency_pause(&admin_addr);                          // standard pause
+    client.emergency_pause(&client_addr, &freelancer_addr);                          // standard pause
     assert!(client.is_emergency_paused());
 
     client.emergency_pause_admin_override(&admin_addr, &false);  // override → unpaused
@@ -274,7 +274,7 @@ fn failed_calls_emit_no_emoverrid_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     let topic: Val = symbol_short!("emoverrid").into_val(&env);
 
     // Unauthorized caller.
@@ -285,7 +285,7 @@ fn failed_calls_emit_no_emoverrid_event() {
     let _ = client.try_emergency_pause_admin_override(&admin_addr, &false);
 
     // No-op: pause first, then try paused → true.
-    client.emergency_pause(&admin_addr);
+    client.emergency_pause(&client_addr, &freelancer_addr);
     let _ = client.try_emergency_pause_admin_override(&admin_addr, &true);
 
     assert_eq!(

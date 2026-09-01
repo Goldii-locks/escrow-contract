@@ -93,10 +93,10 @@ fn unauthorized_caller_with_zero_rate_returns_unauthorized_and_does_not_mutate_s
 #[test]
 fn paused_contract_returns_paused_and_does_not_mutate_storage() {
     let env = Env::default();
-    let (_, _, _, admin_addr, _, contract_id, escrow) = setup(&env);
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, escrow) = setup(&env);
 
     // Pause the contract via the emergency-pause endpoint.
-    escrow.emergency_pause(&admin_addr);
+    escrow.emergency_pause(&client_addr, &freelancer_addr);
 
     let rate_before = read_yield_rate(&env, &contract_id);
 
@@ -111,9 +111,9 @@ fn paused_contract_returns_paused_and_does_not_mutate_storage() {
 #[test]
 fn after_unpause_admin_can_set_yield_rate() {
     let env = Env::default();
-    let (_, _, _, admin_addr, _, contract_id, escrow) = setup(&env);
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, escrow) = setup(&env);
 
-    escrow.emergency_pause(&admin_addr);
+    escrow.emergency_pause(&client_addr, &freelancer_addr);
 
     // Confirm paused state blocks the call.
     let paused_result = escrow.try_admin_set_yield_rate(&admin_addr, &200u32);
@@ -132,9 +132,9 @@ fn after_unpause_admin_can_set_yield_rate() {
 #[test]
 fn paused_contract_unauthorized_caller_returns_paused_not_unauthorized() {
     let env = Env::default();
-    let (_, _, _, admin_addr, _, contract_id, escrow) = setup(&env);
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, escrow) = setup(&env);
 
-    escrow.emergency_pause(&admin_addr);
+    escrow.emergency_pause(&client_addr, &freelancer_addr);
 
     let attacker = Address::generate(&env);
     let result = escrow.try_admin_set_yield_rate(&attacker, &500u32);

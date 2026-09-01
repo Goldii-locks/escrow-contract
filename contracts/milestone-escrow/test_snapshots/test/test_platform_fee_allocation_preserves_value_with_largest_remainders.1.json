@@ -81,13 +81,13 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "u32": 3333
+                  "u32": 4000
                 },
                 {
-                  "u32": 3333
+                  "u32": 4000
                 },
                 {
-                  "u32": 3334
+                  "u32": 2000
                 }
               ]
             }
@@ -506,7 +506,7 @@
                                 "symbol": "client_bps"
                               },
                               "val": {
-                                "u32": 3333
+                                "u32": 4000
                               }
                             },
                             {
@@ -514,7 +514,7 @@
                                 "symbol": "freelancer_bps"
                               },
                               "val": {
-                                "u32": 3333
+                                "u32": 4000
                               }
                             },
                             {
@@ -530,7 +530,7 @@
                                 "symbol": "treasury_bps"
                               },
                               "val": {
-                                "u32": 3334
+                                "u32": 2000
                               }
                             }
                           ]
