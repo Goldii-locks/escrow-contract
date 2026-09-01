@@ -4510,6 +4510,8 @@ mod test_emergency_pause;
 mod test_payment_streaming_milestones;
 #[cfg(test)]
 mod admin_override_cancel_tests;
+#[cfg(test)]
+mod admin_set_yield_rate_tests;
 //
 // Design rationale
 // ─────────────────
@@ -4545,11 +4547,44 @@ impl MilestoneEscrow {
     ///                   Pass `0` to disable yield accrual.
     ///
     /// # Errors
-    /// * `NotInitialized`   – Contract has not been initialised yet.
-    /// * `Unauthorized`     – `admin` does not match the stored admin key.
-    /// * `YieldRateInvalid` – `rate_bps` exceeds 10 000.
+    /// * `NotInitialized` – Contract has not been initialised yet (job metadata
+    ///                      absent); checked before any auth or storage access.
+    /// * `Paused`         – Contract is currently paused; yield-rate mutations
+    ///                      are rejected while operations are suspended.
+    /// * `Unauthorized`   – `admin` does not match the stored admin key.
+    /// * `InvalidRatio`   – `rate_bps` exceeds 10 000.
     pub fn admin_set_yield_rate(env: Env, admin: Address, rate_bps: u32) -> Result<(), Error> {
-        // `require_admin` performs `admin.require_auth()` + stored-key check.
+        // Precondition 1: contract must be fully initialised (job metadata
+        // must exist).  This check runs before any auth or storage mutation so
+        // that callers on an uninitialised contract receive `NotInitialized`
+        // rather than a less informative error.
+        Self::load_job_meta(&env)?;
+
+        // Precondition 2: reject calls while the contract is paused.  The
+        // yield-rate is part of the active financial configuration; mutating
+        // it while operations are suspended could silently affect the next
+        // accrual cycle once the pause is lifted.
+        //
+        // Both pause flags count. `assert_not_paused` only reads
+        // `DataKey::Paused`, which `admin_pause_escrow` sets; the emergency
+        // pause is a separate, stronger freeze recorded under `DataKey::Ep`.
+        // Letting a yield-rate change through during an emergency pause would
+        // make the weaker of the two freezes the stricter one.
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Ep)
+            .unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Authorization: `require_admin` performs `admin.require_auth()` plus
+        // the stored-key equality check.  Placed after the stateless
+        // preconditions so that an unauthorized caller on an uninitialised or
+        // paused contract receives the precondition error, not Unauthorized,
+        // which would leak information about the admin key.
         Self::require_admin(&env, &admin)?;
         Self::validate_yield_rate_bps(rate_bps)?;
 
