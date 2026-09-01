@@ -19,6 +19,8 @@ mod admin_pause_escrow_tests;
 mod admin_tax_withholding_guards_tests;
 #[path = "execute_admin_transfer_tests.rs"]
 mod execute_admin_transfer_tests;
+#[path = "arbitration_split_event_tests.rs"]
+mod arbitration_split_event_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_split_refund_tests.rs"]
@@ -7038,6 +7040,155 @@ fn setup_pf_alloc_escrow_unlocked(env: &Env) -> (Address, Address, MilestoneEscr
     client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
 
     (admin_addr, contract_id, client)
+}
+
+// ── issue #397: pf_alloc_admin_override ledger storage footprint ─────────────
+//
+// pf_alloc_admin_override performs a single unconditional `set` of
+// DataKey::PlatformFeeAllocation with no external calls, so the
+// PlatformFeeAllocationLock re-entrancy guard (set-true / set-false) it used
+// to take was pure overhead. These tests pin the reduced footprint — exactly
+// one distinct instance key written — while confirming behaviour is unchanged.
+
+/// Helper: initialize an escrow and return `(admin, contract_id, client)`.
+fn setup_pf_alloc_escrow(env: &Env) -> (Address, Address, MilestoneEscrowClient<'_>) {
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter_addr = Address::generate(env);
+    let admin_addr = Address::generate(env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+
+    let amounts = vec![env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+
+    (admin_addr, contract_id, client)
+}
+
+#[test]
+fn test_pf_alloc_admin_override_writes_single_storage_key() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin_addr, contract_id, client) = setup_pf_alloc_escrow(&env);
+
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+    client.lock_platform_fee_allocation(&admin_addr);
+
+    // Clear the re-entrancy-guard key so that if pf_alloc_admin_override writes
+    // it again we can detect it. PlatformFeeAllocation stays intact and locked.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&DataKey::PlatformFeeAllocationLock);
+    });
+    assert!(!env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .has(&DataKey::PlatformFeeAllocationLock)
+    }));
+
+    client.pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+
+    // The one key the call is allowed to write — updated and unlocked.
+    let allocation = client.get_platform_fee_allocation();
+    assert_eq!(allocation.client_bps, 1500);
+    assert_eq!(allocation.freelancer_bps, 7500);
+    assert_eq!(allocation.treasury_bps, 1000);
+    assert!(!allocation.locked);
+
+    // The re-entrancy-guard key was NOT written by the call: distinct instance
+    // keys written by pf_alloc_admin_override is 1, down from 2.
+    assert!(!env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .has(&DataKey::PlatformFeeAllocationLock)
+    }));
+}
+
+#[test]
+fn test_pf_alloc_admin_override_preserves_lock_guards() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin_addr, contract_id, client) = setup_pf_alloc_escrow(&env);
+
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+    client.lock_platform_fee_allocation(&admin_addr);
+
+    // An in-progress platform-fee allocation still blocks the override.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformFeeAllocationLock, &true);
+    });
+    let blocked = client.try_pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+    assert_eq!(blocked, Err(Ok(Error::PlatformFeeAllocationInProgress)));
+
+    // An in-progress emergency pause still blocks the override.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformFeeAllocationLock, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::EpLk, &true);
+    });
+    let blocked = client.try_pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
+    assert_eq!(blocked, Err(Ok(Error::EmergencyPauseInProgress)));
+
+    // Neither failed attempt mutated the locked allocation.
+    let allocation = client.get_platform_fee_allocation();
+    assert_eq!(allocation.client_bps, 2000);
+    assert_eq!(allocation.freelancer_bps, 7000);
+    assert_eq!(allocation.treasury_bps, 1000);
+    assert!(allocation.locked);
+}
+
+#[test]
+fn test_pf_alloc_admin_override_failure_path_writes_nothing() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin_addr, contract_id, client) = setup_pf_alloc_escrow(&env);
+
+    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
+    client.lock_platform_fee_allocation(&admin_addr);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&DataKey::PlatformFeeAllocationLock);
+    });
+
+    // Ratios that do not sum to BPS_SCALE are rejected before any write.
+    let bad = client.try_pf_alloc_admin_override(&admin_addr, &1000_u32, &1000_u32, &1000_u32);
+    assert_eq!(bad, Err(Ok(Error::InvalidRatio)));
+
+    // Allocation untouched, still locked, and the guard key stays unwritten.
+    let allocation = client.get_platform_fee_allocation();
+    assert_eq!(allocation.client_bps, 2000);
+    assert_eq!(allocation.freelancer_bps, 7000);
+    assert_eq!(allocation.treasury_bps, 1000);
+    assert!(allocation.locked);
+    assert!(!env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .has(&DataKey::PlatformFeeAllocationLock)
+    }));
 }
 
 /// Verify multisig_split_refund with 70/30 split calculates correctly.
