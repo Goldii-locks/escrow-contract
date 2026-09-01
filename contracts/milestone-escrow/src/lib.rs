@@ -83,6 +83,9 @@ pub enum Error {
     /// empty, exceeded the party cap, contained a negative weight, or summed
     /// to zero.
     InvalidAllocationWeights = 31,
+    /// An emergency refund / pause-gated endpoint was called while the
+    /// contract holds zero token balance, so there is nothing to settle.
+    EmptyBalance = 32,
 }
 
 const BPS_SCALE: u32 = 10_000;
@@ -1045,6 +1048,17 @@ impl MilestoneEscrow {
             .unwrap_or(false);
         if locked {
             return Err(Error::EmergencyPauseInProgress);
+        }
+        Ok(())
+    }
+
+    /// Reject a pause-gated settlement while the contract token balance is
+    /// zero, so an emergency refund never attempts an empty transfer.
+    fn assert_nonzero_balance(env: &Env, meta: &JobMeta) -> Result<(), Error> {
+        let token_client = token::Client::new(&env, &meta.token);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance <= 0 {
+            return Err(Error::EmptyBalance);
         }
         Ok(())
     }
@@ -5718,6 +5732,8 @@ impl MilestoneEscrow {
     /// * `Unauthorized`             – `admin` is not the stored admin.
     /// * `EmergencyPauseInProgress` – A pause transition is already running.
     /// * `NotPaused`                – The contract is not frozen.
+    /// * `EmptyBalance`             – The contract token balance is zero, so
+    ///   there is nothing to settle.
     /// * `InvalidAmount`            – `total_amount` ≤ 0, or overflow.
     /// * `InvalidRatio`             – Shares do not sum to 10 000 bps.
     pub fn emergency_pause_claim_refund(
@@ -5733,6 +5749,9 @@ impl MilestoneEscrow {
         if !Self::is_emergency_paused(env.clone()) {
             return Err(Error::NotPaused);
         }
+
+        let meta = Self::load_job_meta(&env)?;
+        Self::assert_nonzero_balance(&env, &meta)?;
 
         Self::emergency_pause_split_refund(
             env,
