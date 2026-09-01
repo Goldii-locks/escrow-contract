@@ -31,6 +31,8 @@ mod multisig_split_refund_tests;
 mod multisig_transfer_admin_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
+#[path = "milestone_time_extensions_tests.rs"]
+mod milestone_time_extensions_tests;
 
 #[contracttype]
 enum ReentrantTokenDataKey {
@@ -12224,4 +12226,132 @@ fn test_admin_resume_escrow_illegal_source_state_no_mutation() {
         !paused_after,
         "NotPaused rejection must not mutate the pause flag"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// #255: interest_yield_split_refund distribution pathways
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_interest_yield_split_refund_even_split() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let allocation = client.interest_yield_split_refund(&1_000_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(allocation.client_refund, 500);
+    assert_eq!(allocation.freelancer_payout, 500);
+    assert_eq!(allocation.client_refund_bps, 5_000);
+    assert_eq!(allocation.freelancer_payout_bps, 5_000);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        1_000
+    );
+}
+
+#[test]
+fn test_interest_yield_split_refund_uneven_split() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let allocation = client.interest_yield_split_refund(&1_000_i128, &7_000_u32, &3_000_u32);
+    assert_eq!(allocation.client_refund, 700);
+    assert_eq!(allocation.freelancer_payout, 300);
+    assert_eq!(allocation.client_refund + allocation.freelancer_payout, 1_000);
+}
+
+#[test]
+fn test_interest_yield_split_refund_full_client_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let allocation = client.interest_yield_split_refund(&1_000_i128, &10_000_u32, &0_u32);
+    assert_eq!(allocation.client_refund, 1_000);
+    assert_eq!(allocation.freelancer_payout, 0);
+}
+
+#[test]
+fn test_interest_yield_split_refund_full_freelancer_payout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let allocation = client.interest_yield_split_refund(&1_000_i128, &0_u32, &10_000_u32);
+    assert_eq!(allocation.client_refund, 0);
+    assert_eq!(allocation.freelancer_payout, 1_000);
+}
+
+#[test]
+fn test_interest_yield_split_refund_odd_amount_rounding() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let allocation = client.interest_yield_split_refund(&101_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(allocation.client_refund, 51);
+    assert_eq!(allocation.freelancer_payout, 50);
+    assert_eq!(allocation.client_refund + allocation.freelancer_payout, 101);
+}
+
+#[test]
+fn test_interest_yield_split_refund_invalid_ratio_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_interest_yield_split_refund(&1_000_i128, &5_000_u32, &3_000_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_interest_yield_split_refund_zero_total_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_interest_yield_split_refund(&0_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_interest_yield_split_refund_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let allocation = client.interest_yield_split_refund(&1_000_i128, &6_000_u32, &4_000_u32);
+
+    let topic: Val = Symbol::new(&env, "iyspltref").into_val(&env);
+    let mut found = false;
+    for e in env.events().all().iter() {
+        if let Some(t) = e.1.get(0) {
+            if t.get_payload() == topic.get_payload() {
+                found = true;
+                let data = SplitRefundCalculatedEvent::from_val(&env, &e.2);
+                assert_eq!(data.client_refund, allocation.client_refund);
+                assert_eq!(data.freelancer_payout, allocation.freelancer_payout);
+                assert_eq!(data.client_refund_bps, 6_000);
+                assert_eq!(data.freelancer_payout_bps, 4_000);
+            }
+        }
+    }
+    assert!(found, "expected iyspltref event");
 }

@@ -86,6 +86,12 @@ pub enum Error {
     /// An emergency refund / pause-gated endpoint was called while the
     /// contract holds zero token balance, so there is nothing to settle.
     EmptyBalance = 32,
+    /// A guarded endpoint was called while `milestone_time_extensions` is
+    /// mid-execution and holds `DataKey::TimeExtExecutionLock`.
+    TimeExtInProgress = 33,
+    /// A guarded endpoint was called while `payment_streaming_milestones` is
+    /// mid-execution and holds `DataKey::PaymentStreamingExecutionLock`.
+    PaymentStreamingInProgress = 34,
 }
 
 const BPS_SCALE: u32 = 10_000;
@@ -304,6 +310,11 @@ pub enum DataKey {
     /// Instance: held while an emergency pause/resume transition executes.
     /// Short key `EpLk` (4 chars vs 19) to minimise on-ledger symbol bytes.
     EpLk,
+    /// Instance: held while `milestone_time_extensions` executes.
+    TimeExtExecutionLock,
+    /// Instance: held while `payment_streaming_milestones` (or its consent
+    /// counterpart) executes.
+    PaymentStreamingExecutionLock,
 }
 
 #[contracttype]
@@ -973,6 +984,21 @@ pub struct PaymentStreamingConsentEvent {
     pub client_refund: i128,
 }
 
+/// Emitted by `time_extensions_consent` once both the client's
+/// and the freelancer's signatures have been collected and the time-extension
+/// split has been computed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeExtConsentEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub amount: i128,
+    pub elapsed_seconds: i128,
+    pub total_seconds: i128,
+    pub freelancer_share: i128,
+    pub client_refund: i128,
+}
+
 // ── emergency_pause events ──────────────────────────────────────────────────
 
 /// Emitted by `emergency_pause_allocation` with the exact per-party
@@ -1202,6 +1228,34 @@ impl MilestoneEscrow {
         let contract_balance = token_client.balance(&env.current_contract_address());
         if contract_balance <= 0 {
             return Err(Error::EmptyBalance);
+        }
+        Ok(())
+    }
+
+    /// Return `Err(Error::TimeExtInProgress)` when a milestone
+    /// time-extension split is mid-execution.
+    fn assert_time_ext_not_locked(env: &Env) -> Result<(), Error> {
+        let locked: bool = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false);
+        if locked {
+            return Err(Error::TimeExtInProgress);
+        }
+        Ok(())
+    }
+
+    /// Return `Err(Error::PaymentStreamingInProgress)` when a payment-streaming
+    /// split is mid-execution.
+    fn assert_payment_streaming_not_locked(env: &Env) -> Result<(), Error> {
+        let locked: bool = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .unwrap_or(false);
+        if locked {
+            return Err(Error::PaymentStreamingInProgress);
         }
         Ok(())
     }
@@ -1990,6 +2044,8 @@ impl MilestoneEscrow {
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
         Self::validate_fund_client(&env, &client)?;
         client.require_auth();
         let mut meta = Self::load_job_meta(&env)?;
@@ -2059,6 +2115,8 @@ impl MilestoneEscrow {
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
         // Check for zero addresses (both account and contract types)
         let zero_account = Address::from_str(
             &env,
@@ -2132,6 +2190,8 @@ impl MilestoneEscrow {
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -2202,6 +2262,8 @@ impl MilestoneEscrow {
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
         let zero_account = Address::from_str(
             &env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -2352,6 +2414,8 @@ impl MilestoneEscrow {
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
         let zero_1 = Address::from_str(
             &env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -2470,6 +2534,8 @@ impl MilestoneEscrow {
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
         let zero_account = Address::from_str(
             &env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -2704,6 +2770,8 @@ impl MilestoneEscrow {
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
         let zero_account = Address::from_str(
             &env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -3905,34 +3973,48 @@ impl MilestoneEscrow {
         numerator: i128,
         denominator: i128,
     ) -> Result<RatioSplit, Error> {
-        // Guard: reject zero or negative totals so that streaming operations
-        // are never initiated on an empty balance.  A zero total would
-        // distribute nothing to either party and signals a misconfigured or
-        // already-drained escrow.
-        if total_amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-        if denominator <= 0 {
-            return Err(Error::InvalidRatio);
-        }
-        if numerator < 0 || numerator > denominator {
-            return Err(Error::InvalidRatio);
-        }
+        // Acquire execution lock so concurrent state mutations observe the
+        // in-progress status and bail rather than interleaving.
+        env.storage()
+            .instance()
+            .set(&DataKey::PaymentStreamingExecutionLock, &true);
 
-        let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
+        let result = (|| {
+            // Guard: reject zero or negative totals so that streaming operations
+            // are never initiated on an empty balance.  A zero total would
+            // distribute nothing to either party and signals a misconfigured or
+            // already-drained escrow.
+            if total_amount <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            if denominator <= 0 {
+                return Err(Error::InvalidRatio);
+            }
+            if numerator < 0 || numerator > denominator {
+                return Err(Error::InvalidRatio);
+            }
 
-        env.events().publish(
-            (symbol_short!("p_stream"),),
-            PaymentStreamingEvent {
-                total_amount,
-                numerator,
-                denominator,
-                streamed_payout: split.first,
-                client_refund: split.second,
-            },
-        );
+            let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
 
-        Ok(split)
+            env.events().publish(
+                (symbol_short!("p_stream"),),
+                PaymentStreamingEvent {
+                    total_amount,
+                    numerator,
+                    denominator,
+                    streamed_payout: split.first,
+                    client_refund: split.second,
+                },
+            );
+
+            Ok(split)
+        })();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PaymentStreamingExecutionLock);
+
+        result
     }
 
     /// Compute a streaming milestone split that requires **dual consent**:
@@ -3979,32 +4061,44 @@ impl MilestoneEscrow {
         // able to probe the validation rules below.
         let meta = Self::require_client_and_freelancer_consent(&env)?;
 
-        if total_amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-        if denominator <= 0 {
-            return Err(Error::InvalidRatio);
-        }
-        if numerator < 0 || numerator > denominator {
-            return Err(Error::InvalidRatio);
-        }
+        env.storage()
+            .instance()
+            .set(&DataKey::PaymentStreamingExecutionLock, &true);
 
-        let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
+        let result = (|| {
+            if total_amount <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            if denominator <= 0 {
+                return Err(Error::InvalidRatio);
+            }
+            if numerator < 0 || numerator > denominator {
+                return Err(Error::InvalidRatio);
+            }
 
-        env.events().publish(
-            (symbol_short!("p_strcns"),),
-            PaymentStreamingConsentEvent {
-                client: meta.client,
-                freelancer: meta.freelancer,
-                total_amount,
-                numerator,
-                denominator,
-                streamed_payout: split.first,
-                client_refund: split.second,
-            },
-        );
+            let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
 
-        Ok(split)
+            env.events().publish(
+                (symbol_short!("p_strcns"),),
+                PaymentStreamingConsentEvent {
+                    client: meta.client.clone(),
+                    freelancer: meta.freelancer.clone(),
+                    total_amount,
+                    numerator,
+                    denominator,
+                    streamed_payout: split.first,
+                    client_refund: split.second,
+                },
+            );
+
+            Ok(split)
+        })();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PaymentStreamingExecutionLock);
+
+        result
     }
 
     /// Allocate a milestone's escrowed amount between two parties (typically
@@ -4025,6 +4119,10 @@ impl MilestoneEscrow {
     /// before the final division so that the freelancer receives the rounded
     /// share rather than always the floor, preventing systematic value loss
     /// through repeated rounding.  The two halves always sum to `amount` exactly.
+    ///
+    /// While the split runs, `TimeExtExecutionLock` is held so
+    /// concurrent state-modifying endpoints observe the in-progress status and
+    /// reject rather than interleave mutations.
     ///
     /// # Parameters
     /// * `amount`           – Total escrowed amount to split.  Must be ≥ 0.
@@ -4049,42 +4147,118 @@ impl MilestoneEscrow {
         elapsed_seconds: i128,
         total_seconds: i128,
     ) -> Result<RatioSplit, Error> {
-        // Guard: a zero or negative balance means there is nothing left in
-        // this milestone to distribute.  Operations on an empty balance would
-        // produce a split of (0, 0) which is a no-op and signals a
-        // misconfigured or already-drained escrow.
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
+        env.storage()
+            .instance()
+            .set(&DataKey::TimeExtExecutionLock, &true);
 
-        // Reject nonsensical time inputs before the generic ratio guard so
-        // callers get a precise error code for time-specific misuse.
-        if total_seconds <= 0 {
-            return Err(Error::InvalidRatio);
-        }
-        if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
-            return Err(Error::InvalidRatio);
-        }
+        let result = (|| {
+            // Guard: a zero or negative balance means there is nothing left in
+            // this milestone to distribute.  Operations on an empty balance would
+            // produce a split of (0, 0) which is a no-op and signals a
+            // misconfigured or already-drained escrow.
+            if amount <= 0 {
+                return Err(Error::InvalidAmount);
+            }
 
-        // Delegate to the single shared high-precision split primitive.
-        // split_round_nearest(total, numerator, denominator) computes:
-        //   first  = round_nearest(total × numerator / denominator)
-        //   second = total − first
-        // Here numerator = elapsed_seconds, denominator = total_seconds.
-        let split = Self::split_round_nearest(amount, elapsed_seconds, total_seconds)?;
+            // Reject nonsensical time inputs before the generic ratio guard so
+            // callers get a precise error code for time-specific misuse.
+            if total_seconds <= 0 {
+                return Err(Error::InvalidRatio);
+            }
+            if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
+                return Err(Error::InvalidRatio);
+            }
 
-        env.events().publish(
-            (symbol_short!("m_ext"),),
-            MilestoneTimeExtensionEvent {
-                amount,
-                elapsed_seconds,
-                total_seconds,
-                freelancer_share: split.first,
-                client_refund: split.second,
-            },
-        );
+            // Delegate to the single shared high-precision split primitive.
+            // split_round_nearest(total, numerator, denominator) computes:
+            //   first  = round_nearest(total × numerator / denominator)
+            //   second = total − first
+            // Here numerator = elapsed_seconds, denominator = total_seconds.
+            let split = Self::split_round_nearest(amount, elapsed_seconds, total_seconds)?;
 
-        Ok(split)
+            env.events().publish(
+                (symbol_short!("m_ext"),),
+                MilestoneTimeExtensionEvent {
+                    amount,
+                    elapsed_seconds,
+                    total_seconds,
+                    freelancer_share: split.first,
+                    client_refund: split.second,
+                },
+            );
+
+            Ok(split)
+        })();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::TimeExtExecutionLock);
+
+        result
+    }
+
+    /// Compute a milestone time-extension split that requires **dual consent**:
+    /// both the client and the freelancer must independently sign the
+    /// transaction.
+    ///
+    /// `milestone_time_extensions` is an unauthenticated calculator.  This
+    /// endpoint is the consent-gated counterpart so a time-based settlement
+    /// cannot be computed and recorded without both parties authorising it.
+    ///
+    /// A transaction carrying only one of the two signatures never reaches the
+    /// split arithmetic: the missing `require_auth()` panics at the host level,
+    /// so a single-signature attempt reverts the whole invocation.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Job metadata missing, so no signers are known.
+    /// * `InvalidAmount`  – `amount` ≤ 0, or arithmetic overflow.
+    /// * `InvalidRatio`   – Invalid elapsed/total seconds.
+    pub fn time_extensions_consent(
+        env: Env,
+        amount: i128,
+        elapsed_seconds: i128,
+        total_seconds: i128,
+    ) -> Result<RatioSplit, Error> {
+        let meta = Self::require_client_and_freelancer_consent(&env)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TimeExtExecutionLock, &true);
+
+        let result = (|| {
+            if amount <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            if total_seconds <= 0 {
+                return Err(Error::InvalidRatio);
+            }
+            if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
+                return Err(Error::InvalidRatio);
+            }
+
+            let split = Self::split_round_nearest(amount, elapsed_seconds, total_seconds)?;
+
+            env.events().publish(
+                (symbol_short!("m_extcns"),),
+                TimeExtConsentEvent {
+                    client: meta.client.clone(),
+                    freelancer: meta.freelancer.clone(),
+                    amount,
+                    elapsed_seconds,
+                    total_seconds,
+                    freelancer_share: split.first,
+                    client_refund: split.second,
+                },
+            );
+
+            Ok(split)
+        })();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::TimeExtExecutionLock);
+
+        result
     }
 
     pub fn multisig_transfer_admin(
@@ -4721,6 +4895,71 @@ impl MilestoneEscrow {
     /// Return whether the interest/yield share configuration is locked.
     pub fn is_escrow_interest_yield_locked(env: Env) -> Result<bool, Error> {
         Ok(Self::load_interest_yield_state(&env)?.locked)
+    }
+
+    /// Calculate a split-refund allocation between client and freelancer for
+    /// yield/interest claims.
+    ///
+    /// Given a total amount and basis-point ratios for each party, this
+    /// function computes how much should be refunded to the client and how
+    /// much should be paid to the freelancer.  The ratios must sum to
+    /// exactly `BPS_SCALE` (10 000).  The client share is rounded to the
+    /// nearest stroop and the freelancer receives the exact remainder so no
+    /// value is lost to integer division.
+    ///
+    /// # Parameters
+    /// * `total_amount`          – Total amount to split; must be > 0.
+    /// * `client_refund_bps`     – Client's refund share in basis points.
+    /// * `freelancer_payout_bps` – Freelancer's payout share in basis points.
+    ///
+    /// # Returns
+    /// A `RefundAllocation` whose two amounts sum to `total_amount` exactly.
+    ///
+    /// # Errors
+    /// * `InvalidRatio`  – Ratios do not sum to `BPS_SCALE`.
+    /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
+    pub fn interest_yield_split_refund(
+        env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let total_bps = client_refund_bps
+            .checked_add(freelancer_payout_bps)
+            .ok_or(Error::InvalidRatio)?;
+        if total_bps != BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        let client_split =
+            Self::split_round_nearest(total_amount, client_refund_bps as i128, BPS_SCALE as i128)?;
+
+        let freelancer_payout = total_amount
+            .checked_sub(client_split.first)
+            .ok_or(Error::InvalidAmount)?;
+
+        let allocation = RefundAllocation {
+            client_refund: client_split.first,
+            freelancer_payout,
+            client_refund_bps,
+            freelancer_payout_bps,
+        };
+
+        env.events().publish(
+            (symbol_short!("iyspltref"),),
+            SplitRefundCalculatedEvent {
+                client_refund: allocation.client_refund,
+                freelancer_payout: allocation.freelancer_payout,
+                client_refund_bps: allocation.client_refund_bps,
+                freelancer_payout_bps: allocation.freelancer_payout_bps,
+            },
+        );
+
+        Ok(allocation)
     }
 
     /// Return the stored interest/yield share configuration.
