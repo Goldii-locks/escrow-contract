@@ -5008,38 +5008,49 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
     /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `EmergencyPauseInProgress` – A pause/resume transition is already
+    ///   in flight; the escrow cannot be re-paused mid-transition.
     pub fn admin_pause_escrow(env: Env, admin: Address) -> Result<(), Error> {
+        // Authorization: only the stored admin may pause the escrow.  Any
+        // other caller is rejected with `Unauthorized`, and a contract that
+        // has never been initialised with `NotInitialized`, before any ledger
+        // entry is read or written.
         Self::require_admin(&env, &admin)?;
 
-        env.storage()
+        // Precondition: reject an illegal source state — an emergency
+        // pause/resume transition already in flight — before any write.
+        Self::assert_emergency_pause_not_locked(&env)?;
+
+        // Idempotent no-op: when the escrow is already paused, return without
+        // touching any storage, so a redundant call mutates nothing.
+        let already_paused: bool = env
+            .storage()
             .instance()
-            .set(&DataKey::EpLk, &true);
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if already_paused {
+            return Ok(());
+        }
+
+        env.storage().instance().set(&DataKey::EpLk, &true);
 
         let result = (|| {
-            let already_paused: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::Paused)
-                .unwrap_or(false);
-
             env.storage().instance().set(&DataKey::Paused, &true);
 
-            if !already_paused {
-                env.events().publish(
-                    (symbol_short!("pause"),),
-                    EscrowPausedEvent {
-                        admin: admin.clone(),
-                        contract_id: env.current_contract_address(),
-                    },
-                );
-            }
+            // The early return above means this only runs on a real
+            // transition, so the event is unconditional here.
+            env.events().publish(
+                (symbol_short!("pause"),),
+                EscrowPausedEvent {
+                    admin: admin.clone(),
+                    contract_id: env.current_contract_address(),
+                },
+            );
 
             Ok(())
         })();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &false);
+        env.storage().instance().set(&DataKey::EpLk, &false);
 
         result
     }
