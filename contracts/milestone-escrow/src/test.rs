@@ -13,6 +13,8 @@ use soroban_sdk::{
     Val,
 };
 
+#[path = "admin_pause_escrow_tests.rs"]
+mod admin_pause_escrow_tests;
 #[path = "admin_tax_withholding_guards_tests.rs"]
 mod admin_tax_withholding_guards_tests;
 #[path = "execute_admin_transfer_tests.rs"]
