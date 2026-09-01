@@ -5519,6 +5519,17 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        // Reject pathological operands before any arithmetic (issue #395).
+        // `amount` / `released_amount` are signed i128 values read from
+        // storage; guarding them here, alongside the checked_sub and
+        // `remaining <= 0` guards below, guarantees no input — including
+        // `i128::MAX` / `i128::MIN` — can cause a wrap or an unhandled panic.
+        if milestone.amount < 0 || milestone.released_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if milestone.released_amount > milestone.amount {
+            return Err(Error::InvalidAmount);
+        }
         let remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
@@ -5586,7 +5597,11 @@ impl MilestoneEscrow {
     /// 4. `milestone_index` must be in range (`InvalidMilestone`).
     /// 5. Milestone must not already be `Released` or `Refunded`
     ///    (`InvalidStatus`).
-    /// 6. Remaining balance must be > 0 (`InvalidAmount`).
+    /// 6. Amount arithmetic is fully checked — pathological `i128` operands
+    ///    (negative `amount` / `released_amount`, or `released_amount` beyond
+    ///    `amount`, including `i128::MAX` / `i128::MIN`) return `InvalidAmount`
+    ///    without panic or wrap.
+    /// 7. Remaining balance must be > 0 (`InvalidAmount`).
     ///
     /// # Parameters
     /// * `admin`           – Must match `DataKey::Admin`.
@@ -5633,6 +5648,17 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        // Reject pathological operands before any arithmetic (issue #395).
+        // `amount` / `released_amount` are signed i128 values read from
+        // storage; guarding them here, alongside the checked_sub and
+        // `remaining <= 0` guards below, guarantees no input — including
+        // `i128::MAX` / `i128::MIN` — can cause a wrap or an unhandled panic.
+        if milestone.amount < 0 || milestone.released_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if milestone.released_amount > milestone.amount {
+            return Err(Error::InvalidAmount);
+        }
         let remaining = milestone
             .amount
             .checked_sub(milestone.released_amount)
