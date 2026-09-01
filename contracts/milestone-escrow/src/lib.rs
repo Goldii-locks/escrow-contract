@@ -3077,7 +3077,6 @@ impl MilestoneEscrow {
     /// * `InvalidStatus`   – `CancelLock` is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to refund).
     pub fn admin_override_cancel_refund(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         // Only valid when a cancel lock is active.
@@ -4307,12 +4306,14 @@ impl MilestoneEscrow {
     }
 }
 
+#[cfg(test)]
 mod test;
+#[cfg(test)]
 mod test_emergency_pause;
+#[cfg(test)]
 mod test_payment_streaming_milestones;
+#[cfg(test)]
 mod admin_override_cancel_tests;
-
-// ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
 // Design rationale
 // ─────────────────

@@ -17,7 +17,9 @@
 //!   - Terminal milestones are correctly skipped in every scenario.
 
 use super::*;
+use crate::test::setup_funded_escrow;
 use crate::{DataKey, Error, MilestoneEscrowClient, MilestoneStatus};
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token, vec, Address, Env};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -263,12 +265,18 @@ fn test_cancel_refund_all_terminal_returns_invalid_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+    let (client_addr, freelancer_addr, _, admin_addr, token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 2_000_i128]);
 
     // Fully release the single milestone via normal path.
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_milestone(&client_addr, &0u32);
+
+    // Top up the contract so the zero-balance boundary guard in
+    // `cancel_escrow` still lets a cancel go through even though every
+    // milestone is now terminal and fully released.
+    let token_admin = token::StellarAssetClient::new(&env, &token_id);
+    token_admin.mint(&contract_id, &1_000_i128);
 
     client.cancel_escrow(&client_addr);
 

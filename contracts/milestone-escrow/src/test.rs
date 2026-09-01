@@ -167,7 +167,7 @@ impl ReentrantToken {
     }
 }
 
-fn setup_funded_escrow(
+pub(crate) fn setup_funded_escrow(
     env: &Env,
     milestone_amounts: soroban_sdk::Vec<i128>,
 ) -> (
