@@ -608,7 +608,7 @@
                 }
               ]
             },
-            "durability": "persistent"
+            "durability": "temporary"
           }
         },
         [
@@ -628,7 +628,7 @@
                     }
                   ]
                 },
-                "durability": "persistent",
+                "durability": "temporary",
                 "val": {
                   "u64": 1000
                 }
@@ -636,7 +636,7 @@
             },
             "ext": "v0"
           },
-          4095
+          15
         ]
       ],
       [

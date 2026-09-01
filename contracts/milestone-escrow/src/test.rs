@@ -723,7 +723,6 @@ fn test_mark_delivered_invalid_amount_fails() {
         released_amount: 0,
         status: MilestoneStatus::Pending,
         delivered_at: 0,
-        time_extension: 0,
     };
     env.as_contract(&contract_id, || {
         env.storage()
