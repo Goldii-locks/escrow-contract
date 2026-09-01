@@ -12473,3 +12473,243 @@ fn test_interest_yield_split_refund_emits_event() {
     }
     assert!(found, "expected iyspltref event");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// #308: cancel_escrow_split_refund allocation pathways
+//
+// cancel_escrow_split_refund is a pure calculator: it moves no tokens and
+// writes no storage, so callers can preview a cancellation split before
+// committing to an admin override. These cover the distribution pathways, the
+// rejected inputs, and the structured event it publishes.
+//
+// The invariant every distribution case asserts is that
+// client_refund + freelancer_payout == total_amount exactly -- the client share
+// is rounded to nearest and the freelancer takes the remainder by subtraction,
+// so integer division can never lose or manufacture a stroop.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn split_refund_calculator(env: &Env) -> MilestoneEscrowClient<'_> {
+    let contract_id = env.register(MilestoneEscrow, ());
+    MilestoneEscrowClient::new(env, &contract_id)
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_equal_split() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let allocation = client.cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(allocation.client_refund, 500);
+    assert_eq!(allocation.freelancer_payout, 500);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        1_000
+    );
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_70_30() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let allocation = client.cancel_escrow_split_refund(&1_000_i128, &7_000_u32, &3_000_u32);
+    assert_eq!(allocation.client_refund, 700);
+    assert_eq!(allocation.freelancer_payout, 300);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_full_client_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let allocation = client.cancel_escrow_split_refund(&1_000_i128, &10_000_u32, &0_u32);
+    assert_eq!(allocation.client_refund, 1_000);
+    assert_eq!(allocation.freelancer_payout, 0);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_full_freelancer_payout() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let allocation = client.cancel_escrow_split_refund(&1_000_i128, &0_u32, &10_000_u32);
+    assert_eq!(allocation.client_refund, 0);
+    assert_eq!(allocation.freelancer_payout, 1_000);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_odd_total_rounds_nearest_no_value_lost() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    // 101 / 2 = 50.5 -> the client share rounds up, the freelancer takes the
+    // remainder, and nothing is lost to the division.
+    let allocation = client.cancel_escrow_split_refund(&101_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(allocation.client_refund, 51);
+    assert_eq!(allocation.freelancer_payout, 50);
+    assert_eq!(allocation.client_refund + allocation.freelancer_payout, 101);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_single_stroop_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    // A single indivisible stroop still has to go somewhere: round-nearest
+    // gives it to the client rather than dropping it.
+    let allocation = client.cancel_escrow_split_refund(&1_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(allocation.client_refund, 1);
+    assert_eq!(allocation.freelancer_payout, 0);
+    assert_eq!(allocation.client_refund + allocation.freelancer_payout, 1);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_tiny_client_share() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    // 1 bp of 1_000 rounds to zero; the freelancer must still receive the
+    // whole total rather than 999.
+    let allocation = client.cancel_escrow_split_refund(&1_000_i128, &1_u32, &9_999_u32);
+    assert_eq!(allocation.client_refund, 0);
+    assert_eq!(allocation.freelancer_payout, 1_000);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_large_prime_total_preserved() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let total = 1_000_003_i128;
+    let allocation = client.cancel_escrow_split_refund(&total, &3_333_u32, &6_667_u32);
+    assert_eq!(allocation.client_refund + allocation.freelancer_payout, total);
+    assert_eq!(allocation.client_refund, 333_301);
+    assert_eq!(allocation.freelancer_payout, 666_702);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_zero_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let result = client.try_cancel_escrow_split_refund(&0_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_negative_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let result = client.try_cancel_escrow_split_refund(&-1_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_both_bps_zero_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let result = client.try_cancel_escrow_split_refund(&1_000_i128, &0_u32, &0_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_bps_not_summing_to_scale_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let under = client.try_cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &4_000_u32);
+    assert_eq!(under, Err(Ok(Error::InvalidRatio)));
+
+    let over = client.try_cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &6_000_u32);
+    assert_eq!(over, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_bps_overflow_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    // The two shares are summed with checked_add: an overflowing pair is
+    // rejected rather than wrapping around to a value that passes the check.
+    let result = client.try_cancel_escrow_split_refund(&1_000_i128, &u32::MAX, &1_u32);
+    assert_eq!(result, Err(Ok(Error::InvalidRatio)));
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_bps_echoed_in_allocation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let allocation = client.cancel_escrow_split_refund(&1_000_i128, &6_500_u32, &3_500_u32);
+    assert_eq!(allocation.client_refund_bps, 6_500);
+    assert_eq!(allocation.freelancer_payout_bps, 3_500);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    client.cancel_escrow_split_refund(&1_000_i128, &6_000_u32, &4_000_u32);
+
+    let topic_val: Val = symbol_short!("cxlspref").into_val(&env);
+    let count = env.events().all().iter().fold(0u32, |acc, event| {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == topic_val.get_payload() {
+                return acc + 1;
+            }
+        }
+        acc
+    });
+    assert_eq!(count, 1, "expected exactly one cxlspref event");
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_event_payload_correct() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = split_refund_calculator(&env);
+
+    let allocation = client.cancel_escrow_split_refund(&1_001_i128, &2_500_u32, &7_500_u32);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("cxlspref"));
+
+    let payload = CancelSplitRefundCalculatedEvent::from_val(&env, &last.2);
+    assert_eq!(payload.client_refund, allocation.client_refund);
+    assert_eq!(payload.freelancer_payout, allocation.freelancer_payout);
+    assert_eq!(payload.client_refund_bps, 2_500);
+    assert_eq!(payload.freelancer_payout_bps, 7_500);
+    assert_eq!(payload.client_refund + payload.freelancer_payout, 1_001);
+}
+
+#[test]
+fn test_cancel_escrow_split_refund_works_without_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Pure calculator: no job, no admin, no funding -- it must still answer.
+    let client = split_refund_calculator(&env);
+    let allocation = client.cancel_escrow_split_refund(&2_000_i128, &2_500_u32, &7_500_u32);
+    assert_eq!(allocation.client_refund, 500);
+    assert_eq!(allocation.freelancer_payout, 1_500);
+}
