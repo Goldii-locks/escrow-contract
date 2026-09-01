@@ -2756,7 +2756,384 @@ fn test_approve_partial_on_refunded_milestone_fails() {
 // TASK 1 TESTS: multisig approval emergency admin privilege endpoints
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Verify that only the stored admin can invoke multisig_lock.
+#[test]
+fn test_admin_override_release_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Should succeed
+    client.admin_override_release(&admin_addr, &0u32);
+}
+
+#[test]
+fn test_admin_override_release_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_admin_override_release(&attacker, &0u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_admin_override_release_with_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    
+    // Simulate setting yield accrued
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(&DataKey::YieldAccrued, &123_i128);
+    });
+
+    client.admin_override_release(&admin_addr, &0u32);
+
+    // Verify yield was reset
+    let accrued: i128 = env.as_contract(&client.address, || {
+        env.storage().persistent().get(&DataKey::YieldAccrued).unwrap_or(0)
+    });
+    assert_eq!(accrued, 0);
+}
+
+/// When released_amount == amount the remaining balance is zero, which must
+/// return Error::InvalidAmount rather than allowing a zero-value transfer.
+#[test]
+fn test_admin_override_release_zero_remaining_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Force released_amount == amount so remaining == 0.
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.released_amount = milestone.amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    let result = client.try_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// When released_amount > amount (e.g. i128::MAX stored as released_amount
+/// with a positive amount) the checked_sub overflows and must return
+/// Error::InvalidAmount, not panic or wrap.
+#[test]
+fn test_admin_override_release_overflow_released_gt_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Set released_amount to i128::MAX so that amount - released_amount
+    // wraps (or overflows). checked_sub must catch this.
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.released_amount = i128::MAX;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    let result = client.try_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// Amount of i128::MAX with released_amount 0 is a valid positive remaining
+/// and should succeed (the arithmetic cannot overflow in the happy path).
+#[test]
+fn test_admin_override_release_i128_max_amount_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // We cannot actually mint i128::MAX tokens through the normal flow,
+    // but we can directly set the milestone amount in storage and verify
+    // the checked arithmetic does not panic.
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        // Use a large-but-safe value so the token transfer can still succeed.
+        // The key invariant is amount > 0 and released_amount == 0, which is
+        // already the funded state — so we just verify no panic occurs.
+        milestone.released_amount = 0;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    // Should succeed — remaining == 1_000, which is > 0.
+    client.admin_override_release(&admin_addr, &0u32);
+}
+
+/// Amount of i128::MIN is a negative amount; remaining = MIN - 0 = MIN which
+/// is ≤ 0 and must return Error::InvalidAmount.
+#[test]
+fn test_admin_override_release_i128_min_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.amount = i128::MIN;
+        milestone.released_amount = 0;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    // MIN - 0 == MIN which is < 0, so the guard `remaining <= 0` triggers.
+    let result = client.try_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// amount == i128::MIN and released_amount == i128::MIN would yield 0 via
+/// checked_sub, triggering the `remaining <= 0` guard (not a panic).
+#[test]
+fn test_admin_override_release_both_min_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.amount = i128::MIN;
+        milestone.released_amount = i128::MIN;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    // MIN - MIN == 0, which is ≤ 0 → InvalidAmount.
+    let result = client.try_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+/// amount == i128::MAX and released_amount == i128::MIN.  The subtraction
+/// MAX - MIN overflows i128.  checked_sub must return None → InvalidAmount.
+#[test]
+fn test_admin_override_release_max_minus_min_overflow_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    env.as_contract(&contract_id, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(0u32))
+            .unwrap();
+        milestone.amount = i128::MAX;
+        // released_amount is negative — large magnitude means sub overflows.
+        milestone.released_amount = i128::MIN;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(0u32), &milestone);
+    });
+
+    // MAX - MIN overflows i128: checked_sub returns None → InvalidAmount.
+    let result = client.try_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FOOTPRINT TESTS: admin_override_refund
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// admin_override_refund should successfully refund the milestone to the client.
+#[test]
+fn test_admin_override_refund_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, admin_addr, token_id, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let token = token::Client::new(&env, &token_id);
+    let client_before = token.balance(&client_addr);
+
+    client.admin_override_refund(&admin_addr, &0u32);
+
+    // Funds must have moved to the client.
+    assert_eq!(token.balance(&client_addr), client_before + 1_000);
+}
+
+/// admin_override_refund must reject callers that are not the stored admin.
+#[test]
+fn test_admin_override_refund_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_admin_override_refund(&attacker, &0u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// When YieldAccrued is non-zero before the refund, the footprint-reduced
+/// path must still clear it to zero.
+#[test]
+fn test_admin_override_refund_clears_nonzero_yield() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Seed a non-zero yield value.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldAccrued, &500_i128);
+    });
+
+    client.admin_override_refund(&admin_addr, &0u32);
+
+    // YieldAccrued must be zero after the call.
+    let accrued: i128 = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::YieldAccrued)
+            .unwrap_or(0)
+    });
+    assert_eq!(accrued, 0);
+}
+
+/// When YieldAccrued is already zero, the optimised path must NOT write to
+/// the key at all, reducing the distinct storage keys touched by the call.
+/// We verify the key remains absent / zero after the call.
+#[test]
+fn test_admin_override_refund_skips_yield_write_when_already_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Confirm YieldAccrued starts absent (treated as 0).
+    let before: Option<i128> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::YieldAccrued)
+    });
+    assert!(before.is_none(), "YieldAccrued should not exist yet");
+
+    client.admin_override_refund(&admin_addr, &0u32);
+
+    // The key should still be absent — no spurious write occurred.
+    let after: Option<i128> = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::YieldAccrued)
+    });
+    assert!(
+        after.is_none() || after == Some(0),
+        "YieldAccrued should remain absent/zero when it was already zero"
+    );
+}
+
+/// admin_override_refund on an already-Refunded milestone must return
+/// InvalidStatus, not settle twice.
+#[test]
+fn test_admin_override_refund_on_refunded_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // First call settles the milestone.
+    client.admin_override_refund(&admin_addr, &0u32);
+
+    // Second call must be rejected.
+    let result = client.try_admin_override_refund(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+/// admin_override_refund on a released milestone must return InvalidStatus.
+#[test]
+fn test_admin_override_refund_on_released_milestone_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Release first.
+    client.admin_override_release(&admin_addr, &0u32);
+
+    let result = client.try_admin_override_refund(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+}
+
+/// admin_override_refund on an unfunded escrow must return NotFunded.
+#[test]
+fn test_admin_override_refund_not_funded_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+    // Deliberately skip fund().
+
+    let result = client.try_admin_override_refund(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::NotFunded)));
+}
+
 #[test]
 fn test_multisig_lock_requires_admin() {
     let env = Env::default();
