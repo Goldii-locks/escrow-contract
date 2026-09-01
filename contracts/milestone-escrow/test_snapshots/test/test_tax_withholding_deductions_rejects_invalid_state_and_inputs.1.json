@@ -536,7 +536,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPaused"
+                              "symbol": "Ep"
                             }
                           ]
                         },
@@ -972,7 +972,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "EmergencyPaused"
+                              "symbol": "Ep"
                             }
                           ]
                         },
