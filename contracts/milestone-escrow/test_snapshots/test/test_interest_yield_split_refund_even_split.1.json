@@ -39,7 +39,7 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": []
+                    "storage": null
                   }
                 }
               }
@@ -82,7 +82,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "p_stream"
+                "symbol": "iyspltref"
               }
             ],
             "data": {
@@ -94,52 +94,35 @@
                   "val": {
                     "i128": {
                       "hi": 0,
-                      "lo": 1000
+                      "lo": 500
                     }
                   }
                 },
                 {
                   "key": {
-                    "symbol": "denominator"
+                    "symbol": "client_refund_bps"
+                  },
+                  "val": {
+                    "u32": 5000
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "freelancer_payout"
                   },
                   "val": {
                     "i128": {
                       "hi": 0,
-                      "lo": 100
+                      "lo": 500
                     }
                   }
                 },
                 {
                   "key": {
-                    "symbol": "numerator"
+                    "symbol": "freelancer_payout_bps"
                   },
                   "val": {
-                    "i128": {
-                      "hi": 0,
-                      "lo": 0
-                    }
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "streamed_payout"
-                  },
-                  "val": {
-                    "i128": {
-                      "hi": 0,
-                      "lo": 0
-                    }
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "total_amount"
-                  },
-                  "val": {
-                    "i128": {
-                      "hi": 0,
-                      "lo": 1000
-                    }
+                    "u32": 5000
                   }
                 }
               ]
