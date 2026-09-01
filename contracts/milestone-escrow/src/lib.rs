@@ -183,10 +183,12 @@ pub enum DataKey {
     /// `set_escrow_interest_yield`; read by getters and lock/unlock helpers.
     InterestYieldState,
     // ── escrow_interest_yield admin-override keys ────────────────────────────
-    /// Persistent: annual yield rate expressed in basis points (1 bp = 0.01 %).
-    /// Range 0–10 000 (0 %–100 %).  Written by `admin_set_yield_rate`, read by
-    /// `get_yield_info` and `admin_accrue_yield`.
-    YieldRateBps,
+    /// Persistent: holds the `YieldConfig` struct (annual yield rate in basis
+    /// points, 1 bp = 0.01 %, range 0–10 000 / 0 %–100 %).  Written by
+    /// `admin_set_yield_rate`, read by `get_yield_info` and `admin_accrue_yield`.
+    /// Consolidated into a single struct-valued key to minimise the ledger
+    /// footprint versus one key per field.
+    YieldConfig,
     /// Persistent: total interest (in token stroops) accrued so far by the
     /// admin via `admin_accrue_yield`.  Reset to zero on admin override release
     /// or refund so downstream indexers can detect a fresh yield cycle.
@@ -592,6 +594,17 @@ pub struct AdminOverrideTaxRefundEvent {
     pub client: Address,
     pub token: Address,
     pub gross_amount: i128,
+}
+
+// ── escrow_interest_yield admin-override config ──────────────────────────────
+
+/// Consolidated yield configuration stored under `DataKey::YieldConfig`.
+/// Bundles all yield-related settings into a single struct-valued ledger
+/// entry so `admin_set_yield_rate` touches one key instead of several.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct YieldConfig {
+    pub yield_rate: u32,
 }
 
 // ── escrow_interest_yield admin-override events ──────────────────────────────
@@ -4364,12 +4377,16 @@ impl MilestoneEscrow {
         let old_rate_bps: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::YieldRateBps)
+            .get(&DataKey::YieldConfig)
+            .map(|config: YieldConfig| config.yield_rate)
             .unwrap_or(0);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldRateBps, &rate_bps);
+        env.storage().persistent().set(
+            &DataKey::YieldConfig,
+            &YieldConfig {
+                yield_rate: rate_bps,
+            },
+        );
 
         env.events().publish(
             (symbol_short!("yldrate"),),
@@ -5159,7 +5176,8 @@ impl MilestoneEscrow {
         let rate_bps: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::YieldRateBps)
+            .get(&DataKey::YieldConfig)
+            .map(|config: YieldConfig| config.yield_rate)
             .unwrap_or(0);
 
         let total_accrued: i128 = env
