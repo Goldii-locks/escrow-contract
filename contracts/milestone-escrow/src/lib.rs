@@ -2864,11 +2864,8 @@ impl MilestoneEscrow {
             return Err(Error::InvalidRatio);
         }
 
-        let client_split = Self::split_round_nearest(
-            total_amount,
-            client_refund_bps as i128,
-            BPS_SCALE as i128,
-        )?;
+        let client_split =
+            Self::split_round_nearest(total_amount, client_refund_bps as i128, BPS_SCALE as i128)?;
 
         Ok(RefundAllocation {
             client_refund: client_split.first,
@@ -2975,11 +2972,6 @@ impl MilestoneEscrow {
     pub fn admin_override_cancel_release(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
 
-        let meta = Self::load_job_meta(&env)?;
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
-
         // Only valid when a cancel lock is active.
         let cancel_locked = env
             .storage()
@@ -2988,6 +2980,11 @@ impl MilestoneEscrow {
             .unwrap_or(false);
         if !cancel_locked {
             return Err(Error::InvalidStatus);
+        }
+
+        let meta = Self::load_job_meta(&env)?;
+        if !meta.funded {
+            return Err(Error::NotFunded);
         }
 
         // Walk every milestone; accumulate remaining balance and mark Released.
@@ -3009,8 +3006,14 @@ impl MilestoneEscrow {
                     .ok_or(Error::InvalidAmount)?;
                 milestone.released_amount = milestone.amount;
                 milestone.status = MilestoneStatus::Released;
+                // Write only the persistent Milestone entry.  The temporary
+                // MilestoneReleased flag is omitted here: it is a hot-read
+                // optimisation for the approve_milestone path and is redundant
+                // in this admin-override code path because the persistent
+                // status already carries the Released state.  Skipping it
+                // reduces the number of distinct ledger keys written by this
+                // function by one per updated milestone (issue #383).
                 Self::store_milestone(&env, index, &milestone);
-                Self::store_milestone_released(&env, index);
             }
         }
 
@@ -3074,7 +3077,6 @@ impl MilestoneEscrow {
     /// * `InvalidStatus`   – `CancelLock` is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to refund).
     pub fn admin_override_cancel_refund(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
         // Only valid when a cancel lock is active.
@@ -3101,10 +3103,21 @@ impl MilestoneEscrow {
             {
                 continue;
             }
-            let remaining = milestone
-                .amount
-                .checked_sub(milestone.released_amount)
-                .ok_or(Error::InvalidAmount)?;
+            let remaining = {
+                // Guard: both fields must be non-negative before arithmetic.
+                // A malformed entry with a negative amount or released_amount
+                // (e.g. i128::MIN) could yield a nonsensical positive
+                // `remaining` after wrapping; rejecting here keeps the
+                // guarantee that every exit path either refunds a valid
+                // positive total or returns Error::InvalidAmount (issue #386).
+                if milestone.amount < 0 || milestone.released_amount < 0 {
+                    return Err(Error::InvalidAmount);
+                }
+                milestone
+                    .amount
+                    .checked_sub(milestone.released_amount)
+                    .ok_or(Error::InvalidAmount)?
+            };
             if remaining > 0 {
                 total_refunded = total_refunded
                     .checked_add(remaining)
@@ -4293,11 +4306,14 @@ impl MilestoneEscrow {
     }
 }
 
+#[cfg(test)]
 mod test;
+#[cfg(test)]
 mod test_emergency_pause;
+#[cfg(test)]
 mod test_payment_streaming_milestones;
-
-// ── escrow_interest_yield: admin emergency override endpoints ─────────────────
+#[cfg(test)]
+mod admin_override_cancel_tests;
 //
 // Design rationale
 // ─────────────────
@@ -4866,12 +4882,6 @@ impl MilestoneEscrow {
             return Err(Error::InvalidRatio);
         }
 
-        let token_client = token::Client::new(&env, &meta.token);
-        let contract_balance = token_client.balance(&env.current_contract_address());
-        if contract_balance <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
         let milestone = Self::load_milestone(&env, milestone_index)?;
 
         // Only Pending/Delivered/PartiallyReleased milestones may have tax
@@ -4891,6 +4901,12 @@ impl MilestoneEscrow {
             MilestoneStatus::Released | MilestoneStatus::Refunded | MilestoneStatus::Disputed => {
                 return Err(Error::InvalidStatus)
             }
+        }
+
+        let token_client = token::Client::new(&env, &meta.token);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance <= 0 {
+            return Err(Error::InvalidAmount);
         }
 
         let gross_amount = milestone
@@ -4957,8 +4973,6 @@ impl MilestoneEscrow {
         admin: Address,
         milestone_index: u32,
     ) -> Result<(), Error> {
-        admin.require_auth();
-
         if !env.storage().persistent().has(&DataKey::Admin) {
             return Err(Error::NotInitialized);
         }
@@ -5368,6 +5382,19 @@ impl MilestoneEscrow {
     /// and a full token transfer is executed back to the client.  The
     /// `MultisigLocked` flag is cleared.
     ///
+    /// # Checks (in order)
+    /// Authorization and source-state guards run **before** any job or
+    /// milestone ledger entry is read or written, so a rejected call cannot
+    /// mutate storage:
+    /// 1. `require_admin` — caller must be the stored admin (`Unauthorized`
+    ///    / `NotInitialized`).
+    /// 2. `MultisigLocked` must be active (`InvalidStatus`).
+    /// 3. Escrow must be funded (`NotFunded`).
+    /// 4. `milestone_index` must be in range (`InvalidMilestone`).
+    /// 5. Milestone must not already be `Released` or `Refunded`
+    ///    (`InvalidStatus`).
+    /// 6. Remaining balance must be > 0 (`InvalidAmount`).
+    ///
     /// # Parameters
     /// * `admin`           – Must match `DataKey::Admin`.
     /// * `milestone_index` – Target milestone.
@@ -5375,9 +5402,10 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
     /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `InvalidStatus`   – Multisig workflow is not locked, or the
+    ///                       milestone is already `Released` / `Refunded`.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
-    /// * `InvalidStatus`   – Milestone is already `Released` or `Refunded`.
     /// * `InvalidAmount`   – Remaining balance is ≤ 0.
     pub fn multisig_admin_override_refund(
         env: Env,
@@ -5385,6 +5413,16 @@ impl MilestoneEscrow {
         milestone_index: u32,
     ) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
+
+        // Reject illegal source state before any job/milestone ledger I/O.
+        let multisig_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::MultisigLocked)
+            .unwrap_or(false);
+        if !multisig_locked {
+            return Err(Error::InvalidStatus);
+        }
 
         let meta = Self::load_job_meta(&env)?;
         if !meta.funded {
@@ -5452,7 +5490,8 @@ impl MilestoneEscrow {
     /// executing on-chain transfers.
     ///
     /// # Parameters
-    /// * `env`                  – Soroban environment (used only for event emission).
+    /// * `env`                  – Soroban environment.
+    /// * `admin`                – Must match `DataKey::Admin`.
     /// * `total_amount`         – Total amount to split.
     /// * `client_refund_bps`    – Client's refund share in basis points.
     /// * `freelancer_payout_bps`– Freelancer's payout share in basis points.
@@ -5462,14 +5501,28 @@ impl MilestoneEscrow {
     /// ratios that were used.
     ///
     /// # Errors
-    /// * `InvalidRatio` – Ratios do not sum to `BPS_SCALE`.
-    /// * `InvalidAmount`– `total_amount` ≤ 0 or arithmetic overflow.
+    /// * `NotInitialized`– Contract has not been initialized.
+    /// * `Unauthorized`  – `admin` is not the verified admin.
+    /// * `InvalidStatus` – Multisig workflow is not locked.
+    /// * `InvalidRatio`  – Ratios do not sum to `BPS_SCALE`.
+    /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
     pub fn multisig_split_refund(
         env: Env,
+        admin: Address,
         total_amount: i128,
         client_refund_bps: u32,
         freelancer_payout_bps: u32,
     ) -> Result<RefundAllocation, Error> {
+        Self::require_admin(&env, &admin)?;
+
+        let multisig_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::MultisigLocked)
+            .unwrap_or(false);
+        if !multisig_locked {
+            return Err(Error::InvalidStatus);
+        }
         if total_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
