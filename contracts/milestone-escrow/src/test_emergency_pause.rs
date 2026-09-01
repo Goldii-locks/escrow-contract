@@ -12,7 +12,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, vec, Address, Env,
+    testutils::Address as _, testutils::EnvTestConfig, testutils::Events, token, vec, Address, Env,
     FromVal, IntoVal, Val,
 };
 
@@ -56,6 +56,11 @@ fn initialised_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
         &604_800u64,
         &amounts,
     );
+
+    // Fund the contract so pause-gated refund settlements (which reject an
+    // empty balance) can proceed in the tests that exercise the split math.
+    let token_admin = token::StellarAssetClient::new(env, &token_contract_id);
+    token_admin.mint(&contract_id, &100_000_i128);
 
     (escrow, admin_addr)
 }
@@ -395,6 +400,41 @@ fn test_claim_refund_conserves_odd_totals() {
             "total {total} was not conserved"
         );
     }
+}
+
+#[test]
+fn test_claim_refund_rejects_an_empty_contract_balance() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // Initialised and paused, but never funded: nothing to settle.
+    escrow.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604_800u64,
+        &vec![&env, 1_000_i128],
+    );
+    escrow.emergency_pause(&admin_addr);
+
+    assert_eq!(
+        escrow.try_emergency_pause_claim_refund(&admin_addr, &1_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::EmptyBalance))
+    );
 }
 
 // ============================================================================
