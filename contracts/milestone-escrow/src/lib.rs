@@ -212,6 +212,7 @@ pub enum DataKey {
     /// `multisig_admin_override_refund`.
     MultisigLocked,
     MilestoneTimeExtension(u32),
+    /// Instance key for the cancel_escrow lock.
     CancelLock,
     // ── tax_withholding_deductions storage keys ──────────────────────────────
     /// Persistent: tax rate in basis points (1 bp = 0.01 %) set by
@@ -2882,7 +2883,7 @@ impl MilestoneEscrow {
     /// override.
     ///
     /// Either the client or the freelancer may call this. Sets a
-    /// `CancelLock` that blocks normal operations until the admin resolves
+    /// compact `C` lock that blocks normal operations until the admin resolves
     /// it via `admin_override_cancel_release` or
     /// `admin_override_cancel_refund`. This function itself does not move
     /// any funds.
@@ -2945,7 +2946,7 @@ impl MilestoneEscrow {
     /// Admin emergency override: resolve a cancel-locked escrow by releasing
     /// all remaining milestone funds to the freelancer.
     ///
-    /// When `cancel_escrow` is called by either party, a `CancelLock` is set
+    /// When `cancel_escrow` is called by either party, the compact `C` lock is set
     /// that blocks all normal operations.  This endpoint lets the verified admin
     /// break the deadlock by force-releasing every non-terminal milestone to the
     /// freelancer in a single atomic transaction.
@@ -2955,14 +2956,14 @@ impl MilestoneEscrow {
     /// 2. `require_admin` — verified admin key matches `DataKey::Admin`.
     /// 3. Contract must be initialised (`NotInitialized`).
     /// 4. Escrow must be funded (`NotFunded`).
-    /// 5. `CancelLock` must be active (`InvalidStatus`).
+    /// 5. The compact `C` lock must be active (`InvalidStatus`).
     ///
     /// # Effects
     /// - Every milestone in a non-terminal status (`!Released && !Refunded`)
     ///   is moved to `Released` and its remaining balance is summed.
     /// - The total is transferred from the contract to the freelancer in a
     ///   single token call.
-    /// - `CancelLock` is cleared so subsequent queries are unblocked.
+    /// - The compact `C` lock is cleared so subsequent queries are unblocked.
     /// - `YieldAccrued` is reset to zero (matches the pattern used by
     ///   `admin_override_release` / `admin_override_refund`).
     ///
@@ -2970,7 +2971,7 @@ impl MilestoneEscrow {
     /// * `NotInitialized`  – Contract not initialised.
     /// * `Unauthorized`    – Caller is not the verified admin.
     /// * `NotFunded`       – Escrow has not been funded.
-    /// * `InvalidStatus`   – `CancelLock` is not active.
+    /// * `InvalidStatus`   – the compact `C` lock is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to pay out).
     pub fn admin_override_cancel_release(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
@@ -3063,21 +3064,21 @@ impl MilestoneEscrow {
     /// 2. `require_admin` — verified admin key matches `DataKey::Admin`.
     /// 3. Contract must be initialised (`NotInitialized`).
     /// 4. Escrow must be funded (`NotFunded`).
-    /// 5. `CancelLock` must be active (`InvalidStatus`).
+    /// 5. The compact `C` lock must be active (`InvalidStatus`).
     ///
     /// # Effects
     /// - Every milestone in a non-terminal status is moved to `Refunded` and
     ///   its remaining balance is summed.
     /// - The total is transferred from the contract to the client in a single
     ///   token call.
-    /// - `CancelLock` is cleared.
+    /// - The compact `C` lock is cleared.
     /// - `YieldAccrued` is reset to zero.
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract not initialised.
     /// * `Unauthorized`    – Caller is not the verified admin.
     /// * `NotFunded`       – Escrow has not been funded.
-    /// * `InvalidStatus`   – `CancelLock` is not active.
+    /// * `InvalidStatus`   – the compact `C` lock is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to refund).
     pub fn admin_override_cancel_refund(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;

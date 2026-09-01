@@ -214,6 +214,31 @@ pub(crate) fn setup_funded_escrow(
     )
 }
 
+#[test]
+fn test_cancel_escrow_uses_compact_lock_key() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, _, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.cancel_escrow(&client_addr);
+
+    let lock = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+    });
+    assert_eq!(
+        lock,
+        Some(true),
+        "cancel_escrow must set the CancelLock key"
+    );
+
+    let blocked = client.try_mark_delivered(&freelancer_addr, &0u32);
+    assert_eq!(blocked, Err(Ok(Error::EscrowLocked)));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Security model: raise_dispute locking and validation
 //
