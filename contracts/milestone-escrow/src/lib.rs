@@ -3415,6 +3415,7 @@ impl MilestoneEscrow {
         result
     }
 
+
     pub fn emergency_pause_admin_override(
         env: Env,
         admin: Address,
@@ -3422,6 +3423,8 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
 
+        // Read the current state once; reject no-op transitions so the caller
+        // can distinguish a successful override from a mistaken duplicate call.
         let current = env
             .storage()
             .instance()
@@ -3432,35 +3435,21 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
-        Self::assert_emergency_pause_not_locked(&env)?;
-
+        // Single write — no external call, no EmergencyPauseLock needed.
         env.storage()
             .instance()
-            .set(&DataKey::EpLk, &true);
+            .set(&DataKey::Ep, &paused);
 
-        let result = (|| {
-            env.storage()
-                .instance()
-                .set(&DataKey::Ep, &paused);
-            Ok(())
-        })();
+        env.events().publish(
+            (symbol_short!("emoverrid"),),
+            EmergencyPauseAdminOverrideEvent {
+                admin: admin.clone(),
+                contract_id: env.current_contract_address(),
+                paused,
+            },
+        );
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &false);
-
-        if result.is_ok() {
-            env.events().publish(
-                (symbol_short!("emoverrid"),),
-                EmergencyPauseAdminOverrideEvent {
-                    admin: admin.clone(),
-                    contract_id: env.current_contract_address(),
-                    paused,
-                },
-            );
-        }
-
-        result
+        Ok(())
     }
 
     pub fn is_emergency_paused(env: Env) -> bool {
