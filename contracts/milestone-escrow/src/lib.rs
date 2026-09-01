@@ -5345,7 +5345,6 @@ impl MilestoneEscrow {
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
-        Self::store_milestone_released(&env, milestone_index);
 
         // Remove the lock entry.
         env.storage()
@@ -5505,11 +5504,6 @@ impl MilestoneEscrow {
     /// the same name; this one carries the `admin_` prefix used by the other
     /// admin-gated endpoints.
     ///
-    /// This function sets a lock (`TaxWithholdingExecutionLock`) while executing to
-    /// prevent concurrent state mutations.  The lock is automatically cleared
-    /// when the calculation completes, ensuring that normal escrow operations
-    /// remain blocked only for the duration of the tax calculation.
-    ///
     /// # Parameters
     /// * `admin`           – Must match `DataKey::Admin`.
     /// * `milestone_index` – Target milestone for tax calculation.
@@ -5574,16 +5568,6 @@ impl MilestoneEscrow {
         if net_amount < 0 {
             return Err(Error::InvalidAmount);
         }
-
-        // Only once every guard above has passed do we touch the ledger: the
-        // execution lock is set and immediately cleared.  Every rejected path
-        // returns with no storage entry mutated.
-        env.storage()
-            .instance()
-            .set(&DataKey::TaxWithholdingExecutionLock, &true);
-        env.storage()
-            .instance()
-            .remove(&DataKey::TaxWithholdingExecutionLock);
 
         // Emit structured event for indexers.
         env.events().publish(
@@ -5825,9 +5809,7 @@ impl MilestoneEscrow {
         Self::store_milestone(&env, milestone_index, &milestone);
 
         // Clear the multisig lock flag now that the deadlock is resolved.
-        env.storage()
-            .instance()
-            .set(&DataKey::MultisigLocked, &false);
+        env.storage().instance().remove(&DataKey::MultisigLocked);
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &meta.client, &remaining);

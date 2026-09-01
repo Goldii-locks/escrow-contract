@@ -3428,6 +3428,58 @@ fn test_multisig_admin_override_release_on_released_fails() {
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
 
+#[test]
+fn test_multisig_admin_override_release_amount_overflow_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin_addr);
+
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::Milestone(0_u32),
+            &Milestone {
+                amount: i128::MAX,
+                released_amount: i128::MIN,
+                status: MilestoneStatus::Pending,
+                delivered_at: 0,
+            },
+        );
+    });
+
+    let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert!(client.is_multisig_locked());
+}
+
+#[test]
+fn test_multisig_admin_override_release_min_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin_addr);
+
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::Milestone(0_u32),
+            &Milestone {
+                amount: i128::MIN,
+                released_amount: 0,
+                status: MilestoneStatus::Pending,
+                delivered_at: 0,
+            },
+        );
+    });
+
+    let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert!(client.is_multisig_locked());
+}
+
 /// Verify multisig override on unfunded escrow fails.
 #[test]
 fn test_multisig_admin_override_release_not_funded_fails() {
@@ -7600,7 +7652,7 @@ fn test_tax_withholding_record_can_be_resolved_as_net_release() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, freelancer_addr, _, admin_addr, token_contract_id, _, client) =
+    let (_, freelancer_addr, _, admin_addr, token_contract_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     let token = token::Client::new(&env, &token_contract_id);
 
@@ -7612,6 +7664,21 @@ fn test_tax_withholding_record_can_be_resolved_as_net_release() {
         client.get_job().milestones.get(0).unwrap().status,
         MilestoneStatus::Released
     );
+
+    let (tax_lock, released_flag): (Option<TaxWithholdingRecord>, Option<bool>) =
+        env.as_contract(&contract_id, || {
+            (
+                env.storage()
+                    .persistent()
+                    .get(&DataKey::TaxWithholdingLock(0_u32)),
+                env.storage()
+                    .temporary()
+                    .get(&DataKey::MilestoneReleased(0_u32)),
+            )
+        });
+    assert_eq!(tax_lock, None);
+    assert_eq!(released_flag, None);
+
     assert_eq!(
         client.try_admin_override_tax_release(&admin_addr, &0_u32),
         Err(Ok(Error::InvalidStatus))
@@ -10916,6 +10983,38 @@ fn test_admin_tax_withholding_deductions_zero_balance_fails() {
     // Call admin_tax_withholding_deductions (should fail with InvalidAmount)
     let res = client.try_admin_tax_withholding_deductions(&admin_addr, &0u32, &1000u32);
     assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_admin_tax_withholding_deductions_calculates_without_storage_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let result = client.admin_tax_withholding_deductions(&admin_addr, &0u32, &2_500u32);
+
+    assert_eq!(result, (1_000, 250, 750));
+
+    // Read the event tally first: env.events().all() reflects only the most
+    // recent contract invocation, and the env.as_contract read below counts
+    // as one, which would clear the buffer before it could be inspected.
+    let tax_topic: Val = symbol_short!("taxwh").into_val(&env);
+    assert!(env.events().all().iter().any(|event| {
+        event
+            .1
+            .get(0)
+            .map(|topic| topic.get_payload() == tax_topic.get_payload())
+            .unwrap_or(false)
+    }));
+
+    let lock: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::TaxWithholdingExecutionLock)
+    });
+    assert_eq!(lock, None);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
