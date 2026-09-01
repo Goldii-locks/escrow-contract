@@ -3225,9 +3225,15 @@ fn test_multisig_admin_override_release_requires_admin() {
     let (_, freelancer_addr, _, admin_addr, token_id, _, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
+    client.multisig_lock(&admin_addr);
+
     let attacker = Address::generate(&env);
     let result = client.try_multisig_admin_override_release(&attacker, &0u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert!(
+        client.is_multisig_locked(),
+        "rejected override must leave MultisigLocked set"
+    );
 
     // Admin override should succeed and release funds to freelancer
     let token = token::Client::new(&env, &token_id);
@@ -3272,6 +3278,7 @@ fn test_multisig_admin_override_release_emits_event() {
     let (_, freelancer_addr, _, admin_addr, token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
+    client.multisig_lock(&admin_addr);
     client.multisig_admin_override_release(&admin_addr, &0u32);
 
     let topic_val: Val = symbol_short!("msadmrel").into_val(&env);
@@ -3426,6 +3433,7 @@ fn test_multisig_admin_override_release_on_released_fails() {
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_milestone(&client_addr, &0u32);
 
+    client.multisig_lock(&admin_addr);
     let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 }
@@ -3511,6 +3519,7 @@ fn test_multisig_admin_override_release_not_funded_fails() {
         &amounts,
     );
 
+    client.multisig_lock(&admin_addr);
     let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::NotFunded)));
 }
@@ -11933,4 +11942,240 @@ fn test_cancel_escrow_all_milestones_released_still_succeeds() {
     // All milestones released — cancel is still valid.
     let result = escrow.try_cancel_escrow(&client_addr);
     assert!(result.is_ok());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Auth + precondition hardening (#351, #345, #336, #350)
+//
+// Each entrypoint must reject unauthorised callers and illegal source states
+// with specific typed errors, and must not mutate any ledger entry on those
+// rejected paths.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── #351 emergency_unpause ────────────────────────────────────────────────────
+
+#[test]
+fn test_emergency_unpause_unauthorized_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.emergency_pause(&admin_addr);
+    assert!(client.is_emergency_paused());
+
+    let attacker = Address::generate(&env);
+    let result = client.try_emergency_unpause(&attacker);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert!(
+        client.is_emergency_paused(),
+        "rejected unpause must leave EmergencyPaused set"
+    );
+}
+
+#[test]
+fn test_emergency_unpause_illegal_source_state_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    assert!(!client.is_emergency_paused());
+
+    let result = client.try_emergency_unpause(&admin_addr);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
+    assert!(
+        !client.is_emergency_paused(),
+        "NotPaused rejection must not flip the pause flag"
+    );
+}
+
+// ── #345 transfer_admin ───────────────────────────────────────────────────────
+
+#[test]
+fn test_transfer_admin_unauthorized_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_transfer_admin(&attacker, &new_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // Original admin retains control; the proposed new admin does not.
+    assert_eq!(
+        client.try_emergency_pause(&admin_addr),
+        Ok(Ok(())),
+        "original admin must still be authorised after rejected transfer"
+    );
+    assert_eq!(
+        client.try_emergency_unpause(&new_admin),
+        Err(Ok(Error::Unauthorized)),
+        "new_admin must not have been written"
+    );
+}
+
+#[test]
+fn test_transfer_admin_illegal_source_state_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let pending_new_admin = Address::generate(&env);
+    let direct_new_admin = Address::generate(&env);
+
+    // Illegal source state: a multisig admin-transfer proposal is already pending.
+    assert_eq!(
+        client.try_propose_admin_transfer(&admin_addr, &pending_new_admin, &1u32),
+        Ok(Ok(()))
+    );
+
+    let result = client.try_transfer_admin(&admin_addr, &direct_new_admin);
+    assert_eq!(result, Err(Ok(Error::AdminTransferPending)));
+
+    // Pending proposal and current admin must be unchanged.
+    let pending = client
+        .try_get_pending_admin_transfer()
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.new_admin, pending_new_admin);
+    assert_eq!(pending.proposal_id, 1u32);
+    assert_eq!(
+        client.try_emergency_pause(&admin_addr),
+        Ok(Ok(())),
+        "direct transfer must not rotate admin while a proposal is pending"
+    );
+}
+
+#[test]
+fn test_transfer_admin_uninitialized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let result = client.try_transfer_admin(&admin, &new_admin);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_transfer_admin_zero_address_rejected_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let zero_account = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+
+    let result = client.try_transfer_admin(&admin_addr, &zero_account);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+    assert_eq!(
+        client.try_emergency_pause(&admin_addr),
+        Ok(Ok(())),
+        "zero-address rejection must leave the admin key unchanged"
+    );
+}
+
+// ── #336 multisig_admin_override_release ──────────────────────────────────────
+
+#[test]
+fn test_multisig_admin_override_release_unauthorized_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, freelancer_addr, _, admin_addr, token_id, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin_addr);
+
+    let token = token::Client::new(&env, &token_id);
+    let freelancer_before = token.balance(&freelancer_addr);
+    let attacker = Address::generate(&env);
+
+    let result = client.try_multisig_admin_override_release(&attacker, &0u32);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert!(client.is_multisig_locked());
+    assert_eq!(
+        token.balance(&freelancer_addr),
+        freelancer_before,
+        "rejected override must not transfer funds"
+    );
+    assert_eq!(
+        client.get_job().milestones.get(0).unwrap().status,
+        MilestoneStatus::Pending
+    );
+}
+
+#[test]
+fn test_multisig_admin_override_release_illegal_source_state_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, freelancer_addr, _, admin_addr, token_id, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // Illegal source state: MultisigLocked is not active.
+    assert!(!client.is_multisig_locked());
+
+    let token = token::Client::new(&env, &token_id);
+    let freelancer_before = token.balance(&freelancer_addr);
+
+    let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
+    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    assert!(!client.is_multisig_locked());
+    assert_eq!(token.balance(&freelancer_addr), freelancer_before);
+    assert_eq!(
+        client.get_job().milestones.get(0).unwrap().status,
+        MilestoneStatus::Pending
+    );
+}
+
+// ── #350 admin_resume_escrow ──────────────────────────────────────────────────
+
+#[test]
+fn test_admin_resume_escrow_unauthorized_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.admin_pause_escrow(&admin_addr);
+    let (_, _, paused_before) = client.get_yield_info();
+    assert!(paused_before);
+
+    let attacker = Address::generate(&env);
+    let result = client.try_admin_resume_escrow(&attacker);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    let (_, _, paused_after) = client.get_yield_info();
+    assert!(
+        paused_after,
+        "rejected resume must leave the escrow paused"
+    );
+}
+
+#[test]
+fn test_admin_resume_escrow_illegal_source_state_no_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let (_, _, paused_before) = client.get_yield_info();
+    assert!(!paused_before);
+
+    // Illegal source state: escrow is not paused.
+    let result = client.try_admin_resume_escrow(&admin_addr);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
+
+    let (_, _, paused_after) = client.get_yield_info();
+    assert!(
+        !paused_after,
+        "NotPaused rejection must not mutate the pause flag"
+    );
 }
