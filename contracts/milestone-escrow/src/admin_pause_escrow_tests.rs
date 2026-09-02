@@ -12,7 +12,6 @@
 
 use super::*;
 use crate::{DataKey, Error, EscrowPausedEvent};
-use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::EnvTestConfig;
 use soroban_sdk::{symbol_short, Address, Env, FromVal, IntoVal, Val};
 
@@ -136,9 +135,7 @@ fn pause_rejects_when_emergency_lock_held() {
 
     // Manually set the emergency-pause lock to simulate a mid-flight transition.
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::EpLk, &true);
     });
 
     assert_eq!(

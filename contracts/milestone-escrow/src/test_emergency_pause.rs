@@ -101,7 +101,7 @@ fn test_unpause_requires_an_initialised_contract() {
 #[test]
 fn test_pause_rejects_a_non_admin_caller() {
     let env = test_env();
-    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, _admin, _client, _freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
     assert_eq!(
@@ -117,7 +117,7 @@ fn test_pause_rejects_a_non_admin_caller() {
 #[test]
 fn test_unpause_rejects_a_non_admin_caller() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
     escrow.emergency_pause(&client, &freelancer);
@@ -135,7 +135,7 @@ fn test_unpause_rejects_a_non_admin_caller() {
 #[test]
 fn test_pause_sets_the_flag() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
     assert!(!escrow.is_emergency_paused());
     escrow.emergency_pause(&client, &freelancer);
@@ -145,7 +145,7 @@ fn test_pause_sets_the_flag() {
 #[test]
 fn test_pause_twice_is_rejected_as_already_paused() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
     escrow.emergency_pause(&client, &freelancer);
 
@@ -160,7 +160,7 @@ fn test_pause_twice_is_rejected_as_already_paused() {
 #[test]
 fn test_unpause_without_a_pause_is_rejected_as_not_paused() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, admin, _client, _freelancer) = initialised_escrow(&env);
 
     assert_eq!(
         escrow.try_emergency_unpause(&admin),
@@ -213,7 +213,7 @@ fn test_pause_releases_its_transition_lock() {
 #[test]
 fn test_pause_blocks_guarded_endpoints() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
     escrow.emergency_pause(&client, &freelancer);
 
@@ -238,7 +238,7 @@ fn test_unpause_restores_guarded_endpoints() {
 #[test]
 fn test_pause_emits_a_state_change_event() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
 
     escrow.emergency_pause(&client, &freelancer);
 
@@ -262,7 +262,7 @@ fn test_pause_emits_a_state_change_event() {
 #[test]
 fn test_rejected_transitions_emit_no_event() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, admin, _client, _freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
     // Neither an unauthorised pause nor an unpause of a running contract may
@@ -296,7 +296,7 @@ fn test_rejected_transitions_emit_no_event() {
 #[test]
 fn test_claim_refund_requires_the_contract_to_be_paused() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, admin, _client, _freelancer) = initialised_escrow(&env);
 
     // Settling an emergency refund on a running escrow would bypass the
     // normal release and dispute paths.
@@ -322,7 +322,7 @@ fn test_claim_refund_requires_an_initialised_contract() {
 #[test]
 fn test_claim_refund_rejects_a_non_admin_caller() {
     let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let (escrow, _admin, client, freelancer) = initialised_escrow(&env);
     let attacker = Address::generate(&env);
 
     escrow.emergency_pause(&client, &freelancer);

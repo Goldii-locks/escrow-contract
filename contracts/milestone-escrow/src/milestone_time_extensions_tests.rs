@@ -1,9 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    symbol_short, testutils::Address as _, testutils::Events, testutils::MockAuth,
-    testutils::MockAuthInvoke, token, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal,
-    Val,
+    symbol_short, testutils::Events, testutils::MockAuth, testutils::MockAuthInvoke, token, vec,
+    Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val,
 };
 
 #[test]
@@ -13,9 +12,12 @@ fn positive_times_preserve_amount_across_boundaries() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    for (elapsed, total, expected_freelancer) in
-        [(0_i128, 10_i128, 0_i128), (1, 3, 34), (1, 2, 51), (10, 10, 101)]
-    {
+    for (elapsed, total, expected_freelancer) in [
+        (0_i128, 10_i128, 0_i128),
+        (1, 3, 34),
+        (1, 2, 51),
+        (10, 10, 101),
+    ] {
         let split = client.milestone_time_extensions(&101, &elapsed, &total);
         assert_eq!(split.first, expected_freelancer);
         assert_eq!(split.first + split.second, 101);

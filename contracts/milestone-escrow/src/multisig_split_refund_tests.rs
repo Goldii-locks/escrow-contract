@@ -62,8 +62,7 @@ fn split_refund_unauthorized_caller_returns_unauthorized() {
     client.multisig_lock(&admin_addr);
 
     let attacker = Address::generate(&env);
-    let result =
-        client.try_multisig_split_refund(&attacker, &i128::MAX, &5_000_u32, &5_000_u32);
+    let result = client.try_multisig_split_refund(&attacker, &i128::MAX, &5_000_u32, &5_000_u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
     assert_eq!(splitref_event_count(&env), 0);
 }
@@ -78,8 +77,7 @@ fn split_refund_unlocked_source_state_returns_invalid_status() {
     // Escrow is funded but NOT locked.
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    let result =
-        client.try_multisig_split_refund(&admin_addr, &i128::MAX, &5_000_u32, &5_000_u32);
+    let result = client.try_multisig_split_refund(&admin_addr, &i128::MAX, &5_000_u32, &5_000_u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     assert_eq!(splitref_event_count(&env), 0);
 }
@@ -96,8 +94,7 @@ fn split_refund_i128_min_returns_invalid_amount_without_panic() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let result =
-        client.try_multisig_split_refund(&admin_addr, &i128::MIN, &5_000_u32, &5_000_u32);
+    let result = client.try_multisig_split_refund(&admin_addr, &i128::MIN, &5_000_u32, &5_000_u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     assert_eq!(splitref_event_count(&env), 0);
 }
@@ -112,8 +109,7 @@ fn split_refund_negative_amount_returns_invalid_amount() {
     client.multisig_lock(&admin_addr);
 
     for amount in [-1_i128, -100_i128, i128::MIN + 1, i128::MIN] {
-        let result =
-            client.try_multisig_split_refund(&admin_addr, &amount, &5_000_u32, &5_000_u32);
+        let result = client.try_multisig_split_refund(&admin_addr, &amount, &5_000_u32, &5_000_u32);
         assert_eq!(result, Err(Ok(Error::InvalidAmount)), "amount = {amount}");
     }
     assert_eq!(splitref_event_count(&env), 0);
@@ -128,8 +124,7 @@ fn split_refund_zero_amount_returns_invalid_amount() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let result =
-        client.try_multisig_split_refund(&admin_addr, &0_i128, &5_000_u32, &5_000_u32);
+    let result = client.try_multisig_split_refund(&admin_addr, &0_i128, &5_000_u32, &5_000_u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     assert_eq!(splitref_event_count(&env), 0);
 }
@@ -189,12 +184,7 @@ fn split_refund_bps_u32_overflow_returns_invalid_ratio() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let result = client.try_multisig_split_refund(
-        &admin_addr,
-        &1_000_i128,
-        &u32::MAX,
-        &u32::MAX,
-    );
+    let result = client.try_multisig_split_refund(&admin_addr, &1_000_i128, &u32::MAX, &u32::MAX);
     assert_eq!(result, Err(Ok(Error::InvalidRatio)));
     assert_eq!(splitref_event_count(&env), 0);
 }
@@ -213,12 +203,7 @@ fn split_refund_i128_max_with_zero_client_bps_succeeds() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let allocation = client.multisig_split_refund(
-        &admin_addr,
-        &i128::MAX,
-        &0_u32,
-        &10_000_u32,
-    );
+    let allocation = client.multisig_split_refund(&admin_addr, &i128::MAX, &0_u32, &10_000_u32);
     assert_eq!(allocation.client_refund, 0);
     assert_eq!(allocation.freelancer_payout, i128::MAX);
     assert_eq!(
@@ -240,8 +225,7 @@ fn split_refund_i64_max_even_split_succeeds() {
     client.multisig_lock(&admin_addr);
 
     let amount = i64::MAX as i128;
-    let allocation =
-        client.multisig_split_refund(&admin_addr, &amount, &5_000_u32, &5_000_u32);
+    let allocation = client.multisig_split_refund(&admin_addr, &amount, &5_000_u32, &5_000_u32);
 
     assert_eq!(
         allocation.client_refund + allocation.freelancer_payout,
@@ -267,13 +251,15 @@ fn split_refund_regression_even_split_unchanged() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let allocation =
-        client.multisig_split_refund(&admin_addr, &1_000_i128, &5_000_u32, &5_000_u32);
+    let allocation = client.multisig_split_refund(&admin_addr, &1_000_i128, &5_000_u32, &5_000_u32);
     assert_eq!(allocation.client_refund, 500);
     assert_eq!(allocation.freelancer_payout, 500);
     assert_eq!(allocation.client_refund_bps, 5_000);
     assert_eq!(allocation.freelancer_payout_bps, 5_000);
-    assert_eq!(allocation.client_refund + allocation.freelancer_payout, 1_000);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        1_000
+    );
 }
 
 /// 70 / 30 split of 1_000 produces 700 / 300.
@@ -285,11 +271,13 @@ fn split_refund_regression_uneven_split_unchanged() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let allocation =
-        client.multisig_split_refund(&admin_addr, &1_000_i128, &7_000_u32, &3_000_u32);
+    let allocation = client.multisig_split_refund(&admin_addr, &1_000_i128, &7_000_u32, &3_000_u32);
     assert_eq!(allocation.client_refund, 700);
     assert_eq!(allocation.freelancer_payout, 300);
-    assert_eq!(allocation.client_refund + allocation.freelancer_payout, 1_000);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        1_000
+    );
 }
 
 /// Odd amount 101 with 50/50 split: halves sum to 101 (rounding preserves
@@ -302,8 +290,7 @@ fn split_refund_regression_odd_amount_rounding_unchanged() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let allocation =
-        client.multisig_split_refund(&admin_addr, &101_i128, &5_000_u32, &5_000_u32);
+    let allocation = client.multisig_split_refund(&admin_addr, &101_i128, &5_000_u32, &5_000_u32);
     assert_eq!(
         allocation.client_refund + allocation.freelancer_payout,
         101,
@@ -320,8 +307,7 @@ fn split_refund_regression_extreme_bps_preserves_total_unchanged() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 10_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let allocation =
-        client.multisig_split_refund(&admin_addr, &10_000_i128, &1_u32, &9_999_u32);
+    let allocation = client.multisig_split_refund(&admin_addr, &10_000_i128, &1_u32, &9_999_u32);
     assert_eq!(
         allocation.client_refund + allocation.freelancer_payout,
         10_000
@@ -342,8 +328,7 @@ fn split_refund_success_emits_exactly_one_splitref_event_with_matching_payload()
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
-    let allocation =
-        client.multisig_split_refund(&admin_addr, &1_000_i128, &6_000_u32, &4_000_u32);
+    let allocation = client.multisig_split_refund(&admin_addr, &1_000_i128, &6_000_u32, &4_000_u32);
 
     assert_eq!(splitref_event_count(&env), 1);
 
@@ -365,17 +350,13 @@ fn split_refund_failed_calls_emit_no_splitref_event() {
     client.multisig_lock(&admin_addr);
 
     // i128::MAX with non-zero client bps → overflow → InvalidAmount
-    let _ =
-        client.try_multisig_split_refund(&admin_addr, &i128::MAX, &5_000_u32, &5_000_u32);
+    let _ = client.try_multisig_split_refund(&admin_addr, &i128::MAX, &5_000_u32, &5_000_u32);
     // i128::MIN → InvalidAmount (negative guard)
-    let _ =
-        client.try_multisig_split_refund(&admin_addr, &i128::MIN, &5_000_u32, &5_000_u32);
+    let _ = client.try_multisig_split_refund(&admin_addr, &i128::MIN, &5_000_u32, &5_000_u32);
     // zero total → InvalidAmount
-    let _ =
-        client.try_multisig_split_refund(&admin_addr, &0_i128, &5_000_u32, &5_000_u32);
+    let _ = client.try_multisig_split_refund(&admin_addr, &0_i128, &5_000_u32, &5_000_u32);
     // mismatched ratio → InvalidRatio
-    let _ =
-        client.try_multisig_split_refund(&admin_addr, &1_000_i128, &5_000_u32, &3_000_u32);
+    let _ = client.try_multisig_split_refund(&admin_addr, &1_000_i128, &5_000_u32, &3_000_u32);
 
     assert_eq!(
         splitref_event_count(&env),

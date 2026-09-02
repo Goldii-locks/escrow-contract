@@ -5,10 +5,10 @@
 //! return their specific typed error, and neither path may mutate storage.
 
 use super::*;
+use crate::test::setup_funded_escrow;
 use crate::{Error, MilestoneStatus};
 use soroban_sdk::token;
 use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Val};
-use crate::test::setup_funded_escrow;
 
 fn refund_event_count(env: &Env) -> u32 {
     let topic_val: Val = symbol_short!("admovrf").into_val(env);

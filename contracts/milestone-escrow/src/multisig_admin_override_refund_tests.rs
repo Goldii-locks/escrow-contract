@@ -61,7 +61,7 @@ fn unauthorized_caller_returns_unauthorized_and_does_not_mutate_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+    let (client_addr, _, _, admin_addr, token_id, _contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     // Lock first so a skipped auth check would otherwise proceed to write.
     client.multisig_lock(&admin_addr);
@@ -85,7 +85,7 @@ fn illegal_unlocked_source_state_returns_invalid_status_and_does_not_mutate_stor
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+    let (client_addr, _, _, admin_addr, token_id, _contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     let before = snapshot_refund_ledger(&env, &client, &token_id, &client_addr);
@@ -178,7 +178,7 @@ fn refund_negative_amount_returns_invalid_amount_without_panic() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+    let (_client_addr, _, _, admin_addr, _token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
@@ -200,7 +200,7 @@ fn refund_negative_released_amount_returns_invalid_amount_without_panic() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+    let (_client_addr, _, _, admin_addr, _token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 
@@ -222,7 +222,7 @@ fn refund_released_exceeds_amount_returns_invalid_amount_without_panic() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, admin_addr, token_id, contract_id, client) =
+    let (_client_addr, _, _, admin_addr, _token_id, contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.multisig_lock(&admin_addr);
 

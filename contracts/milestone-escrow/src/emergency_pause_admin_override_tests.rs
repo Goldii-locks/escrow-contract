@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{DataKey, EmergencyPauseAdminOverrideEvent, Error};
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
@@ -41,11 +40,17 @@ fn override_false_to_true_sets_paused_flag() {
 
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    assert!(!client.is_emergency_paused(), "contract must start unpaused");
+    assert!(
+        !client.is_emergency_paused(),
+        "contract must start unpaused"
+    );
 
     client.emergency_pause_admin_override(&admin_addr, &true);
 
-    assert!(client.is_emergency_paused(), "flag must be set after override");
+    assert!(
+        client.is_emergency_paused(),
+        "flag must be set after override"
+    );
     assert!(
         !read_pause_lock(&env, &client),
         "EmergencyPauseLock must remain false — override must not touch it"
@@ -57,14 +62,21 @@ fn override_true_to_false_clears_paused_flag() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.emergency_pause(&client_addr, &freelancer_addr);
 
-    assert!(client.is_emergency_paused(), "contract must be paused before override");
+    assert!(
+        client.is_emergency_paused(),
+        "contract must be paused before override"
+    );
 
     client.emergency_pause_admin_override(&admin_addr, &false);
 
-    assert!(!client.is_emergency_paused(), "flag must be cleared after override");
+    assert!(
+        !client.is_emergency_paused(),
+        "flag must be cleared after override"
+    );
     assert!(
         !read_pause_lock(&env, &client),
         "EmergencyPauseLock must remain false — override must not touch it"
@@ -127,7 +139,10 @@ fn no_op_unpaused_to_false_returns_invalid_status() {
     assert!(!client.is_emergency_paused());
     let result = client.try_emergency_pause_admin_override(&admin_addr, &false);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
-    assert!(!client.is_emergency_paused(), "state must not change on no-op rejection");
+    assert!(
+        !client.is_emergency_paused(),
+        "state must not change on no-op rejection"
+    );
     assert!(
         !read_pause_lock(&env, &client),
         "no-op rejection must not write EmergencyPauseLock"
@@ -139,13 +154,17 @@ fn no_op_paused_to_true_returns_invalid_status() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.emergency_pause(&client_addr, &freelancer_addr);
 
     assert!(client.is_emergency_paused());
     let result = client.try_emergency_pause_admin_override(&admin_addr, &true);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
-    assert!(client.is_emergency_paused(), "state must not change on no-op rejection");
+    assert!(
+        client.is_emergency_paused(),
+        "state must not change on no-op rejection"
+    );
     assert!(
         !read_pause_lock(&env, &client),
         "no-op rejection must not write EmergencyPauseLock"
@@ -189,7 +208,8 @@ fn emergency_pause_does_not_block_subsequent_override() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.emergency_pause(&client_addr, &freelancer_addr);
     assert!(client.is_emergency_paused());
@@ -222,18 +242,19 @@ fn interleaved_sequence_produces_correct_final_state() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    client.emergency_pause_admin_override(&admin_addr, &true);   // override → paused
+    client.emergency_pause_admin_override(&admin_addr, &true); // override → paused
     assert!(client.is_emergency_paused());
 
-    client.emergency_unpause(&admin_addr);                        // standard unpause
+    client.emergency_unpause(&admin_addr); // standard unpause
     assert!(!client.is_emergency_paused());
 
-    client.emergency_pause(&client_addr, &freelancer_addr);                          // standard pause
+    client.emergency_pause(&client_addr, &freelancer_addr); // standard pause
     assert!(client.is_emergency_paused());
 
-    client.emergency_pause_admin_override(&admin_addr, &false);  // override → unpaused
+    client.emergency_pause_admin_override(&admin_addr, &false); // override → unpaused
     assert!(!client.is_emergency_paused());
 
     // Lock must be clean throughout.
@@ -254,7 +275,7 @@ fn success_emits_exactly_one_emoverrid_event_with_correct_payload() {
     let ev = last_override_event(&env);
     assert_eq!(ev.admin, admin_addr);
     assert_eq!(ev.contract_id, client.address);
-    assert_eq!(ev.paused, true);
+    assert!(ev.paused);
 
     // Override back to unpaused: the second call emits its own event.
     //
@@ -266,7 +287,7 @@ fn success_emits_exactly_one_emoverrid_event_with_correct_payload() {
     assert_eq!(event_count_for(&env, &topic), 1);
     let ev2 = last_override_event(&env);
     assert_eq!(ev2.admin, admin_addr);
-    assert_eq!(ev2.paused, false);
+    assert!(!ev2.paused);
 }
 
 #[test]
@@ -274,7 +295,8 @@ fn failed_calls_emit_no_emoverrid_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     let topic: Val = symbol_short!("emoverrid").into_val(&env);
 
     // Unauthorized caller.

@@ -2,27 +2,28 @@
 use super::*;
 #[path = "cancel_escrow_test.rs"]
 mod cancel_escrow_test;
-#[path = "emergency_pause_test.rs"]
-mod emergency_pause_test;
 #[path = "emergency_pause_admin_override_tests.rs"]
 mod emergency_pause_admin_override_tests;
-use crate::Error::NotFunded;
+#[path = "emergency_pause_test.rs"]
+mod emergency_pause_test;
 use soroban_sdk::{
     contract, contractimpl, contracttype, testutils::Address as _, testutils::EnvTestConfig,
     testutils::Events, testutils::Ledger, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal,
     Val,
 };
 
+#[path = "admin_override_refund_tests.rs"]
+mod admin_override_refund_tests;
 #[path = "admin_pause_escrow_tests.rs"]
 mod admin_pause_escrow_tests;
 #[path = "admin_tax_withholding_guards_tests.rs"]
 mod admin_tax_withholding_guards_tests;
-#[path = "execute_admin_transfer_tests.rs"]
-mod execute_admin_transfer_tests;
 #[path = "arbitration_split_event_tests.rs"]
 mod arbitration_split_event_tests;
-#[path = "admin_override_refund_tests.rs"]
-mod admin_override_refund_tests;
+#[path = "execute_admin_transfer_tests.rs"]
+mod execute_admin_transfer_tests;
+#[path = "milestone_time_extensions_tests.rs"]
+mod milestone_time_extensions_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_split_refund_tests.rs"]
@@ -31,8 +32,6 @@ mod multisig_split_refund_tests;
 mod multisig_transfer_admin_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
-#[path = "milestone_time_extensions_tests.rs"]
-mod milestone_time_extensions_tests;
 
 #[contracttype]
 enum ReentrantTokenDataKey {
@@ -460,8 +459,8 @@ fn test_apply_dispute_arbitration_split_full_refund_status() {
         _freelancer_addr,
         arbiter_addr,
         _admin_addr,
-        token_contract_id,
-        contract_id,
+        _token_contract_id,
+        _contract_id,
         client,
     ) = setup_funded_escrow(&env, amounts.clone());
 
@@ -489,11 +488,11 @@ fn test_apply_dispute_arbitration_split_odd_amounts() {
     let amounts = vec![&env, 1_i128];
     let (
         client_addr,
-        freelancer_addr,
+        _freelancer_addr,
         arbiter_addr,
         _admin_addr,
-        token_contract_id,
-        contract_id,
+        _token_contract_id,
+        _contract_id,
         client,
     ) = setup_funded_escrow(&env, amounts.clone());
 
@@ -513,7 +512,7 @@ fn test_apply_dispute_arbitration_split_rejects_i128_extremes() {
 
     let amounts = vec![&env, 1_i128];
     let (
-        client_addr,
+        _client_addr,
         _freelancer_addr,
         arbiter_addr,
         _admin_addr,
@@ -556,8 +555,8 @@ fn test_apply_dispute_arbitration_split_unauthorized_fails() {
         _freelancer_addr,
         _arbiter_addr,
         _admin_addr,
-        token_contract_id,
-        contract_id,
+        _token_contract_id,
+        _contract_id,
         client,
     ) = setup_funded_escrow(&env, amounts.clone());
 
@@ -579,8 +578,8 @@ fn test_resolve_dispute_double_execution_fails() {
         freelancer_addr,
         arbiter_addr,
         _admin_addr,
-        token_contract_id,
-        contract_id,
+        _token_contract_id,
+        _contract_id,
         client,
     ) = setup_funded_escrow(&env, amounts.clone());
 
@@ -2841,17 +2840,22 @@ fn test_admin_override_release_with_yield() {
     env.mock_all_auths();
 
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-    
+
     // Simulate setting yield accrued
     env.as_contract(&client.address, || {
-        env.storage().persistent().set(&DataKey::YieldAccrued, &123_i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldAccrued, &123_i128);
     });
 
     client.admin_override_release(&admin_addr, &0u32);
 
     // Verify yield was reset
     let accrued: i128 = env.as_contract(&client.address, || {
-        env.storage().persistent().get(&DataKey::YieldAccrued).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get(&DataKey::YieldAccrued)
+            .unwrap_or(0)
     });
     assert_eq!(accrued, 0);
 }
@@ -3029,7 +3033,6 @@ fn test_admin_override_release_max_minus_min_overflow_returns_invalid_amount() {
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // FOOTPRINT TESTS: admin_override_refund
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3130,8 +3133,7 @@ fn test_admin_override_refund_on_refunded_milestone_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     // First call settles the milestone.
     client.admin_override_refund(&admin_addr, &0u32);
@@ -3147,8 +3149,7 @@ fn test_admin_override_refund_on_released_milestone_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (_, _, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     // Release first.
     client.admin_override_release(&admin_addr, &0u32);
@@ -6223,7 +6224,8 @@ fn test_upgrade_while_paused_fails_with_typed_error() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.emergency_pause(&client_addr, &freelancer_addr);
     assert!(client.is_emergency_paused());
@@ -6537,7 +6539,7 @@ fn test_raise_dispute_bad_actor_returns_unauthorized() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, _, _, _, client) =
+    let (_client_addr, freelancer_addr, _, _, _, _, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.mark_delivered(&freelancer_addr, &0u32);
@@ -6553,7 +6555,7 @@ fn test_raise_dispute_by_freelancer_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, _, _, _, client) =
+    let (_client_addr, freelancer_addr, _, _, _, _, client) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.mark_delivered(&freelancer_addr, &0u32);
@@ -7248,9 +7250,7 @@ fn test_pf_alloc_admin_override_preserves_lock_guards() {
         env.storage()
             .instance()
             .set(&DataKey::PlatformFeeAllocationLock, &false);
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::EpLk, &true);
     });
     let blocked = client.try_pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
     assert_eq!(blocked, Err(Ok(Error::EmergencyPauseInProgress)));
@@ -7312,7 +7312,7 @@ fn test_platform_fee_allocation_treasury_exceeds_max_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
-    
+
     let amounts = vec![&env, 1_000_i128];
     client.initialize(
         &admin_addr,
@@ -7323,7 +7323,7 @@ fn test_platform_fee_allocation_treasury_exceeds_max_fails() {
         &604800,
         &amounts,
     );
-    
+
     // Treasury at 2001 bps (> 2000)
     let result = client.try_set_platform_fee_allocation(&admin_addr, &0_u32, &7999_u32, &2001_u32);
     assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
@@ -7345,7 +7345,7 @@ fn test_platform_fee_allocation_client_exceeds_max_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
-    
+
     let amounts = vec![&env, 1_000_i128];
     client.initialize(
         &admin_addr,
@@ -7356,7 +7356,7 @@ fn test_platform_fee_allocation_client_exceeds_max_fails() {
         &604800,
         &amounts,
     );
-    
+
     // Client at 5001 bps (> 5000)
     let result = client.try_set_platform_fee_allocation(&admin_addr, &5001_u32, &4999_u32, &0_u32);
     assert_eq!(result, Err(Ok(Error::FeeTooHigh)));
@@ -7477,8 +7477,8 @@ fn test_multisig_split_refund_emits_event() {
     env.mock_all_auths();
 
     let client_addr = Address::generate(&env);
-    let freelancer_addr = Address::generate(&env);
-    let arbiter_addr = Address::generate(&env);
+    let _freelancer_addr = Address::generate(&env);
+    let _arbiter_addr = Address::generate(&env);
     let admin_addr = Address::generate(&env);
 
     let token_contract_id = env
@@ -7524,12 +7524,8 @@ fn test_split_refund_net_distribution() {
     // Split Refund: 1000 total.
     // Client refund: 50% (5000 bps) -> 500 gross refund
     // Freelancer payout: 50% (5000 bps) -> 500 gross payout
-    let distribution = client.split_refund_net_distribution(
-        &1000_i128,
-        &5000_u32,
-        &5000_u32,
-        &fee_allocation,
-    );
+    let distribution =
+        client.split_refund_net_distribution(&1000_i128, &5000_u32, &5000_u32, &fee_allocation);
 
     // Client net refund is fee-exempt: 500
     assert_eq!(distribution.client_net_refund, 500);
@@ -10374,7 +10370,7 @@ fn test_escrow_interest_yield_set_valid_config_and_get() {
     let config = client.get_escrow_interest_yield();
     assert_eq!(config.client_share_bps, 5_000);
     assert_eq!(config.freelancer_share_bps, 5_000);
-    assert_eq!(config.locked, false);
+    assert!(!config.locked);
 }
 
 #[test]
@@ -10423,16 +10419,16 @@ fn test_escrow_interest_yield_lock_unlock_workflow() {
     );
 
     client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
-    assert_eq!(client.is_escrow_interest_yield_locked(), false);
+    assert!(!client.is_escrow_interest_yield_locked());
 
     client.lock_escrow_interest_yield(&admin);
-    assert_eq!(client.is_escrow_interest_yield_locked(), true);
+    assert!(client.is_escrow_interest_yield_locked());
 
     let res = client.try_set_escrow_interest_yield(&admin, &6_000u32, &4_000u32);
     assert_eq!(res, Err(Ok(Error::EscrowLocked)));
 
     client.unlock_escrow_interest_yield(&admin);
-    assert_eq!(client.is_escrow_interest_yield_locked(), false);
+    assert!(!client.is_escrow_interest_yield_locked());
 
     client.set_escrow_interest_yield(&admin, &6_000u32, &4_000u32);
     let updated = client.get_escrow_interest_yield();
@@ -10672,8 +10668,7 @@ fn test_cancel_escrow_succeeds_with_positive_balance() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, freelancer_addr, _, _, _, _, client) =
-        setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
 
     // First signature records approval and must not lock the escrow.
     client.cancel_escrow(&client_addr);
@@ -10962,8 +10957,7 @@ fn test_cancel_escrow_freelancer_can_cancel() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 4_000_i128];
-    let (client_addr, freelancer_addr, _, _, _, _, client) =
-        setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&freelancer_addr);
     let approval_topic_val: Val = symbol_short!("cxlappr").into_val(&env);
@@ -11116,6 +11110,8 @@ fn test_platform_fee_allocation_preserves_value_with_largest_remainders() {
     let negative = client.try_calculate_platform_fee_split(&-1_i128);
     assert_eq!(negative, Err(Ok(Error::InvalidAmount)));
 }
+
+#[test]
 fn test_tax_withholding_deductions_zero_balance_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -11598,10 +11594,7 @@ fn test_calculate_platform_fee_split_emits_structured_event() {
             }
         }
     }
-    assert_eq!(
-        pf_split_events, 1,
-        "expected exactly one pf_split event"
-    );
+    assert_eq!(pf_split_events, 1, "expected exactly one pf_split event");
 }
 
 #[test]
@@ -11632,7 +11625,8 @@ fn test_set_platform_fee_allocation_fails_does_not_emit_event() {
     );
 
     // Invalid BPS that don't sum to 10000
-    let result = client.try_set_platform_fee_allocation(&admin_addr, &3000_u32, &3000_u32, &3000_u32);
+    let result =
+        client.try_set_platform_fee_allocation(&admin_addr, &3000_u32, &3000_u32, &3000_u32);
     assert_eq!(result, Err(Ok(Error::InvalidRatio)));
 
     let pf_set_topic: Symbol = symbol_short!("pf_set");
@@ -11681,7 +11675,10 @@ fn test_platform_fee_split_rounds_to_zero() {
     let distribution = client.calculate_platform_fee_split(&1_i128);
     // With total_amount=1, floor(1*4000/10000)=0, floor(1*4000/10000)=0, floor(1*2000/10000)=0
     // largest remainder gives the remainder to client (first)
-    assert_eq!(distribution.client_amount + distribution.freelancer_amount + distribution.treasury_amount, 1);
+    assert_eq!(
+        distribution.client_amount + distribution.freelancer_amount + distribution.treasury_amount,
+        1
+    );
 
     let pf_split_topic: Symbol = symbol_short!("pf_split");
     let pf_split_topic_val: Val = pf_split_topic.into_val(&env);
@@ -11836,7 +11833,8 @@ fn test_cancel_escrow_while_paused_fails() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 5_000_i128];
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, escrow) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _admin_addr, _, _, escrow) =
+        setup_funded_escrow(&env, amounts);
 
     escrow.emergency_pause(&client_addr, &freelancer_addr);
 
@@ -12062,8 +12060,7 @@ fn test_cancel_escrow_does_not_mutate_milestones() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 3_000_i128, 7_000_i128];
-    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
-        setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) = setup_funded_escrow(&env, amounts);
 
     // Deliver milestone 0 so it is in Delivered state before cancel.
     escrow.mark_delivered(&freelancer_addr, &0u32);
@@ -12125,7 +12122,8 @@ fn test_emergency_unpause_unauthorized_no_mutation() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, _admin_addr, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.emergency_pause(&client_addr, &freelancer_addr);
     assert!(client.is_emergency_paused());
 
@@ -12319,10 +12317,7 @@ fn test_admin_resume_escrow_unauthorized_no_mutation() {
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 
     let (_, _, paused_after) = client.get_yield_info();
-    assert!(
-        paused_after,
-        "rejected resume must leave the escrow paused"
-    );
+    assert!(paused_after, "rejected resume must leave the escrow paused");
 }
 
 #[test]
@@ -12380,7 +12375,10 @@ fn test_interest_yield_split_refund_uneven_split() {
     let allocation = client.interest_yield_split_refund(&1_000_i128, &7_000_u32, &3_000_u32);
     assert_eq!(allocation.client_refund, 700);
     assert_eq!(allocation.freelancer_payout, 300);
-    assert_eq!(allocation.client_refund + allocation.freelancer_payout, 1_000);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        1_000
+    );
 }
 
 #[test]
@@ -12590,7 +12588,10 @@ fn test_cancel_escrow_split_refund_large_prime_total_preserved() {
 
     let total = 1_000_003_i128;
     let allocation = client.cancel_escrow_split_refund(&total, &3_333_u32, &6_667_u32);
-    assert_eq!(allocation.client_refund + allocation.freelancer_payout, total);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        total
+    );
     assert_eq!(allocation.client_refund, 333_301);
     assert_eq!(allocation.freelancer_payout, 666_702);
 }
@@ -12816,7 +12817,10 @@ fn test_propose_admin_transfer_invalid_address_rejected() {
 
     let (admin, client) = setup_admin_transfer_escrow(&env);
 
-    let zero = Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+    let zero = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
     let result = client.try_propose_admin_transfer(&admin, &zero, &1u32);
     assert_eq!(result, Err(Ok(Error::InvalidAddress)));
     assert_eq!(client.try_get_pending_admin_transfer(), Ok(Ok(None)));

@@ -1,4 +1,12 @@
 #![no_std]
+// Reentrancy guards throughout this contract use the `let result = (|| { … })();`
+// idiom: set the lock, run the body, release the lock, then return the body's
+// result. clippy::redundant_closure_call suggests flattening these to a plain
+// block, which is NOT equivalent -- inside a block, `?` and `return` exit the
+// enclosing function and skip the lock release below, leaving the escrow
+// permanently locked. The closure boundary is what makes the release
+// unconditional, so the lint is disabled here deliberately.
+#![allow(clippy::redundant_closure_call)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
     Vec,
@@ -1267,7 +1275,7 @@ impl MilestoneEscrow {
     /// Reject a pause-gated settlement while the contract token balance is
     /// zero, so an emergency refund never attempts an empty transfer.
     fn assert_nonzero_balance(env: &Env, meta: &JobMeta) -> Result<(), Error> {
-        let token_client = token::Client::new(&env, &meta.token);
+        let token_client = token::Client::new(env, &meta.token);
         let contract_balance = token_client.balance(&env.current_contract_address());
         if contract_balance <= 0 {
             return Err(Error::EmptyBalance);
@@ -1809,9 +1817,7 @@ impl MilestoneEscrow {
         let total_amount = Self::checked_initialize_total(&milestone_amounts)?;
 
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::Ep, &false);
+        env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().instance().set(
             &DataKey::PlatformFeeAllocation,
             &PlatformFeeAllocation {
@@ -2316,10 +2322,9 @@ impl MilestoneEscrow {
         let new_extension = current_extension
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
-        env.storage().temporary().set(
-            &DataKey::TimeExt(milestone_index),
-            &new_extension,
-        );
+        env.storage()
+            .temporary()
+            .set(&DataKey::TimeExt(milestone_index), &new_extension);
 
         env.events().publish(
             (symbol_short!("extend"),),
@@ -2819,7 +2824,7 @@ impl MilestoneEscrow {
         // Write a short-lived dispute flag to temporary storage so that callers
         // can verify dispute status without loading the full persistent
         // Milestone entry, reducing ledger footprint on the read path.
-        Self::store_dispute_flag(&env, milestone_index);
+        Self::store_dispute_flag(env, milestone_index);
 
         env.events().publish(
             (symbol_short!("dispute"),),
@@ -3237,7 +3242,6 @@ impl MilestoneEscrow {
         Ok(resolved)
     }
 
-
     /// Initiate cancellation of the escrow, freezing it pending an admin
     /// override.
     ///
@@ -3344,7 +3348,9 @@ impl MilestoneEscrow {
             return Ok(());
         }
 
-        env.storage().instance().set(&DataKey::CancelApproval, &new_mask);
+        env.storage()
+            .instance()
+            .set(&DataKey::CancelApproval, &new_mask);
         env.events().publish(
             (symbol_short!("cxlappr"),),
             CancelApprovalRecordedEvent {
@@ -3402,7 +3408,9 @@ impl MilestoneEscrow {
         if new_mask == 0 {
             env.storage().instance().remove(&DataKey::CancelApproval);
         } else {
-            env.storage().instance().set(&DataKey::CancelApproval, &new_mask);
+            env.storage()
+                .instance()
+                .set(&DataKey::CancelApproval, &new_mask);
         }
 
         env.events().publish(
@@ -3705,20 +3713,14 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyPaused);
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::EpLk, &true);
 
         let result = (|| {
-            env.storage()
-                .instance()
-                .set(&DataKey::Ep, &true);
+            env.storage().instance().set(&DataKey::Ep, &true);
             Ok(())
         })();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &false);
+        env.storage().instance().set(&DataKey::EpLk, &false);
 
         if result.is_ok() {
             env.events().publish(
@@ -3770,20 +3772,14 @@ impl MilestoneEscrow {
 
         Self::assert_emergency_pause_not_locked(&env)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::EpLk, &true);
 
         let result = (|| {
-            env.storage()
-                .instance()
-                .set(&DataKey::Ep, &false);
+            env.storage().instance().set(&DataKey::Ep, &false);
             Ok(())
         })();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &false);
+        env.storage().instance().set(&DataKey::EpLk, &false);
 
         if result.is_ok() {
             env.events().publish(
@@ -3797,7 +3793,6 @@ impl MilestoneEscrow {
 
         result
     }
-
 
     pub fn emergency_pause_admin_override(
         env: Env,
@@ -3819,9 +3814,7 @@ impl MilestoneEscrow {
         }
 
         // Single write — no external call, no EmergencyPauseLock needed.
-        env.storage()
-            .instance()
-            .set(&DataKey::Ep, &paused);
+        env.storage().instance().set(&DataKey::Ep, &paused);
 
         env.events().publish(
             (symbol_short!("emoverrid"),),
@@ -3837,10 +3830,7 @@ impl MilestoneEscrow {
     }
 
     pub fn is_emergency_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Ep)
-            .unwrap_or(false)
+        env.storage().instance().get(&DataKey::Ep).unwrap_or(false)
     }
 
     pub fn set_platform_fee_allocation(
@@ -5049,15 +5039,25 @@ impl MilestoneEscrow {
 }
 
 #[cfg(test)]
+mod admin_accrue_yield_tests;
+#[cfg(test)]
+mod admin_override_cancel_tests;
+#[cfg(test)]
+mod admin_override_streaming_release_tests;
+#[cfg(test)]
+mod admin_set_yield_rate_tests;
+#[cfg(test)]
+mod cancel_admin_transfer_tests;
+#[cfg(test)]
+mod interest_yield_consent_tests;
+#[cfg(test)]
+mod reputation_tests;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_emergency_pause;
 #[cfg(test)]
 mod test_payment_streaming_milestones;
-#[cfg(test)]
-mod admin_override_cancel_tests;
-#[cfg(test)]
-mod admin_set_yield_rate_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
@@ -5119,11 +5119,7 @@ impl MilestoneEscrow {
         // Letting a yield-rate change through during an emergency pause would
         // make the weaker of the two freezes the stricter one.
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Ep)
-            .unwrap_or(false);
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
         if emergency_paused {
             return Err(Error::Paused);
         }
@@ -5663,9 +5659,7 @@ impl MilestoneEscrow {
 
         Self::assert_emergency_pause_not_locked(&env)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::EpLk, &true);
 
         let result = (|| {
             env.storage().instance().set(&DataKey::Paused, &false);
@@ -5681,9 +5675,7 @@ impl MilestoneEscrow {
             Ok(())
         })();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::EpLk, &false);
+        env.storage().instance().set(&DataKey::EpLk, &false);
 
         result
     }

@@ -11,7 +11,6 @@
 
 use super::*;
 use crate::{DataKey, Error, TaxWithholdingDeductionsEvent};
-use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::EnvTestConfig;
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
 
@@ -30,11 +29,13 @@ fn bare_contract(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
 
 fn execution_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
-        env.storage().instance().has(&DataKey::TaxWithholdingExecutionLock)
+        env.storage()
+            .instance()
+            .has(&DataKey::TaxWithholdingExecutionLock)
     })
 }
 
-fn first_milestone_status(env: &Env, client: &MilestoneEscrowClient<'_>) -> MilestoneStatus {
+fn first_milestone_status(_env: &Env, client: &MilestoneEscrowClient<'_>) -> MilestoneStatus {
     client.get_job().milestones.get(0).unwrap().status
 }
 
@@ -94,7 +95,10 @@ fn admin_tax_rejects_non_admin_caller() {
     // Rejection happened before any ledger write: no execution lock was
     // created and the milestone is untouched.
     assert!(!execution_lock_held(&env, &contract_id));
-    assert_eq!(first_milestone_status(&env, &client), MilestoneStatus::Pending);
+    assert_eq!(
+        first_milestone_status(&env, &client),
+        MilestoneStatus::Pending
+    );
     assert_eq!(taxwh_event_count(&env), 0);
 }
 
@@ -129,7 +133,10 @@ fn admin_tax_rejects_out_of_range_milestone() {
         Err(Ok(Error::InvalidMilestone))
     );
     assert!(!execution_lock_held(&env, &contract_id));
-    assert_eq!(first_milestone_status(&env, &client), MilestoneStatus::Pending);
+    assert_eq!(
+        first_milestone_status(&env, &client),
+        MilestoneStatus::Pending
+    );
     assert_eq!(taxwh_event_count(&env), 0);
 }
 
@@ -168,7 +175,10 @@ fn admin_tax_rejects_empty_contract_balance() {
         Err(Ok(Error::InvalidAmount))
     );
     assert!(!execution_lock_held(&env, &contract_id));
-    assert_eq!(first_milestone_status(&env, &client), MilestoneStatus::Pending);
+    assert_eq!(
+        first_milestone_status(&env, &client),
+        MilestoneStatus::Pending
+    );
     assert_eq!(taxwh_event_count(&env), 0);
 }
 
