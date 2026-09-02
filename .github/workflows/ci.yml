@@ -28,6 +28,9 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Check for orphaned test snapshots
+        run: python3 scripts/check-orphan-snapshots.py
+
       - name: Format check
         run: cargo fmt --manifest-path contracts/milestone-escrow/Cargo.toml --check
 
