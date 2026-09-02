@@ -11,7 +11,6 @@
 
 use super::*;
 use crate::{AdminTransferExecutedEvent, DataKey, Error};
-use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::EnvTestConfig;
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
 
@@ -51,11 +50,18 @@ fn last_adminexc_event(env: &Env) -> AdminTransferExecutedEvent {
 /// returning `(admin, s1, s2, new_admin, contract_id, client)`.
 fn setup_multisig_transfer(
     env: &Env,
-) -> (Address, Address, Address, Address, Address, MilestoneEscrowClient<'_>) {
+) -> (
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    MilestoneEscrowClient<'_>,
+) {
     env.mock_all_auths();
 
     let milestone_amounts = vec![env, 1_000_i128];
-    let (client_addr, _, _, admin_addr, _, contract_id, client) =
+    let (_client_addr, _, _, admin_addr, _, contract_id, client) =
         setup_funded_escrow(env, milestone_amounts);
 
     let s1 = Address::generate(env);
@@ -92,14 +98,13 @@ fn execute_transfer_rejects_when_no_pending_transfer() {
     let env = test_env();
     env.mock_all_auths();
 
-    let (_, _, _, _, _, client) = setup_multisig_transfer(&env);
+    let (_, _, _, _, _, _client) = setup_multisig_transfer(&env);
 
     // Cancel the pending transfer so there is nothing to execute.
-    let admin = Address::generate(&env);
+    let _admin = Address::generate(&env);
     // Re-set up a funded escrow with the same admin.
     let amounts = vec![&env, 1_000_i128];
-    let (client_addr, _, _, admin_addr, _, _, funded_client) =
-        setup_funded_escrow(&env, amounts);
+    let (_client_addr, _, _, admin_addr, _, _, funded_client) = setup_funded_escrow(&env, amounts);
 
     let s1 = Address::generate(&env);
     let signers = vec![&env, s1.clone()];
@@ -146,8 +151,7 @@ fn execute_transfer_swaps_admin_and_emits_event() {
     let env = test_env();
     env.mock_all_auths();
 
-    let (old_admin, s1, s2, new_admin, contract_id, client) =
-        setup_multisig_transfer(&env);
+    let (old_admin, s1, s2, new_admin, contract_id, client) = setup_multisig_transfer(&env);
 
     // Approve from both signers to reach the threshold.
     client.multisig_approve(&s1, &1u32);
@@ -190,7 +194,7 @@ fn new_admin_can_propose_after_transfer_old_admin_cannot() {
 
     // Old admin is no longer authorized.
     let another = Address::generate(&env);
-    let signers2 = vec![&env, another.clone()];
+    let _signers2 = vec![&env, another.clone()];
     // Old admin cannot initialize multisig (requires being admin — which fails).
     // New admin can propose a second transfer.
     let result = client.try_propose_admin_transfer(&new_admin, &another, &2u32);

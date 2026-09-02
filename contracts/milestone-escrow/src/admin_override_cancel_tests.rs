@@ -18,9 +18,8 @@
 
 #![cfg(test)]
 
-use super::*;
 use crate::test::setup_funded_escrow;
-use crate::{DataKey, Error, MilestoneEscrowClient, MilestoneStatus};
+use crate::{DataKey, Error, MilestoneStatus};
 use soroban_sdk::{testutils::Address as _, token, vec, Address, Env};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -135,7 +134,8 @@ fn test_cancel_release_unauthorized_caller_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, freelancer_addr, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let (client_addr, freelancer_addr, _, _, _, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     client.cancel_escrow(&client_addr);
     client.cancel_escrow(&freelancer_addr);
 
@@ -340,7 +340,8 @@ fn test_cancel_refund_multiple_milestones_sum_correctly() {
     env.mock_all_auths();
 
     let amounts = vec![&env, 100_i128, 200_i128, 300_i128, 400_i128];
-    let (client_addr, freelancer_addr, _, admin_addr, token_id, _, client) = setup_funded_escrow(&env, amounts);
+    let (client_addr, freelancer_addr, _, admin_addr, token_id, _, client) =
+        setup_funded_escrow(&env, amounts);
 
     client.cancel_escrow(&client_addr);
     client.cancel_escrow(&freelancer_addr);

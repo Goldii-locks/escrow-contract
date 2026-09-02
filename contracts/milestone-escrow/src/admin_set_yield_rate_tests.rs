@@ -15,8 +15,6 @@
 //! 7. Rate == 10000 (max / 100 %)    → `Ok(())`; `YieldRateBps` written as 10000.
 //! 8. Repeated calls update the rate correctly.
 
-#[cfg(test)]
-use super::*;
 use crate::test::setup_funded_escrow;
 use crate::{DataKey, Error, MilestoneEscrow, MilestoneEscrowClient, YieldConfig};
 use soroban_sdk::{testutils::Address as _, vec, Address, Env};
@@ -28,12 +26,30 @@ use soroban_sdk::{testutils::Address as _, vec, Address, Env};
 ///
 /// Return tuple: (client_addr, freelancer_addr, arbiter_addr, admin_addr,
 ///                token_id, contract_id, escrow_client)
-fn setup(env: &Env) -> (Address, Address, Address, Address, Address, Address, MilestoneEscrowClient<'_>) {
+fn setup(
+    env: &Env,
+) -> (
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    MilestoneEscrowClient<'_>,
+) {
     env.mock_all_auths();
     let amounts = vec![env, 1_000_i128];
     let (client_addr, freelancer_addr, arbiter_addr, admin_addr, token_id, contract_id, escrow) =
         setup_funded_escrow(env, amounts);
-    (client_addr, freelancer_addr, arbiter_addr, admin_addr, token_id, contract_id, escrow)
+    (
+        client_addr,
+        freelancer_addr,
+        arbiter_addr,
+        admin_addr,
+        token_id,
+        contract_id,
+        escrow,
+    )
 }
 
 /// Read the persisted yield rate from inside the contract.
@@ -132,7 +148,7 @@ fn after_unpause_admin_can_set_yield_rate() {
 #[test]
 fn paused_contract_unauthorized_caller_returns_paused_not_unauthorized() {
     let env = Env::default();
-    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, escrow) = setup(&env);
+    let (client_addr, freelancer_addr, _, _admin_addr, _, contract_id, escrow) = setup(&env);
 
     escrow.emergency_pause(&client_addr, &freelancer_addr);
 

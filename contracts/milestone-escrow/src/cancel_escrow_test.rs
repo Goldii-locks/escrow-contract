@@ -3,7 +3,7 @@ use super::*;
 use crate::{CancelApprovalRevokedEvent, CancelEscrowInitiatedEvent, DataKey, Error};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Events as _;
-use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
+use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, Symbol, TryIntoVal};
 
 #[test]
 fn test_cancel_escrow_sets_lock_and_emits_event() {
@@ -221,7 +221,10 @@ fn test_revoke_cancel_approval_client_before_second_sig() {
             .get::<_, bool>(&DataKey::CancelLock)
             .unwrap_or(false)
     });
-    assert!(!is_locked, "revoked approval must not count toward the lock");
+    assert!(
+        !is_locked,
+        "revoked approval must not count toward the lock"
+    );
 }
 
 #[test]
@@ -268,8 +271,7 @@ fn test_revoke_cancel_approval_without_prior_approval_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client_addr, _, _, _, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1000_i128]);
+    let (client_addr, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1000_i128]);
 
     let res = client.try_revoke_cancel_approval(&client_addr);
     assert_eq!(res, Err(Ok(Error::InvalidStatus)));
