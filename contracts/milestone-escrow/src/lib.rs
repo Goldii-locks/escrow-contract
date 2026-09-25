@@ -7318,9 +7318,20 @@ impl MilestoneEscrow {
     /// * `NotInitialized` – Contract has not been initialised.
     /// * `Unauthorized`   – `admin` is not the stored admin.
     pub fn multisig_lock(env: Env, admin: Address) -> Result<(), Error> {
+        // Authorization check at top - require auth and admin role first
+        Self::require_admin_from_instance(&env, &admin)?;
+        // Precondition guards before any ledger write: validate illegal source state
+        // If already locked, return InvalidStatus with no storage mutation
+        if env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::MultisigLocked)
+            .unwrap_or(false)
+        {
+            return Err(Error::InvalidStatus);
+        }
+        Self::assert_emergency_pause_not_locked(&env)?;
         // Both the Admin read and the MultisigLocked write are in instance
         // storage, so the whole function touches a single ledger entry.
-        Self::require_admin_from_instance(&env, &admin)?;
         env.storage()
             .instance()
             .set(&DataKey::MultisigLocked, &true);
