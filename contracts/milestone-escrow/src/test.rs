@@ -41,6 +41,8 @@ mod platform_fee_allocation_no_mutation_tests;
 mod propose_admin_transfer_footprint_tests;
 #[path = "split_refund_net_distribution_tests.rs"]
 mod split_refund_net_distribution_tests;
+#[path = "read_path_tests.rs"]
+mod read_path_tests;
 #[path = "tax_withholding_tests.rs"]
 mod tax_withholding_tests;
 
