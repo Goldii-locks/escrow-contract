@@ -4217,28 +4217,40 @@ impl MilestoneEscrow {
         elapsed_seconds: i128,
         total_seconds: i128,
     ) -> Result<RatioSplit, Error> {
+        // Authorization: the caller must have signed this transaction. The
+        // SDK aborts the call before any ledger access if the signature is
+        // missing, so an unsigned attempt is rejected outright.
+        env.current_contract_address().require_auth();
+
+        // Precondition: the escrow must be initialized so the split is anchored
+        // to a real job rather than a fresh or uninitialized instance. This is
+        // the same guard used by every other mutating endpoint.
+        Self::require_initialized(&env)?;
+
+        // Authorization and precondition checks run BEFORE any ledger entry is
+        // read or written. Both the client and the freelancer must have signed
+        // the transaction, so a single-signature attempt can never reach the
+        // split arithmetic and no state is mutated.
+        let _meta = Self::require_client_and_freelancer_consent(&env)?;
+
+        // Reject illegal source states BEFORE the execution lock is acquired, so
+        // an invalid amount or time range can never observe or mutate on-chain
+        // state. These are validation-only errors and require no ledger write.
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if total_seconds <= 0 {
+            return Err(Error::InvalidRatio);
+        }
+        if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
+            return Err(Error::InvalidRatio);
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::TimeExtExecutionLock, &true);
 
         let result = (|| {
-            // Guard: a zero or negative balance means there is nothing left in
-            // this milestone to distribute.  Operations on an empty balance would
-            // produce a split of (0, 0) which is a no-op and signals a
-            // misconfigured or already-drained escrow.
-            if amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-
-            // Reject nonsensical time inputs before the generic ratio guard so
-            // callers get a precise error code for time-specific misuse.
-            if total_seconds <= 0 {
-                return Err(Error::InvalidRatio);
-            }
-            if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
-                return Err(Error::InvalidRatio);
-            }
-
             // Delegate to the single shared high-precision split primitive.
             // split_round_nearest(total, numerator, denominator) computes:
             //   first  = round_nearest(total × numerator / denominator)
@@ -4271,9 +4283,10 @@ impl MilestoneEscrow {
     /// both the client and the freelancer must independently sign the
     /// transaction.
     ///
-    /// `milestone_time_extensions` is an unauthenticated calculator.  This
-    /// endpoint is the consent-gated counterpart so a time-based settlement
-    /// cannot be computed and recorded without both parties authorising it.
+    /// The split is only computed after the caller has been authenticated and
+    /// the escrow has been initialised; a transaction carrying only one of the
+    /// two signatures never reaches the split arithmetic, so a single-signature
+    /// attempt reverts the whole invocation and no state is mutated.
     ///
     /// A transaction carrying only one of the two signatures never reaches the
     /// split arithmetic: the missing `require_auth()` panics at the host level,
