@@ -5296,7 +5296,7 @@ impl MilestoneEscrow {
     /// * `Unauthorized`   – Caller is not the stored admin.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10_000 bps.
     /// * `EscrowLocked`   – Configuration is locked for execution.
-    pub fn set_escrow_interest_yield(
+pub fn set_escrow_interest_yield(
         env: Env,
         admin: Address,
         client_share_bps: u32,
@@ -5314,6 +5314,17 @@ impl MilestoneEscrow {
         Self::store_interest_yield_state(
             &env,
             &EscrowInterestYieldState {
+                client_share_bps,
+                freelancer_share_bps,
+                locked: false,
+            },
+        );
+        // Publish structured event carrying acting address and resulting values
+        // Reconciles exactly with persisted state; emitted only on success path
+        env.events().publish(
+            (symbol_short!("yldset"),),
+            EscrowInterestYieldSetEvent {
+                admin: admin.clone(),
                 client_share_bps,
                 freelancer_share_bps,
                 locked: false,
