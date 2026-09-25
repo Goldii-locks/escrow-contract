@@ -5592,6 +5592,8 @@ mod test;
 mod test_emergency_pause;
 #[cfg(test)]
 mod test_payment_streaming_milestones;
+#[cfg(test)]
+mod unlock_escrow_interest_yield_event_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
