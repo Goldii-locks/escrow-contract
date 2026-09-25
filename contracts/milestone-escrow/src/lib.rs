@@ -873,6 +873,17 @@ pub struct EscrowInterestYieldEvent {
     pub yield_amount: i128,
 }
 
+/// Emitted by set_escrow_interest_yield when the admin updates the yield-share configuration.
+/// Every field reconciles with the state persisted under DataKey::InterestYieldState.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct EscrowInterestYieldSetEvent {
+    pub admin: Address,
+    pub client_share_bps: u32,
+    pub freelancer_share_bps: u32,
+    pub locked: bool,
+}
+
 /// Emitted by `admin_override_streaming_release` when the admin proportionally
 /// settles a `Disputed` milestone using the streaming/time-extension split.
 #[contracttype]
