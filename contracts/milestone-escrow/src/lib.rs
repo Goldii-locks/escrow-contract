@@ -4128,6 +4128,13 @@ impl MilestoneEscrow {
         Self::require_admin_from_instance(&env, &admin)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        // Precondition: validate illegal source state (locked allocation) before any ledger write
+        // Ensures InvalidStatus is returned with no storage mutation when allocation is locked
+        if let Ok(current) = Self::load_platform_fee_allocation(&env) {
+            if current.locked {
+                return Err(Error::InvalidStatus);
+            }
+        }
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
 
         env.storage()
