@@ -9,7 +9,7 @@
 #![allow(clippy::redundant_closure_call)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
-    ContractExecutable, Env, Vec,
+    ContractExecutable, Env, Symbol, Vec,
 };
 
 /// Maximum number of ratio slots that may be passed to `multisig_transfer_admin`.
@@ -103,6 +103,13 @@ pub enum Error {
     /// A platform-fee allocation exceeded its per-party cap: treasury above
     /// `MAX_TREASURY_FEE_BPS` or client above `MAX_CLIENT_FEE_BPS`.
     FeeTooHigh = 35,
+    /// A checked `i128` operation in a settlement path overflowed or
+    /// underflowed.  Returned instead of panicking or wrapping so the caller
+    /// receives a typed failure and no state is committed.
+    ArithmeticOverflow = 36,
+    /// A settlement asked to distribute more than the contract currently
+    /// holds in the escrowed token.
+    InsufficientBalance = 37,
 }
 
 const MAX_TREASURY_FEE_BPS: u32 = 2000;
@@ -713,6 +720,27 @@ pub struct EmergencyPausedEvent {
 pub struct EmergencyUnpausedEvent {
     pub admin: Address,
     pub contract_id: Address,
+}
+
+/// Emitted by `emergency_pause_claim_refund` on its success path only.
+///
+/// Published under the topics
+/// `(Symbol("emergency_pause_claim_refund"), admin)` so indexers can track
+/// emergency refund settlements without replaying storage transitions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyPauseClaimRefundEvent {
+    /// Party receiving the refund leg (the job's client).
+    pub claimant: Address,
+    /// Amount allocated to the claimant.
+    pub refund_amount: i128,
+    /// Amount allocated to the freelancer; `refund_amount + freelancer_payout`
+    /// always equals the settled total.
+    pub freelancer_payout: i128,
+    /// Contract token balance left once the settled total is paid out.
+    pub remaining_balance: i128,
+    /// Ledger timestamp at which the claim was settled.
+    pub timestamp: u64,
 }
 
 /// Emitted by `emergency_pause_admin_override` when the admin overrides the
@@ -1332,17 +1360,6 @@ impl MilestoneEscrow {
             .unwrap_or(false);
         if locked {
             return Err(Error::EmergencyPauseInProgress);
-        }
-        Ok(())
-    }
-
-    /// Reject a pause-gated settlement while the contract token balance is
-    /// zero, so an emergency refund never attempts an empty transfer.
-    fn assert_nonzero_balance(env: &Env, meta: &JobMeta) -> Result<(), Error> {
-        let token_client = token::Client::new(env, &meta.token);
-        let contract_balance = token_client.balance(&env.current_contract_address());
-        if contract_balance <= 0 {
-            return Err(Error::EmptyBalance);
         }
         Ok(())
     }
@@ -7113,8 +7130,9 @@ impl MilestoneEscrow {
     /// before an emergency refund is settled, rejecting each bad setup with a
     /// distinct error variant before any arithmetic runs.
     ///
-    /// # Business rules
-    /// 1. Contract initialised and caller is the stored admin
+    /// # Business rules (checked in this order, each before any later read)
+    /// 1. `admin.require_auth()` runs first, before any ledger read.  The
+    ///    contract must be initialised and the caller must be the stored admin
     ///    (`NotInitialized` / `Unauthorized`).
     /// 2. No pause transition mid-execution (`EmergencyPauseInProgress`) — a
     ///    refund must not be computed against a half-applied freeze.
@@ -7123,6 +7141,23 @@ impl MilestoneEscrow {
     ///    dispute paths.
     /// 4. `total_amount` > 0 (`InvalidAmount`) and the two shares sum to
     ///    exactly `BPS_SCALE` (`InvalidRatio`).
+    /// 5. The split is computed with checked `i128` arithmetic only
+    ///    (`ArithmeticOverflow`).
+    /// 6. The contract holds a non-zero balance (`EmptyBalance`) that covers
+    ///    `total_amount` (`InsufficientBalance`).
+    ///
+    /// # Storage footprint
+    /// The endpoint is read-only.  Every key it reads — `Admin`, `EpLk`, `Ep`
+    /// and `Job` — lives in **instance** storage, so the whole call touches a
+    /// single contract ledger entry (plus the token balance read).  The admin
+    /// check uses `require_admin_from_instance` rather than `require_admin`,
+    /// which drops the separate persistent `Admin` entry from the footprint.
+    /// The token balance is fetched once and reused for both the balance
+    /// guards and the event's `remaining_balance`.
+    ///
+    /// # Events
+    /// On success only, publishes an [`EmergencyPauseClaimRefundEvent`] under
+    /// the topics `(Symbol("emergency_pause_claim_refund"), admin)`.
     ///
     /// # Returns
     /// A `RefundAllocation` whose two amounts sum to `total_amount` exactly.
@@ -7132,10 +7167,13 @@ impl MilestoneEscrow {
     /// * `Unauthorized`             – `admin` is not the stored admin.
     /// * `EmergencyPauseInProgress` – A pause transition is already running.
     /// * `NotPaused`                – The contract is not frozen.
+    /// * `InvalidAmount`            – `total_amount` ≤ 0.
+    /// * `InvalidRatio`             – Shares do not sum to 10 000 bps.
+    /// * `ArithmeticOverflow`       – The split overflowed `i128`.
     /// * `EmptyBalance`             – The contract token balance is zero, so
     ///   there is nothing to settle.
-    /// * `InvalidAmount`            – `total_amount` ≤ 0, or overflow.
-    /// * `InvalidRatio`             – Shares do not sum to 10 000 bps.
+    /// * `InsufficientBalance`      – `total_amount` exceeds the contract
+    ///   token balance.
     pub fn emergency_pause_claim_refund(
         env: Env,
         admin: Address,
@@ -7143,22 +7181,69 @@ impl MilestoneEscrow {
         client_refund_bps: u32,
         freelancer_payout_bps: u32,
     ) -> Result<RefundAllocation, Error> {
-        Self::require_admin(&env, &admin)?;
+        // ── preconditions (#532): auth and contract state before anything else
+        Self::require_admin_from_instance(&env, &admin)?;
         Self::assert_emergency_pause_not_locked(&env)?;
-
-        if !Self::is_emergency_paused(env.clone()) {
+        let paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if !paused {
             return Err(Error::NotPaused);
         }
 
-        let meta = Self::load_job_meta(&env)?;
-        Self::assert_nonzero_balance(&env, &meta)?;
+        // ── input validation (pure, no ledger access)
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let total_bps = client_refund_bps
+            .checked_add(freelancer_payout_bps)
+            .ok_or(Error::InvalidRatio)?;
+        if total_bps != BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
 
-        Self::emergency_pause_split_refund(
-            env,
-            total_amount,
+        // ── checked split (#533): client share rounds to nearest, freelancer
+        // receives the exact remainder so the legs always sum to the total.
+        let scale = BPS_SCALE as i128;
+        let client_refund = total_amount
+            .checked_mul(client_refund_bps as i128)
+            .and_then(|scaled| scaled.checked_add(scale / 2))
+            .and_then(|scaled| scaled.checked_div(scale))
+            .ok_or(Error::ArithmeticOverflow)?;
+        let freelancer_payout = total_amount
+            .checked_sub(client_refund)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        // ── balance guards: one token read, reused for the event (#535)
+        let meta = Self::load_job_meta(&env)?;
+        let token_client = token::Client::new(&env, &meta.token);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance <= 0 {
+            return Err(Error::EmptyBalance);
+        }
+        let remaining_balance = contract_balance
+            .checked_sub(total_amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if remaining_balance < 0 {
+            return Err(Error::InsufficientBalance);
+        }
+
+        // ── success-only event (#534)
+        env.events().publish(
+            (Symbol::new(&env, "emergency_pause_claim_refund"), admin),
+            EmergencyPauseClaimRefundEvent {
+                claimant: meta.client,
+                refund_amount: client_refund,
+                freelancer_payout,
+                remaining_balance,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(RefundAllocation {
+            client_refund,
+            freelancer_payout,
             client_refund_bps,
             freelancer_payout_bps,
-        )
+        })
     }
 
     /// Divide a frozen escrow balance across an arbitrary number of parties

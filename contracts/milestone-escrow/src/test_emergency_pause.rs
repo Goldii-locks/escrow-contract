@@ -12,8 +12,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _, testutils::EnvTestConfig, token, vec, Address, Env, FromVal, IntoVal,
-    Val,
+    testutils::Address as _, testutils::EnvTestConfig, testutils::Ledger as _, token, vec, Address,
+    Env, FromVal, IntoVal, Symbol, TryFromVal, Val,
 };
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -822,4 +822,330 @@ fn test_allocation_agrees_with_the_two_party_split_refund() {
 
     assert_eq!(precise.get(0).unwrap(), allocation.client_refund);
     assert_eq!(precise.get(1).unwrap(), allocation.freelancer_payout);
+}
+
+// ============================================================================
+// emergency_pause_claim_refund — hardening (#532 auth, #533 checked math,
+// #534 event, #535 storage footprint)
+// ============================================================================
+
+fn claim_refund_topic(env: &Env) -> Symbol {
+    Symbol::new(env, "emergency_pause_claim_refund")
+}
+
+/// Every `emergency_pause_claim_refund` event from the last invocation, as
+/// `(topic admin, payload)`.
+fn claim_refund_events(env: &Env) -> std::vec::Vec<(Address, EmergencyPauseClaimRefundEvent)> {
+    let topic = claim_refund_topic(env);
+    let mut out = std::vec::Vec::new();
+    for (_contract, topics, data) in crate::all_event_tuples(env).iter() {
+        let is_claim = topics
+            .get(0)
+            .and_then(|t| Symbol::try_from_val(env, &t).ok())
+            .is_some_and(|symbol| symbol == topic);
+        if !is_claim {
+            continue;
+        }
+        let admin = Address::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+        let event = EmergencyPauseClaimRefundEvent::from_val(env, data);
+        out.push((admin, event));
+    }
+    out
+}
+
+/// The ledger keys `emergency_pause_claim_refund` reads, captured so a call
+/// can be shown to have mutated none of them.
+fn claim_state(
+    env: &Env,
+    escrow: &MilestoneEscrowClient<'_>,
+) -> (Option<Address>, Option<Address>, Option<bool>, Option<bool>) {
+    env.as_contract(&escrow.address, || {
+        (
+            env.storage().instance().get(&DataKey::Admin),
+            env.storage().persistent().get(&DataKey::Admin),
+            env.storage().instance().get(&DataKey::Ep),
+            env.storage().instance().get(&DataKey::EpLk),
+        )
+    })
+}
+
+/// Assert that a rejected claim returned `expected`, published no claim
+/// event and left every key it reads untouched.
+fn assert_claim_rejected(
+    env: &Env,
+    escrow: &MilestoneEscrowClient<'_>,
+    caller: &Address,
+    total: i128,
+    client_bps: u32,
+    freelancer_bps: u32,
+    expected: Error,
+) {
+    let before = claim_state(env, escrow);
+    assert_eq!(
+        escrow.try_emergency_pause_claim_refund(caller, &total, &client_bps, &freelancer_bps),
+        Err(Ok(expected))
+    );
+    assert!(
+        claim_refund_events(env).is_empty(),
+        "a rejected claim ({expected:?}) published a claim event"
+    );
+    assert_eq!(
+        claim_state(env, escrow),
+        before,
+        "a rejected claim ({expected:?}) mutated storage"
+    );
+}
+
+// ── #532: caller authorisation and preconditions ────────────────────────────
+
+#[test]
+fn test_claim_refund_requires_the_admin_signature() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+    let before = claim_state(&env, &escrow);
+
+    // Drop every mocked auth: the stored admin is passed but never signs.
+    env.set_auths(&[]);
+    let result =
+        escrow.try_emergency_pause_claim_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32);
+
+    assert!(
+        matches!(result, Err(Err(_))),
+        "an unsigned claim must abort at the host auth check"
+    );
+    assert!(claim_refund_events(&env).is_empty());
+    assert_eq!(claim_state(&env, &escrow), before);
+}
+
+#[test]
+fn test_claim_refund_records_the_admin_auth() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+
+    escrow.emergency_pause_claim_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32);
+
+    assert!(
+        env.auths().iter().any(|(addr, _)| *addr == admin),
+        "the claim must require the admin's authorisation"
+    );
+}
+
+#[test]
+fn test_claim_refund_checks_authorisation_before_state() {
+    let env = test_env();
+    let (escrow, _admin, _client, _freelancer) = initialised_escrow(&env);
+    let attacker = Address::generate(&env);
+
+    // Contract is *not* paused: a stranger must see `Unauthorized`, never
+    // learn the pause state through `NotPaused`.
+    assert_claim_rejected(
+        &env,
+        &escrow,
+        &attacker,
+        1_000,
+        5_000,
+        5_000,
+        Error::Unauthorized,
+    );
+}
+
+#[test]
+fn test_claim_refund_rejections_leave_state_untouched() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    let attacker = Address::generate(&env);
+
+    assert_claim_rejected(&env, &escrow, &admin, 500, 5_000, 5_000, Error::NotPaused);
+
+    escrow.emergency_pause(&client, &freelancer);
+
+    let cases = [
+        (&attacker, 1_000, 5_000, 5_000, Error::Unauthorized),
+        (&admin, 0, 5_000, 5_000, Error::InvalidAmount),
+        (&admin, -1, 5_000, 5_000, Error::InvalidAmount),
+        (&admin, 1_000, 5_000, 4_000, Error::InvalidRatio),
+        (&admin, 1_000, u32::MAX, 1, Error::InvalidRatio),
+        (&admin, i128::MAX, 5_000, 5_000, Error::ArithmeticOverflow),
+        (&admin, 100_001, 5_000, 5_000, Error::InsufficientBalance),
+    ];
+    for (caller, total, client_bps, freelancer_bps, expected) in cases {
+        assert_claim_rejected(
+            &env,
+            &escrow,
+            caller,
+            total,
+            client_bps,
+            freelancer_bps,
+            expected,
+        );
+    }
+}
+
+#[test]
+fn test_claim_refund_is_rejected_while_the_pause_lock_is_held() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+
+    env.as_contract(&escrow.address, || {
+        env.storage().instance().set(&DataKey::EpLk, &true);
+    });
+
+    assert_claim_rejected(
+        &env,
+        &escrow,
+        &admin,
+        1_000,
+        5_000,
+        5_000,
+        Error::EmergencyPauseInProgress,
+    );
+}
+
+// ── #533: checked arithmetic ────────────────────────────────────────────────
+
+#[test]
+fn test_claim_refund_overflow_returns_a_typed_error() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+
+    // `i128::MAX × bps` overflows for any non-zero client share.
+    for (client_bps, freelancer_bps) in [(1_u32, 9_999_u32), (5_000, 5_000), (10_000, 0)] {
+        assert_claim_rejected(
+            &env,
+            &escrow,
+            &admin,
+            i128::MAX,
+            client_bps,
+            freelancer_bps,
+            Error::ArithmeticOverflow,
+        );
+    }
+}
+
+#[test]
+fn test_claim_refund_max_total_without_overflow_hits_the_balance_guard() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+
+    // A zero client share never multiplies into overflow, so `i128::MAX`
+    // reaches the balance guard and is refused there instead of wrapping.
+    assert_claim_rejected(
+        &env,
+        &escrow,
+        &admin,
+        i128::MAX,
+        0,
+        10_000,
+        Error::InsufficientBalance,
+    );
+}
+
+#[test]
+fn test_claim_refund_accepts_the_full_contract_balance() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+
+    let allocation =
+        escrow.emergency_pause_claim_refund(&admin, &100_000_i128, &3_333_u32, &6_667_u32);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        100_000
+    );
+
+    let events = claim_refund_events(&env);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].1.remaining_balance, 0);
+}
+
+// ── #534: structured event ──────────────────────────────────────────────────
+
+#[test]
+fn test_claim_refund_publishes_exactly_one_structured_event() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+    env.ledger().set_timestamp(1_700_000_000);
+
+    let allocation =
+        escrow.emergency_pause_claim_refund(&admin, &1_000_i128, &6_000_u32, &4_000_u32);
+
+    let events = claim_refund_events(&env);
+    assert_eq!(events.len(), 1, "expected exactly one claim event");
+
+    let (topic_admin, data) = &events[0];
+    assert_eq!(*topic_admin, admin);
+    assert_eq!(
+        *data,
+        EmergencyPauseClaimRefundEvent {
+            claimant: client,
+            refund_amount: allocation.client_refund,
+            freelancer_payout: allocation.freelancer_payout,
+            remaining_balance: 99_000,
+            timestamp: 1_700_000_000,
+        }
+    );
+    assert_eq!(data.refund_amount, 600);
+    assert_eq!(data.freelancer_payout, 400);
+
+    // The claim publishes only its own event, not the calculator's.
+    let escrow_events = crate::all_event_tuples(&env)
+        .iter()
+        .filter(|(contract, _, _)| *contract == escrow.address)
+        .count();
+    assert_eq!(escrow_events, 1);
+}
+
+#[test]
+fn test_claim_refund_publishes_no_event_on_an_uninitialised_contract() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+    let stranger = Address::generate(&env);
+
+    assert_eq!(
+        escrow.try_emergency_pause_claim_refund(&stranger, &1_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert!(claim_refund_events(&env).is_empty());
+}
+
+// ── #535: storage footprint ─────────────────────────────────────────────────
+
+#[test]
+fn test_claim_refund_does_not_read_the_persistent_admin_entry() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+
+    // Remove the persistent Admin copy.  The instance copy stays, so if the
+    // claim still succeeds it cannot have touched the persistent entry — its
+    // footprint is the contract instance plus the token balance only.
+    env.as_contract(&escrow.address, || {
+        env.storage().persistent().remove(&DataKey::Admin);
+    });
+
+    let allocation =
+        escrow.emergency_pause_claim_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(allocation.client_refund, 500);
+    assert_eq!(allocation.freelancer_payout, 500);
+}
+
+#[test]
+fn test_claim_refund_success_writes_no_storage() {
+    let env = test_env();
+    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
+    escrow.emergency_pause(&client, &freelancer);
+    let before = claim_state(&env, &escrow);
+
+    escrow.emergency_pause_claim_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32);
+    escrow.emergency_pause_claim_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32);
+
+    // Settling is read-only: repeated claims leave every key it reads as-is.
+    assert_eq!(claim_state(&env, &escrow), before);
 }
