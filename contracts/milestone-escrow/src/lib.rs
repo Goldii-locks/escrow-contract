@@ -3601,6 +3601,25 @@ impl MilestoneEscrow {
 
     /// Revoke a previously recorded cancellation approval before the final
     /// second-party lock is set.
+    ///
+    /// # Storage footprint
+    /// The approval record is a compact `u32` bitmask under the instance key
+    /// `DataKey::CancelApproval`.  A stored mask only ever holds a single
+    /// party's bit (both bits together fire the lock and clear the record in
+    /// `cancel_escrow`), so revoking always leaves the mask empty and the key
+    /// is **removed** rather than rewritten as a zero mask.  After a
+    /// successful revoke the instance storage is byte-identical to its state
+    /// before the approval was first recorded.
+    ///
+    /// # Errors
+    /// * `InvalidAddress` – `caller` is a zero address.
+    /// * `NotInitialized` – Contract has not been initialized.  Checked before
+    ///                      `require_auth`, so an uninitialized contract is
+    ///                      rejected with a typed error, never a panic, and
+    ///                      without touching storage.
+    /// * `Unauthorized`   – `caller` is neither the client nor the freelancer.
+    /// * `EscrowLocked`   – Both parties already approved; lock is active.
+    /// * `InvalidStatus`  – `caller` has no recorded approval to revoke.
     pub fn revoke_cancel_approval(env: Env, caller: Address) -> Result<(), Error> {
         let zero_account = Address::from_str(
             &env,
@@ -3614,8 +3633,10 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
 
-        caller.require_auth();
+        // Initialization guard runs before `require_auth` so an uninitialized
+        // contract returns `NotInitialized` instead of failing on auth.
         let meta = Self::load_job_meta(&env)?;
+        caller.require_auth();
 
         if caller != meta.client && caller != meta.freelancer {
             return Err(Error::Unauthorized);
@@ -5181,7 +5202,36 @@ impl MilestoneEscrow {
             .get(&DataKey::PendingAdminTransfer))
     }
 
+    /// Return the contract's code version.
+    ///
+    /// # Returns
+    /// The `u32` stored under the instance key `DataKey::Version`:
+    /// * `1` after `initialize` (which writes the marker `1u32`).
+    /// * Incremented by exactly one on every successful `upgrade`.
+    /// * `1` when the key is absent (the contract has not been initialized),
+    ///   i.e. the version of the code that shipped before any upgrade.
+    ///
+    /// # Guarantees
+    /// * **Read-only.**  Performs a single instance-storage `get` and nothing
+    ///   else: no `set`, `remove`, `extend_ttl`, or event publish in instance,
+    ///   persistent, or temporary storage.  The whole ledger is byte-identical
+    ///   before and after the call (enforced by `version_tests`).
+    /// * Requires no authorization and is safe to call on an uninitialized
+    ///   contract.
+    ///
+    /// # Errors
+    /// None.  `version` is infallible: it returns a bare `u32`, and the only
+    /// absent-state case (uninitialized contract) maps to the default `1`
+    /// rather than an error.
     pub fn version(env: Env) -> u32 {
+        Self::read_version(&env)
+    }
+
+    /// Read path behind `version`.  Takes `&Env` and returns a plain value so
+    /// callers cannot thread a mutation through it.
+    ///
+    /// **This function must contain only read operations.**
+    fn read_version(env: &Env) -> u32 {
         env.storage().instance().get(&DataKey::Version).unwrap_or(1)
     }
 
