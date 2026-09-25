@@ -501,3 +501,208 @@ fn time_until_auto_release_valid_inputs_match_plain_arithmetic() {
     });
     assert_eq!(escrow.try_time_until_auto_release(&0), Ok(Ok(-100_i64)));
 }
+
+// ── #553: typed error when uninitialized ─────────────────────────────────
+
+#[test]
+fn time_extensions_consent_on_uninitialized_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    // No initialize call — Job metadata is absent.
+    assert_eq!(
+        client.try_time_extensions_consent(&1_000, &1, &2),
+        Err(Ok(Error::NotInitialized))
+    );
+
+    // No storage entry must have been mutated; the execution lock must not be set.
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held, "uninitialized call must not set execution lock");
+    let has_job: bool =
+        env.as_contract(&contract_id, || env.storage().instance().has(&DataKey::Job));
+    assert!(!has_job, "uninitialized call must not create Job");
+}
+
+// ── #550: harden auth & precondition guards ────────────────────────────────
+
+#[test]
+fn time_extensions_consent_illegal_source_state_no_mutation_when_locked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+
+    // Simulate an in-progress execution by manually setting the lock.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::TimeExtExecutionLock, &true);
+    });
+
+    // Must be rejected with the specific illegal-source-state error before any
+    // further ledger access, and must not mutate storage (lock stays set, no
+    // event, no partial write).
+    assert_eq!(
+        escrow.try_time_extensions_consent(&1_000, &1, &2),
+        Err(Ok(Error::TimeExtInProgress))
+    );
+
+    let still_locked: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(still_locked, "lock must remain set after rejected call");
+
+    // No event for the rejected call.
+    let topic: Val = symbol_short!("m_extcns").into_val(&env);
+    let count_before = crate::all_event_tuples(&env)
+        .iter()
+        .filter(|e| {
+            e.1.get(0)
+                .map(|t| t.get_payload() == topic.get_payload())
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(count_before, 0, "rejected call must not emit m_extcns");
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&DataKey::TimeExtExecutionLock);
+    });
+}
+
+#[test]
+fn time_extensions_consent_unauthorized_no_mutation_single_signature() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (client_addr, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+
+    let invoke = time_ext_consent_invoke!(&env, &contract_id);
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &client_addr,
+            invoke: &invoke,
+        }])
+        .try_time_extensions_consent(&1_000, &1, &2);
+
+    // Missing freelancer signature panics at host level (Err(Err(_))), not a
+    // contract Error, and must not mutate storage.
+    assert!(
+        matches!(result, Err(Err(_))),
+        "single signature must revert at host level"
+    );
+
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held, "unauthorized call must not set execution lock");
+}
+
+#[test]
+fn time_extensions_consent_illegal_source_state_no_mutation_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, admin_addr, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+    escrow.admin_pause_escrow(&admin_addr);
+
+    assert_eq!(
+        escrow.try_time_extensions_consent(&1_000, &1, &2),
+        Err(Ok(Error::Paused))
+    );
+
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held, "paused call must not set execution lock");
+    // Unpause for cleanup.
+    escrow.admin_resume_escrow(&admin_addr);
+}
+
+// ── #551: checked arithmetic ───────────────────────────────────────────────
+
+#[test]
+fn time_extensions_consent_overflow_i128_max_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+
+    // amount * elapsed_seconds overflows i128 inside split_round_nearest.
+    assert_eq!(
+        escrow.try_time_extensions_consent(&i128::MAX, &i128::MAX, &i128::MAX),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    // No partial write must survive the failure.
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held, "overflow must not leave lock set");
+}
+
+#[test]
+fn time_extensions_consent_overflow_i128_min_returns_invalid_ratio() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+
+    // elapsed_seconds = i128::MIN is <0, so InvalidRatio before arithmetic.
+    assert_eq!(
+        escrow.try_time_extensions_consent(&1_000, &i128::MIN, &2),
+        Err(Ok(Error::InvalidRatio))
+    );
+
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held);
+}
+
+#[test]
+fn time_extensions_consent_overflow_no_partial_write_and_lock_cleared() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+
+    let before_events = crate::all_event_tuples(&env).len();
+    let result = escrow.try_time_extensions_consent(&i128::MAX, &1, &2);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(
+        crate::all_event_tuples(&env).len(),
+        before_events,
+        "overflow must not emit event"
+    );
+    let lock_held: bool = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(!lock_held);
+}

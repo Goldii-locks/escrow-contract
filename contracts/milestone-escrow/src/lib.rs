@@ -4459,8 +4459,32 @@ impl MilestoneEscrow {
         numerator: i128,
         denominator: i128,
     ) -> Result<RatioSplit, Error> {
-        // Collect both signatures first: an unauthorised caller must not be
-        // able to probe the validation rules below.
+        // Validate pure inputs before any storage access so invalid
+        // parameters never touch the ledger (footprint reduction for
+        // failure cases).
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if denominator <= 0 {
+            return Err(Error::InvalidRatio);
+        }
+        if numerator < 0 || numerator > denominator {
+            return Err(Error::InvalidRatio);
+        }
+
+        // Reject illegal source state before any further ledger access
+        // (including the execution lock) so a mistaken call never
+        // mutates storage. This also keeps the success-path footprint
+        // to a single instance ledger entry (Job + lock).
+        Self::assert_payment_streaming_not_locked(&env)?;
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Collect both signatures; returns NotInitialized before any
+        // lock write if Job metadata is missing.
         let meta = Self::require_client_and_freelancer_consent(&env)?;
 
         env.storage()
@@ -4468,16 +4492,6 @@ impl MilestoneEscrow {
             .set(&DataKey::PaymentStreamingExecutionLock, &true);
 
         let result = (|| {
-            if total_amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-            if denominator <= 0 {
-                return Err(Error::InvalidRatio);
-            }
-            if numerator < 0 || numerator > denominator {
-                return Err(Error::InvalidRatio);
-            }
-
             let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
 
             env.events().publish(
@@ -4621,6 +4635,32 @@ impl MilestoneEscrow {
         elapsed_seconds: i128,
         total_seconds: i128,
     ) -> Result<RatioSplit, Error> {
+        // Validate pure inputs before any storage access so invalid
+        // parameters never touch the ledger (footprint reduction for
+        // failure cases and to ensure overflow is caught via checked
+        // ops rather than panicking).
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if total_seconds <= 0 {
+            return Err(Error::InvalidRatio);
+        }
+        if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
+            return Err(Error::InvalidRatio);
+        }
+
+        // Reject illegal source state before any further ledger access
+        // (including the execution lock) so a mistaken call never
+        // mutates storage.
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Collect both signatures; returns NotInitialized before any
+        // lock write if Job metadata is missing.
         let meta = Self::require_client_and_freelancer_consent(&env)?;
 
         env.storage()
@@ -4628,16 +4668,6 @@ impl MilestoneEscrow {
             .set(&DataKey::TimeExtExecutionLock, &true);
 
         let result = (|| {
-            if amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-            if total_seconds <= 0 {
-                return Err(Error::InvalidRatio);
-            }
-            if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
-                return Err(Error::InvalidRatio);
-            }
-
             let split = Self::split_round_nearest(amount, elapsed_seconds, total_seconds)?;
 
             env.events().publish(
