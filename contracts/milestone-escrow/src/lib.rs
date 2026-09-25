@@ -5399,7 +5399,7 @@ impl MilestoneEscrow {
     /// * `NotInitialized` - Contract admin key or interest/yield state missing.
     /// * `Unauthorized` - Caller is not the stored admin.
     /// * `InvalidStatus` - Interest/yield lock is not active (already unlocked).
-    pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
+pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
         let mut state = Self::load_interest_yield_state(&env)?;
         if !state.locked {
@@ -5407,6 +5407,17 @@ impl MilestoneEscrow {
         }
         state.locked = false;
         Self::store_interest_yield_state(&env, &state);
+        // Publish structured event carrying acting address and resulting values
+        // Reconciles exactly with persisted state; emitted only on success path
+        env.events().publish(
+            (symbol_short!("yldunlock"),),
+            EscrowInterestYieldUnlockedEvent {
+                admin: admin.clone(),
+                client_share_bps: state.client_share_bps,
+                freelancer_share_bps: state.freelancer_share_bps,
+                locked: state.locked,
+            },
+        );
         Ok(())
     }
 
