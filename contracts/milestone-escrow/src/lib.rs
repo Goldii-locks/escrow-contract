@@ -2343,11 +2343,23 @@ impl MilestoneEscrow {
         }
     }
 
+    /// Return the list of whitelisted token addresses.
+    ///
+    /// Strictly read-only: performs a single `get` on instance storage and no
+    /// writes to instance, persistent, or temporary storage. Keep it that way —
+    /// the storage handle is only ever used through [`Self::read_whitelist`].
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The whitelist has never been written (the contract
+    ///   has not been initialized). Returns a typed error rather than
+    ///   panicking or defaulting to an empty vector.
     pub fn get_whitelisted_tokens(env: Env) -> Result<Vec<Address>, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::WhitelistedTokens)
-            .ok_or(Error::NotInitialized)
+        Self::read_whitelist(&env).ok_or(Error::NotInitialized)
+    }
+
+    /// Read-only accessor for `DataKey::WhitelistedTokens`.
+    fn read_whitelist(env: &Env) -> Option<Vec<Address>> {
+        env.storage().instance().get(&DataKey::WhitelistedTokens)
     }
 
     /// Deposit the full escrow amount into the contract.
@@ -5197,15 +5209,31 @@ impl MilestoneEscrow {
 
     /// Return the reputation counter for an address.
     ///
+    /// Read-only: performs no storage writes. Each storage key is touched at
+    /// most once per call — one existence check on `DataKey::Admin` and one
+    /// read of `DataKey::Reputation(address)`.
+    ///
+    /// # Returns
+    /// * **Populated** – `Ok(n)` where `n` is the stored counter, i.e. the
+    ///   number of completed jobs (full releases) the address has been a
+    ///   client or freelancer on.
+    /// * **Empty** – `Ok(0)` when no `Reputation` entry exists for `address`.
+    ///   An absent entry and a zero counter are indistinguishable.
+    /// * **Boundary** – the value is a `u32`, so the result lies in
+    ///   `0..=u32::MAX`. This getter never saturates or wraps; the counter is
+    ///   incremented with plain `+ 1` in `increment_reputation`, so a counter
+    ///   already at `u32::MAX` would overflow on the *next increment* (panic
+    ///   with overflow checks enabled), not in this read.
+    ///
     /// # Errors
     /// * `NotInitialized` - Contract has not been initialized.
     pub fn get_reputation(env: Env, address: Address) -> Result<u32, Error> {
-        Self::load_admin(&env)?;
-        Ok(env
-            .storage()
-            .persistent()
-            .get(&DataKey::Reputation(address))
-            .unwrap_or(0))
+        let storage = env.storage().persistent();
+        // `has` avoids deserializing the admin address we never use.
+        if !storage.has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(storage.get(&DataKey::Reputation(address)).unwrap_or(0))
     }
 
     // ── escrow_interest_yield: estimator + share-config validation ────────────
