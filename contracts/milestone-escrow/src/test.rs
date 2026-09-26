@@ -3369,7 +3369,7 @@ fn test_multisig_lock_before_initialize_returns_not_initialized() {
 /// Calling multisig_lock twice is idempotent — the flag stays set and no
 /// error is returned on the second call.
 #[test]
-fn test_multisig_lock_idempotent() {
+fn test_multisig_lock_rejects_second_lock() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -3378,8 +3378,12 @@ fn test_multisig_lock_idempotent() {
     client.multisig_lock(&admin_addr);
     assert!(client.is_multisig_locked());
 
-    // Second call must succeed and leave the flag set.
-    client.multisig_lock(&admin_addr);
+    // Locking an already-locked workflow is an illegal source state (#458):
+    // it is rejected and the flag stays set.
+    assert_eq!(
+        client.try_multisig_lock(&admin_addr),
+        Err(Ok(Error::InvalidStatus))
+    );
     assert!(client.is_multisig_locked());
 }
 
