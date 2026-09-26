@@ -2146,6 +2146,62 @@ fn test_remove_nonexistent_token_fails() {
 }
 
 #[test]
+fn test_remove_whitelisted_token_fails_when_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_remove_whitelisted_token(&admin, &token);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_remove_whitelisted_token_fails_when_already_funded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, admin_addr, token_addr, _, client) = setup_funded_escrow(&env, amounts);
+
+    let result = client.try_remove_whitelisted_token(&admin_addr, &token_addr);
+    assert_eq!(result, Err(Ok(Error::AlreadyFunded)));
+}
+
+#[test]
+fn test_remove_whitelisted_token_fails_when_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 1_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &amounts,
+    );
+
+    let result = client.try_remove_whitelisted_token(&admin_addr, &token1);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
 fn test_partial_release_remaining_balance() {
     let env = Env::default();
     env.mock_all_auths();
