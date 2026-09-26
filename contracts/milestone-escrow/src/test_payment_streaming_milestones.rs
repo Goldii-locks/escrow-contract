@@ -824,10 +824,10 @@ fn payment_streaming_consent_invalid_input_leaves_no_trace() {
     let persistent_has_job: bool = env.as_contract(&parties.contract_id, || {
         env.storage().persistent().has(&DataKey::Job)
     });
-    // Job was created during initialize in persistent? No, Job is instance, but
-    // check that no new persistent entry was added.
+    // Job metadata lives in instance storage, so no persistent Job entry may
+    // appear after a rejected call.
     assert!(
-        !persistent_has_job || true,
+        !persistent_has_job,
         "invalid input must not create persistent entries"
     );
 

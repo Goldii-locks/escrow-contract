@@ -748,12 +748,13 @@ fn time_extensions_consent_overflow_no_partial_write_and_lock_cleared() {
     let amounts = vec![&env, 1_000_i128];
     let (_, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
 
-    let before_events = crate::all_event_tuples(&env).len();
     let result = escrow.try_time_extensions_consent(&i128::MAX, &1, &2);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    // The test env only records events from the latest invocation, so the
+    // rejected call must have emitted none.
     assert_eq!(
         crate::all_event_tuples(&env).len(),
-        before_events,
+        0,
         "overflow must not emit event"
     );
     let lock_held: bool = env.as_contract(&contract_id, || {
