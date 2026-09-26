@@ -3139,7 +3139,6 @@ impl MilestoneEscrow {
         milestone_index: u32,
         meta: JobMeta,
     ) -> Result<(), Error> {
-
         if !meta.funded {
             return Err(Error::NotFunded);
         }
