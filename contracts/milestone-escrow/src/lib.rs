@@ -8007,6 +8007,8 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
     /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `InvalidStatus`  – The multisig workflow is already locked.
+    /// * `EmergencyPauseInProgress` – An emergency pause lock is currently active.
     pub fn multisig_lock(env: Env, admin: Address) -> Result<(), Error> {
         // Authorization check at top - require auth and admin role first
         Self::require_admin_from_instance(&env, &admin)?;

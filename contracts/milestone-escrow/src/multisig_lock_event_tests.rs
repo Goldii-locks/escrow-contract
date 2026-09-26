@@ -200,12 +200,10 @@ fn lock_is_enforced_after_the_event_is_published() {
     assert_eq!(milestone.released_amount, 1_000);
 }
 
-/// The call is idempotent, and every successful invocation is a lock *attempt*
-/// worth recording: a second call publishes its own event with the same
-/// payload, so a replay of `mslock` sees one record per call rather than a
-/// single de-duplicated entry.
+/// Re-locking is rejected (#458), so `mslock` is only ever published by the
+/// call that actually takes the lock.
 #[test]
-fn each_lock_call_publishes_exactly_one_event() {
+fn relock_is_rejected_and_publishes_no_event() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -219,19 +217,18 @@ fn each_lock_call_publishes_exactly_one_event() {
     assert!(first.locked);
     assert_event_reconciles(&env, &first, &contract_id, &client);
 
-    // Locking an already-locked contract is a no-op for the flag, but it is
-    // still a call that took the lock, so it publishes exactly one event.
-    client.multisig_lock(&admin_addr);
+    // Locking an already-locked workflow is an illegal source state (#458):
+    // the call is rejected, publishes no event and leaves the flag set.
+    assert_eq!(
+        client.try_multisig_lock(&admin_addr),
+        Err(Ok(Error::InvalidStatus))
+    );
     assert_eq!(
         mslock_event_count(&env),
-        1,
-        "a successful call publishes exactly one mslock event"
+        0,
+        "a rejected call publishes no mslock event"
     );
-    let second = last_mslock_event(&env);
-    assert_eq!(second.admin, first.admin);
-    assert_eq!(second.locked, first.locked);
-    assert!(second.locked);
-    assert_event_reconciles(&env, &second, &contract_id, &client);
+    assert!(client.is_multisig_locked());
 }
 
 /// Clearing the lock is a different transition and must never borrow the lock
