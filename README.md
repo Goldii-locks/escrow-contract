@@ -55,6 +55,7 @@ cargo test -p milestone-escrow
 - Contract implementation completed in `contracts/milestone-escrow`
 - Includes milestone delivery, approval, dispute, and arbitration flows
 - Initialize now rejects empty milestone lists, zero/negative amounts, zero addresses, and zero auto-release windows with explicit contract errors
+- `raise_dispute` now performs zero-address check, `require_auth`, and identity validation **before** writing the re-entrancy lock (issue #566), matching the authorization pattern used by `fund`, `approve_milestone`, and `resolve_dispute`; includes the five precondition guard assertions present in all other mutating functions
 - Contract tests and snapshots are provided under `contracts/milestone-escrow/test_snapshots`
 
 ## Deploy (Testnet)
@@ -77,5 +78,4 @@ MIT
 | Testnet | `CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH` |
 
 Explorer: `https://stellar.expert/explorer/testnet/contract/CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH`
-- Update README with latest progress
 
