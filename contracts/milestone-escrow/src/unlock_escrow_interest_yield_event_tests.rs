@@ -7,6 +7,7 @@
 use crate::test::setup_funded_escrow;
 use crate::{Error, EscrowInterestYieldUnlockedEvent, MilestoneEscrow, MilestoneEscrowClient};
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Val};
+use soroban_sdk::testutils::Address as _;
 
 fn event_count(env: &Env, topic: &str) -> u32 {
     let topic_val: Val = match topic {
