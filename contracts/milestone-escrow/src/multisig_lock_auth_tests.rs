@@ -4,7 +4,7 @@
 use crate::{DataKey, Error, MilestoneEscrow, MilestoneEscrowClient};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
-fn setup(env: &Env) -> (Address, MilestoneEscrowClient<''_>, Address) {
+fn setup(env: &Env) -> (Address, MilestoneEscrowClient<'_>, Address) {
     env.mock_all_auths();
     let admin = Address::generate(env);
     let client = Address::generate(env);
@@ -69,5 +69,22 @@ fn uninitialized_returns_not_initialized() {
     // NotInitialized takes precedence after auth? require_admin_from_instance returns NotInitialized if admin key missing
     // But attacker not being admin would be Unauthorized if contract were initialized.
     // For uninitialized, we expect NotInitialized regardless of caller
-    assert!(res.is_err());
+    assert_eq!(res, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn emergency_pause_in_progress_returns_error_and_does_not_mutate() {
+    let env = Env::default();
+    let (contract_id, escrow, admin) = setup(&env);
+    // Simulate emergency-pause transition in progress (EpLk guard).
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::EpLk, &true);
+    });
+    let before: bool = env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::MultisigLocked).unwrap_or(false));
+    assert!(!before);
+    let res = escrow.try_multisig_lock(&admin);
+    assert_eq!(res, Err(Ok(Error::EmergencyPauseInProgress)));
+    let after: bool = env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::MultisigLocked).unwrap_or(false));
+    assert_eq!(before, after, "no storage mutated on emergency-pause guard");
+    assert!(!after);
 }
