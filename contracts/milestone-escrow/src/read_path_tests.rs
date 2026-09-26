@@ -118,12 +118,12 @@ fn is_emergency_paused_does_not_mutate_ledger_when_uninitialized() {
     let escrow = MilestoneEscrowClient::new(&env, &contract_id);
 
     let before = env.to_ledger_snapshot();
-    let paused = escrow.is_emergency_paused();
+    let paused = escrow.try_is_emergency_paused();
     let after = env.to_ledger_snapshot();
 
-    assert!(!paused);
+    assert_eq!(paused, Err(Ok(Error::NotInitialized)));
     assert_eq!(before, after);
-    // The `false` default must not be materialized into storage.
+    // Nothing may be materialized into storage.
     let stored = env.as_contract(&contract_id, || env.storage().instance().has(&DataKey::Ep));
     assert!(!stored);
 }
@@ -170,7 +170,13 @@ fn is_emergency_paused_matches_stored_flag_in_every_state() {
             None => env.storage().instance().remove(&DataKey::Ep),
         });
 
-        assert_eq!(escrow.is_emergency_paused(), expected);
+        // The public read reports a missing flag as NotInitialized (#634);
+        // the internal guard helper still treats it as "not paused".
+        let public = escrow.try_is_emergency_paused();
+        match seed {
+            None => assert_eq!(public, Err(Ok(Error::NotInitialized))),
+            Some(_) => assert_eq!(public, Ok(Ok(expected))),
+        }
         let helper = env.as_contract(&contract_id, || {
             MilestoneEscrow::read_emergency_paused(&env)
         });
@@ -199,12 +205,17 @@ fn repeated_is_emergency_paused_calls_are_stable() {
 // ── #503: documented return contract ─────────────────────────────────────────
 
 #[test]
-fn emergency_paused_is_false_when_uninitialized() {
+fn emergency_paused_uninitialized_returns_not_initialized() {
     let env = Env::default();
     let contract_id = env.register(MilestoneEscrow, ());
     let escrow = MilestoneEscrowClient::new(&env, &contract_id);
 
-    assert!(!escrow.is_emergency_paused());
+    // #634: an uninitialized contract is reported as NotInitialized rather
+    // than a defaulted `false`.
+    assert_eq!(
+        escrow.try_is_emergency_paused(),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]
