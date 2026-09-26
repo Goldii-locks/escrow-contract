@@ -758,6 +758,23 @@ pub struct TaxWithholdingAppliedEvent {
     pub tax_rate_bps: u32,
 }
 
+/// Emitted by `tax_withholding_split_refund` when the split-refund
+/// distribution pathway for a tax-withheld amount is computed.  Carries the
+/// gross and tax legs alongside the two post-tax amounts so an indexer can
+/// reconstruct exactly how much of the withheld balance each party receives
+/// and how the withholding was attributed between them.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaxWithholdingSplitRefundEvent {
+    pub gross_amount: i128,
+    pub tax_amount: i128,
+    pub net_amount: i128,
+    pub client_refund: i128,
+    pub freelancer_payout: i128,
+    pub client_refund_bps: u32,
+    pub freelancer_payout_bps: u32,
+}
+
 /// Emitted by `admin_override_tax_release` when the admin resolves a
 /// tax-locked milestone by releasing the net amount to the freelancer.
 #[contracttype]
@@ -783,6 +800,28 @@ pub struct AdminOverrideTaxRefundEvent {
     pub client: Address,
     pub token: Address,
     pub gross_amount: i128,
+}
+
+/// Emitted by `admin_override_tax_split_refund` when the admin settles a
+/// tax-locked milestone with a split refund. `client_refund` and
+/// `freelancer_payout` are the amounts actually transferred (each net of its
+/// share of `tax_amount`), so the two legs always sum to
+/// `gross_amount − tax_amount` and the milestone's tax lock has been cleared.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminOverrideTaxSplitRefundEvent {
+    pub admin: Address,
+    pub contract_id: Address,
+    pub milestone_index: u32,
+    pub client: Address,
+    pub freelancer: Address,
+    pub token: Address,
+    pub gross_amount: i128,
+    pub tax_amount: i128,
+    pub client_refund: i128,
+    pub freelancer_payout: i128,
+    pub client_refund_bps: u32,
+    pub freelancer_payout_bps: u32,
 }
 
 // ── escrow_interest_yield admin-override config ──────────────────────────────
@@ -1587,6 +1626,53 @@ impl MilestoneEscrow {
         if state.locked {
             return Err(Error::EscrowLocked);
         }
+        Ok(())
+    }
+
+    /// Validate the inputs of a streaming ratio split and prove up front that
+    /// the scaled product [`Self::split_round_nearest`] is about to compute is
+    /// representable in `i128`.
+    ///
+    /// # Why the product is probed separately
+    ///
+    /// `split_round_nearest` performs its own `checked_mul` on `total *
+    /// numerator`, so it can never panic or wrap — but it does so *inside* the
+    /// caller's execution-locked section.  Probing the same product here, with
+    /// `i128::checked_mul`, means an out-of-range `total_amount` is turned away
+    /// with the typed `InvalidAmount` error **before** the caller takes its
+    /// execution lock, so a doomed invocation writes no ledger entry at all
+    /// rather than relying on invocation rollback to undo one.
+    ///
+    /// Every `i128` operation on the streaming-consent path is checked: the
+    /// product here (`checked_mul`), and the product, the rounding bias and the
+    /// remainder inside [`Self::split_round_nearest`] (`checked_mul`,
+    /// `checked_add`, `checked_sub`).
+    ///
+    /// # Errors
+    /// * `InvalidAmount` – `total_amount <= 0`, or `total_amount * numerator`
+    ///   overflows `i128`.
+    /// * `InvalidRatio`  – `denominator <= 0`, or `numerator` outside
+    ///   `0..=denominator`.
+    fn validate_streaming_ratio(
+        total_amount: i128,
+        numerator: i128,
+        denominator: i128,
+    ) -> Result<(), Error> {
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if denominator <= 0 {
+            return Err(Error::InvalidRatio);
+        }
+        if numerator < 0 || numerator > denominator {
+            return Err(Error::InvalidRatio);
+        }
+        // The only multiplication performed on this path.  Probing it with
+        // `checked_mul` is what turns an `i128::MAX`-scale `total_amount` into
+        // a typed `InvalidAmount` instead of a panic or a wrapped product.
+        total_amount
+            .checked_mul(numerator)
+            .ok_or(Error::InvalidAmount)?;
         Ok(())
     }
 
@@ -4448,11 +4534,27 @@ impl MilestoneEscrow {
     /// A `RatioSplit` where `first` is the streamed payout and `second` is the
     /// client refund.  The two always sum to `total_amount` exactly.
     ///
+    /// # Checked arithmetic
+    /// Every `i128` operation this endpoint performs is checked, so an overflow
+    /// surfaces as a typed `Error::InvalidAmount` rather than a panic or a
+    /// silent wrap:
+    /// * `total_amount × numerator` is probed with `i128::checked_mul` in
+    ///   [`Self::validate_streaming_ratio`] **before** the
+    ///   `PaymentStreamingExecutionLock` is taken, so a rejected invocation
+    ///   writes no ledger entry.
+    /// * The same product, the `denominator / 2` rounding bias and the
+    ///   `total − rounded` remainder are all `checked_mul` / `checked_add` /
+    ///   `checked_sub` inside [`Self::split_round_nearest`].
+    ///
     /// # Errors
     /// * `NotInitialized` – Job metadata missing, so no signers are known.
-    /// * `InvalidAmount`  – `total_amount` ≤ 0.
+    /// * `InvalidAmount`  – `total_amount` ≤ 0, or `total_amount × numerator`
+    ///   overflows `i128`.
     /// * `InvalidRatio`   – `denominator` ≤ 0, or `numerator` outside
     ///   `0..=denominator`.
+    ///
+    /// [`Self::validate_streaming_ratio`]: Self::validate_streaming_ratio
+    /// [`Self::split_round_nearest`]: Self::split_round_nearest
     pub fn payment_streaming_consent(
         env: Env,
         total_amount: i128,
@@ -4463,21 +4565,19 @@ impl MilestoneEscrow {
         // able to probe the validation rules below.
         let meta = Self::require_client_and_freelancer_consent(&env)?;
 
+        // Validate every input — including the overflow domain of the scaled
+        // product — before touching storage.  A rejected invocation therefore
+        // takes no execution lock and leaves no partial write behind.
+        Self::validate_streaming_ratio(total_amount, numerator, denominator)?;
+
         env.storage()
             .instance()
             .set(&DataKey::PaymentStreamingExecutionLock, &true);
 
         let result = (|| {
-            if total_amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-            if denominator <= 0 {
-                return Err(Error::InvalidRatio);
-            }
-            if numerator < 0 || numerator > denominator {
-                return Err(Error::InvalidRatio);
-            }
-
+            // `validate_streaming_ratio` already proved the scaled product is
+            // representable, and `split_round_nearest` re-checks every
+            // operation, so the arithmetic below cannot overflow.
             let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
 
             env.events().publish(
@@ -5549,6 +5649,8 @@ pub(crate) fn all_event_tuples(
 }
 
 #[cfg(test)]
+mod admin_accrue_yield_footprint_tests;
+#[cfg(test)]
 mod admin_accrue_yield_tests;
 #[cfg(test)]
 mod admin_override_cancel_tests;
@@ -5559,11 +5661,17 @@ mod admin_set_yield_rate_tests;
 #[cfg(test)]
 mod cancel_admin_transfer_tests;
 #[cfg(test)]
+mod cancel_escrow_split_refund_guards_tests;
+#[cfg(test)]
 mod get_pending_admin_transfer_tests;
 #[cfg(test)]
 mod interest_yield_consent_tests;
 #[cfg(test)]
+mod payment_streaming_consent_arithmetic_tests;
+#[cfg(test)]
 mod reputation_tests;
+#[cfg(test)]
+mod tax_withholding_split_refund_tests;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -5681,6 +5789,21 @@ impl MilestoneEscrow {
     /// added to the on-chain `YieldAccrued` accumulator via checked arithmetic
     /// to prevent overflow.
     ///
+    /// ## Storage-footprint note
+    ///
+    /// This function authorizes through `require_admin_from_instance` rather
+    /// than the standard `require_admin` helper, so the admin verification read
+    /// (`DataKey::Admin`, instance) and the job-metadata read it performs right
+    /// after (`DataKey::Job`, instance) share the **same single ledger entry**.
+    ///
+    /// That drops the separate persistent `DataKey::Admin` entry from the call:
+    /// one invocation now touches two ledger entries — the instance entry
+    /// (`Admin` + `Job`) and the persistent `YieldAccrued` accumulator — instead
+    /// of three.  The instance copy of `DataKey::Admin` is a complete mirror of
+    /// the persistent one: `initialize` writes both, and both admin-transfer
+    /// paths (`transfer_admin` and `execute_admin_transfer`) keep them in sync,
+    /// so authorizing against the instance copy cannot accept a stale admin.
+    ///
     /// # Parameters
     /// * `admin`           – Must match `DataKey::Admin`.
     /// * `milestone_index` – Index of the milestone to which yield is attributed.
@@ -5698,7 +5821,9 @@ impl MilestoneEscrow {
         milestone_index: u32,
         accrued_amount: i128,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Authorize from instance storage so the admin read shares a ledger
+        // entry with the `DataKey::Job` read below (see the rustdoc note).
+        Self::require_admin_from_instance(&env, &admin)?;
 
         let meta = Self::load_job_meta(&env)?;
         if milestone_index >= meta.milestone_count {
@@ -6301,6 +6426,184 @@ impl MilestoneEscrow {
         Ok(record)
     }
 
+    /// Refund distribution pathway for a **split-refund claim against a
+    /// tax-withheld amount**.
+    ///
+    /// `tax_withholding_deductions` reduces a milestone's remaining gross to a
+    /// single `net_amount`, and `admin_override_tax_release` hands that whole
+    /// net amount to the freelancer.  Neither endpoint answers the question a
+    /// *split* claim asks: if the escrow is unwinding and the withheld balance
+    /// has to be shared, how much of it does each party actually receive?
+    ///
+    /// # Algorithm — proportional withholding
+    ///
+    /// The tax is attributed in the same ratio as the gross it was taken from,
+    /// so each party bears its own share of the withholding rather than the tax
+    /// landing entirely on one side:
+    ///
+    /// ```text
+    /// client_gross      = round_nearest(gross × client_bps / 10_000)
+    /// client_tax        = round_nearest(tax   × client_bps / 10_000)
+    /// client_refund     = client_gross − client_tax
+    /// freelancer_gross  = gross − client_gross
+    /// freelancer_tax    = tax   − client_tax
+    /// freelancer_payout = freelancer_gross − freelancer_tax
+    /// ```
+    ///
+    /// # Conservation invariants
+    ///
+    /// * `client_refund + freelancer_payout == gross − tax` exactly — every
+    ///   stroop that survives withholding is attributed, and none is created or
+    ///   destroyed by the two independent roundings.
+    /// * Both legs are `>= 0`: a party's share of the tax can never exceed its
+    ///   share of the gross, because `tax <= gross` and both are apportioned by
+    ///   the same `round_nearest` pass over the same ratio.
+    /// * Every subtraction goes through `i128::checked_sub`, and every
+    ///   multiplication through `i128::checked_mul` (inside
+    ///   [`Self::split_round_nearest`]), so an out-of-range input yields a
+    ///   typed error rather than a panic or a wrapped amount.
+    ///
+    /// [`Self::split_round_nearest`]: Self::split_round_nearest
+    ///
+    /// # Parameters
+    /// * `gross_amount`          – Pre-tax balance. Must be > 0.
+    /// * `tax_amount`            – Amount withheld out of `gross_amount`. Must
+    ///                              satisfy `0 <= tax_amount <= gross_amount`.
+    /// * `client_refund_bps`     – Client's share in basis points (0–10 000).
+    /// * `freelancer_payout_bps` – Freelancer's share in basis points
+    ///                              (0–10 000); the two must sum to `BPS_SCALE`.
+    ///
+    /// # Returns
+    /// A [`RefundAllocation`] whose `client_refund` and `freelancer_payout` are
+    /// both **post-tax** amounts summing to `gross_amount − tax_amount`.
+    ///
+    /// # Errors
+    /// * `InvalidAmount` – `gross_amount` ≤ 0, `tax_amount` < 0,
+    ///   `tax_amount > gross_amount`, or arithmetic overflow.
+    /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps ≠ 10_000`,
+    ///   or the `u32` addition overflows.
+    fn allocate_withholding_refund(
+        gross_amount: i128,
+        tax_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        if gross_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if tax_amount < 0 || tax_amount > gross_amount {
+            return Err(Error::InvalidAmount);
+        }
+
+        let total_bps = client_refund_bps
+            .checked_add(freelancer_payout_bps)
+            .ok_or(Error::InvalidRatio)?;
+        if total_bps != BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        // Apportion the gross and the withheld tax over the same ratio so both
+        // legs of the split carry the same rounding direction.
+        let client_gross =
+            Self::split_round_nearest(gross_amount, client_refund_bps as i128, BPS_SCALE as i128)?
+                .first;
+        let client_tax =
+            Self::split_round_nearest(tax_amount, client_refund_bps as i128, BPS_SCALE as i128)?
+                .first;
+
+        let freelancer_gross = gross_amount
+            .checked_sub(client_gross)
+            .ok_or(Error::InvalidAmount)?;
+        let freelancer_tax = tax_amount
+            .checked_sub(client_tax)
+            .ok_or(Error::InvalidAmount)?;
+
+        let client_refund = client_gross
+            .checked_sub(client_tax)
+            .ok_or(Error::InvalidAmount)?;
+        let freelancer_payout = freelancer_gross
+            .checked_sub(freelancer_tax)
+            .ok_or(Error::InvalidAmount)?;
+
+        Ok(RefundAllocation {
+            client_refund,
+            freelancer_payout,
+            client_refund_bps,
+            freelancer_payout_bps,
+        })
+    }
+
+    /// Calculate the split-refund distribution pathway for a tax-withheld
+    /// amount: how much of `gross_amount − tax_amount` the client receives and
+    /// how much the freelancer receives, with the withheld tax attributed to
+    /// both parties in the same ratio it was taken in.
+    ///
+    /// This is a pure calculator — it moves no tokens and writes no ledger
+    /// entry — so it can be used to preview a split-refund claim against a
+    /// withheld balance before anything is committed.  It is the calculator
+    /// counterpart of [`Self::allocate_withholding_refund`], which holds the
+    /// arithmetic.
+    ///
+    /// Emits [`TaxWithholdingSplitRefundEvent`] on success carrying the gross,
+    /// tax, net and both post-tax legs.
+    ///
+    /// # Parameters
+    /// * `gross_amount`          – Pre-tax balance. Must be > 0.
+    /// * `tax_amount`            – Withheld amount. Must satisfy
+    ///                              `0 <= tax_amount <= gross_amount`.
+    /// * `client_refund_bps`     – Client's share in basis points (0–10 000).
+    /// * `freelancer_payout_bps` – Freelancer's share in basis points
+    ///                              (0–10 000); the two must sum to 10 000.
+    ///
+    /// # Returns
+    /// A [`RefundAllocation`] with:
+    /// * `client_refund`         = the client's post-tax share,
+    /// * `freelancer_payout`     = the freelancer's post-tax share,
+    /// * `client_refund_bps`     = echoed input,
+    /// * `freelancer_payout_bps` = echoed input.
+    ///
+    /// `client_refund + freelancer_payout` always equals
+    /// `gross_amount − tax_amount` exactly.
+    ///
+    /// # Errors
+    /// * `InvalidAmount` – `gross_amount` ≤ 0, `tax_amount` < 0,
+    ///   `tax_amount > gross_amount`, or arithmetic overflow.
+    /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps ≠ 10_000`,
+    ///   or the `u32` addition overflows.
+    pub fn tax_withholding_split_refund(
+        env: Env,
+        gross_amount: i128,
+        tax_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        let allocation = Self::allocate_withholding_refund(
+            gross_amount,
+            tax_amount,
+            client_refund_bps,
+            freelancer_payout_bps,
+        )?;
+
+        let net_amount = gross_amount
+            .checked_sub(tax_amount)
+            .ok_or(Error::InvalidAmount)?;
+
+        env.events().publish(
+            (symbol_short!("twspltref"),),
+            TaxWithholdingSplitRefundEvent {
+                gross_amount,
+                tax_amount,
+                net_amount,
+                client_refund: allocation.client_refund,
+                freelancer_payout: allocation.freelancer_payout,
+                client_refund_bps: allocation.client_refund_bps,
+                freelancer_payout_bps: allocation.freelancer_payout_bps,
+            },
+        );
+
+        Ok(allocation)
+    }
+
     /// Admin emergency override: resolve a tax-locked milestone by releasing
     /// the net (post-tax) amount to the freelancer.
     ///
@@ -6459,6 +6762,129 @@ impl MilestoneEscrow {
                 client: meta.client,
                 token: meta.token,
                 gross_amount: record.gross_amount,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Admin emergency override: resolve a tax-locked milestone by paying a
+    /// **split** of the withheld balance to both parties, each net of their own
+    /// share of the withheld tax.
+    ///
+    /// This is the settlement counterpart of
+    /// [`Self::tax_withholding_split_refund`]: the calculator decides the
+    /// distribution, this function moves the money. The gross and the withheld
+    /// tax are apportioned over the same ratio, so the two transfers always add
+    /// up to exactly `gross_amount − tax_amount` and the tax is never paid out
+    /// twice.
+    ///
+    /// Only the verified admin key can call this function.
+    ///
+    /// # Parameters
+    /// * `admin`                – Verified admin address (authorized caller).
+    /// * `milestone_index`      – Milestone whose tax lock is being settled.
+    /// * `client_refund_bps`    – Client's share in basis points.
+    /// * `freelancer_payout_bps`– Freelancer's share in basis points; the two
+    ///                             must sum to `BPS_SCALE`.
+    ///
+    /// # Errors
+    /// * `NotInitialized`   – Contract not initialised.
+    /// * `Unauthorized`     – Caller is not the verified admin.
+    /// * `NotFunded`        – Escrow not yet funded.
+    /// * `InvalidMilestone` – `milestone_index` is out of range.
+    /// * `InvalidStatus`    – No tax-withholding lock exists for this milestone,
+    ///                        or the milestone is already terminal.
+    /// * `InvalidAmount`    – Gross amount is zero, or arithmetic overflow.
+    /// * `InvalidRatio`     – The two BPS values do not sum to `BPS_SCALE`.
+    pub fn admin_override_tax_split_refund(
+        env: Env,
+        admin: Address,
+        milestone_index: u32,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+
+        let record: TaxWithholdingRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TaxWithholdingLock(milestone_index))
+            .ok_or(Error::InvalidStatus)?;
+
+        let meta = Self::load_job_meta(&env)?;
+        if !meta.funded {
+            return Err(Error::NotFunded);
+        }
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        if milestone.status == MilestoneStatus::Released
+            || milestone.status == MilestoneStatus::Refunded
+        {
+            return Err(Error::InvalidStatus);
+        }
+        if record.gross_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Ratio is validated (and the overflow-probed) before any state is
+        // committed, so an illegal ratio leaves the tax lock exactly as it was.
+        let allocation = Self::allocate_withholding_refund(
+            record.gross_amount,
+            record.tax_amount,
+            client_refund_bps,
+            freelancer_payout_bps,
+        )?;
+
+        // CEI: commit state before any external call.
+        milestone.released_amount = milestone
+            .released_amount
+            .checked_add(allocation.client_refund)
+            .and_then(|sum| sum.checked_add(allocation.freelancer_payout))
+            .ok_or(Error::InvalidAmount)?;
+        milestone.status = if allocation.freelancer_payout == 0 {
+            MilestoneStatus::Refunded
+        } else {
+            MilestoneStatus::Released
+        };
+        Self::store_milestone(&env, milestone_index, &milestone);
+
+        // Remove the lock entry.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TaxWithholdingLock(milestone_index));
+
+        let contract_addr = env.current_contract_address();
+        let token_client = token::Client::new(&env, &meta.token);
+        if allocation.client_refund > 0 {
+            token_client.transfer(&contract_addr, &meta.client, &allocation.client_refund);
+        }
+        if allocation.freelancer_payout > 0 {
+            token_client.transfer(
+                &contract_addr,
+                &meta.freelancer,
+                &allocation.freelancer_payout,
+            );
+        }
+
+        env.events().publish(
+            (symbol_short!("adtwsplt"),),
+            AdminOverrideTaxSplitRefundEvent {
+                admin,
+                contract_id: contract_addr,
+                milestone_index,
+                client: meta.client,
+                freelancer: meta.freelancer,
+                token: meta.token,
+                gross_amount: record.gross_amount,
+                tax_amount: record.tax_amount,
+                client_refund: allocation.client_refund,
+                freelancer_payout: allocation.freelancer_payout,
+                client_refund_bps: allocation.client_refund_bps,
+                freelancer_payout_bps: allocation.freelancer_payout_bps,
             },
         );
 
@@ -7040,6 +7466,38 @@ impl MilestoneEscrow {
     /// to nearest rather than always floored, and `client_refund + freelancer_payout`
     /// always equals `total_amount` exactly.
     ///
+    /// # Guard order
+    ///
+    /// The source-state guards run **first**, before the amount and ratio
+    /// validation and before any arithmetic, so an illegal source state is
+    /// rejected before the function reads or writes anything else.  They only
+    /// read the instance entry, so a rejected call touches no second ledger
+    /// entry and mutates nothing:
+    /// 1. `EscrowLocked` – a cancellation is already in flight
+    ///   (`DataKey::CancelLock`), so the refund split it will settle is not yet
+    ///   knowable; also covers an emergency pause (`DataKey::Ep`).
+    /// 2. `Paused` – an `admin_pause_escrow` pause (`DataKey::Paused`) is in
+    ///   force, so no cancellation-path figure should be produced.
+    ///
+    /// Both guards read a missing key as "not set", so an uninitialised
+    /// contract still answers as a pure calculator.
+    ///
+    /// # Caller authorization
+    ///
+    /// This endpoint deliberately takes no caller parameter: it is an
+    /// unauthenticated *preview*, not a settlement path, so no signature is
+    /// required and an escrow that has not been initialized can still be asked
+    /// what a ratio works out to (see
+    /// `test_cancel_escrow_split_refund_works_without_initialization`).
+    /// Because it moves no tokens and writes no ledger entry, authorization
+    /// cannot be bypassed by calling it — the only way to actually settle a
+    /// split refund on the cancellation path is the admin-gated
+    /// [`Self::cancel_escrow_claim_refund`], and moving funds outright is
+    /// [`Self::admin_override_cancel_refund`].  The source-state guards above
+    /// are therefore the complete set of conditions under which the preview is
+    /// allowed to answer; the guards deliberately mirror the claim's, which
+    /// requires a cancellation to be in flight.
+    ///
     /// # Parameters
     /// * `total_amount`          – Total escrowed balance to distribute. Must be > 0.
     /// * `client_refund_bps`     – Client's share in basis points (0–10 000).
@@ -7054,11 +7512,48 @@ impl MilestoneEscrow {
     /// * `freelancer_payout_bps` = echoed input
     ///
     /// # Errors
+    /// * `EscrowLocked`  – A cancellation is already in flight, or an emergency
+    ///                     pause is active.
+    /// * `Paused`        – The contract is administratively paused.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
     /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps ≠ 10_000`,
     ///                     or either value overflows `u32` on addition.
     pub fn cancel_escrow_split_refund(
         env: Env,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        // Source-state guards run before any validation or arithmetic. Both
+        // read only the instance entry, so an illegal source state is rejected
+        // without a single ledger write.
+        Self::ensure_not_paused(&env)?;
+        Self::assert_not_paused(&env)?;
+
+        let allocation =
+            Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
+
+        env.events().publish(
+            (symbol_short!("cxlspref"),),
+            CancelSplitRefundCalculatedEvent {
+                client_refund: allocation.client_refund,
+                freelancer_payout: allocation.freelancer_payout,
+                client_refund_bps: allocation.client_refund_bps,
+                freelancer_payout_bps: allocation.freelancer_payout_bps,
+            },
+        );
+
+        Ok(allocation)
+    }
+
+    /// Pure two-party split arithmetic shared by `cancel_escrow_split_refund`
+    /// and its admin-gated claim counterpart, so the preview and the claim can
+    /// never disagree about how a ratio is rounded.
+    ///
+    /// The client share is computed with round-nearest arithmetic and the
+    /// freelancer receives the exact remainder, so the two legs always sum to
+    /// `total_amount`.
+    fn split_refund_allocation(
         total_amount: i128,
         client_refund_bps: u32,
         freelancer_payout_bps: u32,
@@ -7074,9 +7569,6 @@ impl MilestoneEscrow {
             return Err(Error::InvalidRatio);
         }
 
-        // Use the shared split_round_nearest primitive: client share is
-        // computed with round-nearest arithmetic; freelancer receives the
-        // exact remainder so the two legs always sum to total_amount.
         let client_split =
             Self::split_round_nearest(total_amount, client_refund_bps as i128, BPS_SCALE as i128)?;
 
@@ -7084,12 +7576,75 @@ impl MilestoneEscrow {
             .checked_sub(client_split.first)
             .ok_or(Error::InvalidAmount)?;
 
-        let allocation = RefundAllocation {
+        Ok(RefundAllocation {
             client_refund: client_split.first,
             freelancer_payout,
             client_refund_bps,
             freelancer_payout_bps,
-        };
+        })
+    }
+
+    /// Admin-gated split-refund claim on the cancellation path — the authorized
+    /// counterpart to the unauthenticated `cancel_escrow_split_refund`
+    /// calculator.
+    ///
+    /// The calculator and the claim are deliberately complementary:
+    /// `cancel_escrow_split_refund` refuses to answer while a cancellation is
+    /// in flight (`EscrowLocked`), and this endpoint refuses to answer unless
+    /// one *is* in flight.  That is the same split of responsibilities
+    /// `emergency_pause_split_refund` / `emergency_pause_claim_refund` already
+    /// use, and it matches `admin_override_cancel_refund`, which also requires
+    /// the cancel lock to be active.
+    ///
+    /// # Checks (in order)
+    /// 1. `admin.require_auth()` and the stored admin must match
+    ///    (`NotInitialized` / `Unauthorized`).
+    /// 2. A cancellation must be in flight (`InvalidStatus`).
+    /// 3. The escrow must be initialized, funded and hold a non-zero balance
+    ///    (`NotInitialized` / `NotFunded` / `EmptyBalance`).
+    /// 4. `total_amount` > 0 and the shares sum to `BPS_SCALE`
+    ///    (`InvalidAmount` / `InvalidRatio`).
+    ///
+    /// Every check runs before any arithmetic, so a rejected claim mutates no
+    /// ledger entry.
+    ///
+    /// # Returns
+    /// A `RefundAllocation` whose two amounts sum to `total_amount` exactly.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – No admin key has ever been stored, or no job.
+    /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `InvalidStatus`  – No cancellation is currently in flight.
+    /// * `NotFunded`      – The escrow has not been funded.
+    /// * `EmptyBalance`   – The contract holds no tokens to distribute.
+    /// * `InvalidAmount`  – `total_amount` ≤ 0, or overflow.
+    /// * `InvalidRatio`   – Shares do not sum to 10 000 bps.
+    pub fn cancel_escrow_claim_refund(
+        env: Env,
+        admin: Address,
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        Self::require_admin(&env, &admin)?;
+
+        let cancel_locked = env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false);
+        if !cancel_locked {
+            return Err(Error::InvalidStatus);
+        }
+
+        let meta = Self::load_job_meta(&env)?;
+        if !meta.funded {
+            return Err(Error::NotFunded);
+        }
+        Self::assert_nonzero_balance(&env, &meta)?;
+
+        let allocation =
+            Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
 
         env.events().publish(
             (symbol_short!("cxlspref"),),
