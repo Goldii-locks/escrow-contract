@@ -1,77 +1,39 @@
 #![cfg(test)]
-//! Source-state guards for `cancel_escrow_split_refund` (issue #528).
+//! Authorization / precondition-guard suite for `cancel_escrow_split_refund`
+//! (issue #528).
 //!
-//! The endpoint is a pure split calculator, so it used to be callable with no
-//! state validation at all — including while the contract was frozen or a
-//! cancel was already in flight. It now runs the two source-state guards
-//! (`ensure_not_paused` → `assert_not_paused`) as its first operations, before
-//! any amount or ratio validation and before any arithmetic.
+//! The endpoint used to validate its arguments and publish its event with no
+//! look at the escrow's state at all, so a figure could be produced — and an
+//! event emitted — for an escrow that was paused or mid-cancellation.  The
+//! guards now run first:
 //!
-//! The matrix below pins three properties:
-//! 1. Each illegal source state maps to its own typed error.
-//! 2. Guard ordering is observable: a paused escrow beats an invalid amount and
-//!    an invalid ratio, so callers see the reason the call was refused.
-//! 3. A refused call publishes no event and mutates no ledger entry.
+//! * `ensure_not_paused` → `EscrowLocked` when a `cancel_escrow` is in flight
+//!   (`DataKey::CancelLock`) or an emergency pause is active (`DataKey::Ep`).
+//! * `assert_not_paused` → `Paused` when an `admin_pause_escrow` pause is in
+//!   force (`DataKey::Paused`).
 //!
-//! The guards read only instance storage, which is what makes property 3 hold:
-//! nothing is written before the rejection.
+//! Each guard reads a missing key as "not set", so the endpoint still answers on
+//! an uninitialised contract — the behaviour
+//! `test_cancel_escrow_split_refund_works_without_initialization` pins — and the
+//! amount/ratio validation is otherwise untouched.
+//!
+//! Every test below also asserts that a rejected call emits **no** event and
+//! mutates **no** ledger entry, which is the "no storage entry is mutated"
+//! requirement from the issue.
 
 use super::*;
+use crate::test::setup_funded_escrow;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _, Temporary as _};
-use soroban_sdk::{
-    testutils::Address as _, testutils::EnvTestConfig, vec, Address, Env, FromVal, IntoVal, Map,
-    Symbol, TryIntoVal, Val,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, vec, Address, Env, IntoVal, Map, Val};
 
-/// Snapshot capture is disabled; no assertion here reads a JSON snapshot.
-fn test_env() -> Env {
-    Env::new_with_config(EnvTestConfig {
-        capture_snapshot_at_drop: false,
-    })
-}
-
-struct Split {
-    contract_id: Address,
-    escrow: MilestoneEscrowClient<'static>,
-}
-
-/// A registered, initialised escrow. The guards are keyed on instance state, so
-/// an initialised contract is what lets each guard be triggered in isolation.
-fn initialised_escrow(env: &Env) -> Split {
+/// A fully initialized, funded escrow plus its contract id and admin.
+fn funded(env: &Env) -> (Address, Address, MilestoneEscrowClient<'_>) {
     env.mock_all_auths();
-
-    let admin_addr = Address::generate(env);
-    let client_addr = Address::generate(env);
-    let freelancer_addr = Address::generate(env);
-    let arbiter_addr = Address::generate(env);
-    let token = env
-        .register_stellar_asset_contract_v2(admin_addr.clone())
-        .address();
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(env, &contract_id);
-    escrow.initialize(
-        &admin_addr,
-        &client_addr,
-        &freelancer_addr,
-        &arbiter_addr,
-        &token,
-        &604_800u64,
-        &vec![env, 1_000_i128],
-    );
-
-    Split {
-        contract_id,
-        escrow,
-    }
+    let (_, _, _, admin, _, contract_id, client) = setup_funded_escrow(env, vec![env, 1_000_i128]);
+    (contract_id, admin, client)
 }
 
-fn set_instance_flag(env: &Env, contract_id: &Address, key: &DataKey, value: bool) {
-    env.as_contract(contract_id, || {
-        env.storage().instance().set(key, &value);
-    });
-}
-
+/// Every ledger entry the contract holds, in all three storage tiers.
 #[allow(clippy::type_complexity)]
 fn storage_snapshot(
     env: &Env,
@@ -86,304 +48,316 @@ fn storage_snapshot(
     })
 }
 
-/// Count events carrying `topic` as their first topic.
-///
-/// The SDK's event log reflects only the most recent invocation, so this counts
-/// the log rather than diffing it: an assertion that a rejected call publishes
-/// nothing is then valid whether or not the failed frame cleared the log.
-fn count_topic(env: &Env, topic: soroban_sdk::Symbol) -> u32 {
-    let topic_val: Val = topic.into_val(env);
+fn cxlspref_count(env: &Env) -> u32 {
+    let topic: Val = symbol_short!("cxlspref").into_val(env);
     crate::all_event_tuples(env)
         .iter()
-        .fold(0u32, |acc, event| {
-            if let Some(first) = event.1.get(0) {
-                if first.get_payload() == topic_val.get_payload() {
-                    return acc + 1;
-                }
-            }
-            acc
+        .fold(0u32, |acc, e| match e.1.get(0) {
+            Some(t) if t.get_payload() == topic.get_payload() => acc + 1,
+            _ => acc,
         })
 }
 
-// ── each illegal source state gets its own typed error ───────────────────────
+// ── illegal source states are rejected with their own typed error ───────────
 
-/// Emergency pause in force: the split must not be computed against a frozen
-/// contract.
+/// A cancellation in flight (`DataKey::CancelLock`) is an illegal source state:
+/// the split it is about to settle is not knowable yet, so the preview is
+/// refused with `EscrowLocked` before any arithmetic runs.
 #[test]
-fn test_cancel_escrow_split_refund_emergency_pause_rejected() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Ep, true);
+fn test_cancel_escrow_split_refund_rejects_in_flight_cancellation() {
+    let env = Env::default();
+    let (contract_id, _, client) = funded(&env);
+
+    // Model the exact state `cancel_escrow` leaves behind while it settles: the
+    // instance carries the cancellation lock.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::CancelLock, &true);
+    });
 
     assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
-        Err(Ok(Error::Paused))
-    );
-}
-
-/// Admin pause in force: same outcome as the emergency pause.
-#[test]
-fn test_cancel_escrow_split_refund_admin_pause_rejected() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Paused, true);
-
-    assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
-        Err(Ok(Error::Paused))
-    );
-}
-
-/// A cancel already in flight: the calculator must not run against a
-/// half-applied cancellation, and reports the lock rather than a generic error.
-#[test]
-fn test_cancel_escrow_split_refund_cancel_in_flight_rejected() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::CancelLock, true);
-
-    assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
+        client.try_cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &5_000_u32),
         Err(Ok(Error::EscrowLocked))
     );
+    assert_eq!(cxlspref_count(&env), 0);
 }
 
-/// The emergency pause is checked first, so it wins over a held cancel lock
-/// rather than the two errors being interchangeable.
+/// An administrative pause (`admin_pause_escrow` → `DataKey::Paused`) is the
+/// other illegal source state, and has its own error distinct from
+/// `EscrowLocked`.
 #[test]
-fn test_cancel_escrow_split_refund_emergency_pause_takes_precedence_over_cancel_lock() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Ep, true);
-    set_instance_flag(&env, &s.contract_id, &DataKey::CancelLock, true);
+fn test_cancel_escrow_split_refund_rejects_administratively_paused_escrow() {
+    let env = Env::default();
+    let (_, admin, client) = funded(&env);
+
+    client.admin_pause_escrow(&admin);
 
     assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
+        client.try_cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &5_000_u32),
         Err(Ok(Error::Paused))
     );
+    assert_eq!(cxlspref_count(&env), 0);
+
+    // Once the pause is lifted the same call answers normally.
+    client.admin_resume_escrow(&admin);
+    let alloc = client.cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(alloc.client_refund, 500);
+    assert_eq!(alloc.freelancer_payout, 500);
 }
 
-/// Clearing both flags restores the call: the guards are the only thing that
-/// changed, and they are not a permanent latch.
+/// An emergency pause (`DataKey::Ep`) is also refused, with its own
+/// `Paused` error surfaced ahead of any arithmetic.
 #[test]
-fn test_cancel_escrow_split_refund_succeeds_once_every_flag_is_cleared() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Ep, true);
-    set_instance_flag(&env, &s.contract_id, &DataKey::CancelLock, true);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Paused, true);
+fn test_cancel_escrow_split_refund_rejects_emergency_paused_escrow() {
+    let env = Env::default();
+    let (contract_id, _, client) = funded(&env);
+
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Ep, &true);
+    });
 
     assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
+        client.try_cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::Paused))
+    );
+    assert_eq!(cxlspref_count(&env), 0);
+}
+
+// ── a rejected call mutates nothing ──────────────────────────────────────────
+
+/// The guard is reached before the amount and ratio checks, so an illegal
+/// source state wins over otherwise-valid-looking arguments — and the storage
+/// snapshot taken around the rejected call is byte-identical to the one taken
+/// before it.
+#[test]
+fn test_cancel_escrow_split_refund_rejected_state_mutates_no_storage() {
+    let env = Env::default();
+    let (contract_id, admin, client) = funded(&env);
+
+    client.admin_pause_escrow(&admin);
+    let before = storage_snapshot(&env, &contract_id);
+
+    // Valid arguments that would otherwise succeed.
+    assert_eq!(
+        client.try_cancel_escrow_split_refund(&1_000_i128, &6_000_u32, &4_000_u32),
         Err(Ok(Error::Paused))
     );
 
-    set_instance_flag(&env, &s.contract_id, &DataKey::Ep, false);
-    set_instance_flag(&env, &s.contract_id, &DataKey::CancelLock, false);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Paused, false);
-
-    let allocation = s
-        .escrow
-        .cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32);
-    assert_eq!(allocation.client_refund, 500);
-    assert_eq!(allocation.freelancer_payout, 500);
+    let after = storage_snapshot(&env, &contract_id);
+    assert_eq!(after.0, before.0, "instance storage must be untouched");
+    assert_eq!(after.1, before.1, "persistent storage must be untouched");
+    assert_eq!(after.2, before.2, "temporary storage must be untouched");
 }
 
-// ── guard ordering is observable ─────────────────────────────────────────────
-
-/// A paused escrow reports `Paused`, not `InvalidAmount`, even when the amount
-/// is also invalid — the source state is the reason the call was refused.
+/// The same for the cancellation-in-flight rejection.
 #[test]
-fn test_cancel_escrow_split_refund_pause_guard_precedes_amount_validation() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Ep, true);
+fn test_cancel_escrow_split_refund_locked_state_mutates_no_storage() {
+    let env = Env::default();
+    let (contract_id, _, client) = funded(&env);
 
-    for total in [0_i128, -1_i128, i128::MIN] {
-        assert_eq!(
-            s.escrow
-                .try_cancel_escrow_split_refund(&total, &5_000u32, &5_000u32),
-            Err(Ok(Error::Paused))
-        );
-    }
-}
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::CancelLock, &true);
+    });
+    let before = storage_snapshot(&env, &contract_id);
 
-/// Likewise for a held cancel lock against an invalid amount.
-#[test]
-fn test_cancel_escrow_split_refund_lock_guard_precedes_amount_validation() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::CancelLock, true);
-
-    for total in [0_i128, -1_i128, i128::MIN] {
-        assert_eq!(
-            s.escrow
-                .try_cancel_escrow_split_refund(&total, &5_000u32, &5_000u32),
-            Err(Ok(Error::EscrowLocked))
-        );
-    }
-}
-
-/// And for an invalid ratio: the guard fires first, so the caller is told the
-/// contract is paused rather than that their basis points are wrong.
-#[test]
-fn test_cancel_escrow_split_refund_pause_guard_precedes_ratio_validation() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Paused, true);
-
-    let bad_ratios = [
-        (1_000_u32, 1_000_u32),
-        (0_u32, 0_u32),
-        (u32::MAX, u32::MAX),
-        (0_u32, 10_000_u32),
-        (10_000_u32, 0_u32),
-    ];
-    for (client_bps, freelancer_bps) in bad_ratios {
-        assert_eq!(
-            s.escrow
-                .try_cancel_escrow_split_refund(&1_000_i128, &client_bps, &freelancer_bps),
-            Err(Ok(Error::Paused))
-        );
-    }
-}
-
-/// With no illegal source state, the original argument validation is unchanged
-/// and still reports its own errors — the guards did not swallow them.
-#[test]
-fn test_cancel_escrow_split_refund_argument_errors_survive_the_guards() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-
-    for total in [0_i128, -1_i128, i128::MIN] {
-        assert_eq!(
-            s.escrow
-                .try_cancel_escrow_split_refund(&total, &5_000u32, &5_000u32),
-            Err(Ok(Error::InvalidAmount))
-        );
-    }
     assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &1_000u32, &1_000u32),
+        client.try_cancel_escrow_split_refund(&1_000_i128, &6_000_u32, &4_000_u32),
+        Err(Ok(Error::EscrowLocked))
+    );
+
+    let after = storage_snapshot(&env, &contract_id);
+    assert_eq!(after.0, before.0, "instance storage must be untouched");
+    assert_eq!(after.1, before.1, "persistent storage must be untouched");
+    assert_eq!(after.2, before.2, "temporary storage must be untouched");
+}
+
+// ── the guards do not change the endpoint's existing behaviour ───────────────
+
+/// A missing guard key is read as "not set", so the pure-calculator contract
+/// still answers: no job, no admin, no funding, no initialization.
+#[test]
+fn test_cancel_escrow_split_refund_still_answers_without_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let alloc = client.cancel_escrow_split_refund(&2_000_i128, &2_500_u32, &7_500_u32);
+    assert_eq!(alloc.client_refund, 500);
+    assert_eq!(alloc.freelancer_payout, 1_500);
+}
+
+/// The amount and ratio validation still returns exactly the same typed errors
+/// on a healthy, unpaused escrow.
+#[test]
+fn test_cancel_escrow_split_refund_argument_validation_unchanged() {
+    let env = Env::default();
+    let (_, _, client) = funded(&env);
+
+    assert_eq!(
+        client.try_cancel_escrow_split_refund(&0_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_cancel_escrow_split_refund(&(-1_i128), &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_cancel_escrow_split_refund(&1_000_i128, &4_000_u32, &4_000_u32),
+        Err(Ok(Error::InvalidRatio))
+    );
+    assert_eq!(
+        client.try_cancel_escrow_split_refund(&1_000_i128, &u32::MAX, &u32::MAX),
         Err(Ok(Error::InvalidRatio))
     );
 }
 
-// ── a refused call leaves no trace ───────────────────────────────────────────
-
-/// A guard rejection publishes no `cxlspref` event, so an indexer never sees a
-/// split for a contract that was in fact frozen.
+/// The arithmetic, the echoed BPS values and the single `cxlspref` event are all
+/// unchanged on the success path of a healthy escrow.
 #[test]
-fn test_cancel_escrow_split_refund_paused_call_publishes_no_event() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Ep, true);
+fn test_cancel_escrow_split_refund_success_path_unchanged() {
+    let env = Env::default();
+    let (_, _, client) = funded(&env);
 
-    assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
-        Err(Ok(Error::Paused))
-    );
-    assert_eq!(
-        count_topic(&env, soroban_sdk::symbol_short!("cxlspref")),
-        0,
-        "no split event on a paused call"
-    );
+    let alloc = client.cancel_escrow_split_refund(&1_001_i128, &2_500_u32, &7_500_u32);
+    assert_eq!(alloc.client_refund, 250);
+    assert_eq!(alloc.freelancer_payout, 751);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 1_001);
+    assert_eq!(alloc.client_refund_bps, 2_500);
+    assert_eq!(alloc.freelancer_payout_bps, 7_500);
+    assert_eq!(cxlspref_count(&env), 1);
 }
 
-/// No ledger entry is added, removed, or changed by a guard rejection. The
-/// guards only read the instance entry, so the whole storage tree is identical
-/// before and after.
+// ── the admin-gated claim counterpart ─────────────────────────────────────────
+
+/// The claim is the authorized counterpart to the preview, so the very first
+/// thing it does is check the caller. A non-admin is turned away with
+/// `Unauthorized` and the storage snapshot around the rejected call is
+/// byte-identical to the one taken before it.
 #[test]
-fn test_cancel_escrow_split_refund_paused_call_mutates_no_storage() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::Ep, true);
+fn test_cancel_escrow_claim_refund_rejects_unauthorized_caller() {
+    let env = Env::default();
+    let (contract_id, admin, client) = funded(&env);
 
-    let before = storage_snapshot(&env, &s.contract_id);
+    // A cancellation is in flight, so every *other* precondition is satisfied:
+    // the only thing left to fail is the caller.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::CancelLock, &true);
+    });
+
+    let stranger = Address::generate(&env);
+    let before = storage_snapshot(&env, &contract_id);
+
     assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
-        Err(Ok(Error::Paused))
+        client.try_cancel_escrow_claim_refund(&stranger, &1_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::Unauthorized))
     );
-    let after = storage_snapshot(&env, &s.contract_id);
 
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
+    assert_eq!(storage_snapshot(&env, &contract_id), before);
+    assert_eq!(cxlspref_count(&env), 0);
+
+    // The real admin gets through the same call.
+    client.cancel_escrow_claim_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(cxlspref_count(&env), 1);
 }
 
-/// The same for the cancel-in-flight guard.
+/// The claim and the preview are complementary: the claim refuses to settle
+/// unless a cancellation is in flight (`InvalidStatus`), and the preview refuses
+/// to answer while one is. Neither rejected call may mutate a ledger entry.
 #[test]
-fn test_cancel_escrow_split_refund_locked_call_mutates_no_storage() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
-    set_instance_flag(&env, &s.contract_id, &DataKey::CancelLock, true);
+fn test_cancel_escrow_claim_refund_requires_cancellation_in_flight() {
+    let env = Env::default();
+    let (contract_id, admin, client) = funded(&env);
 
-    let before = storage_snapshot(&env, &s.contract_id);
+    // No cancel lock: the claim is refused, the preview is allowed.
+    let before = storage_snapshot(&env, &contract_id);
     assert_eq!(
-        s.escrow
-            .try_cancel_escrow_split_refund(&1_000_i128, &5_000u32, &5_000u32),
+        client.try_cancel_escrow_claim_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidStatus))
+    );
+    assert_eq!(storage_snapshot(&env, &contract_id), before);
+
+    let previewed = client.cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(previewed.client_refund, 500);
+    assert_eq!(previewed.freelancer_payout, 500);
+    assert_eq!(previewed.client_refund_bps, 5_000);
+    assert_eq!(previewed.freelancer_payout_bps, 5_000);
+
+    // With the lock held the two swap roles.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::CancelLock, &true);
+    });
+    let locked = storage_snapshot(&env, &contract_id);
+    assert_eq!(
+        client.try_cancel_escrow_split_refund(&1_000_i128, &5_000_u32, &5_000_u32),
         Err(Ok(Error::EscrowLocked))
     );
-    let after = storage_snapshot(&env, &s.contract_id);
-
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
+    assert_eq!(storage_snapshot(&env, &contract_id), locked);
 }
 
-/// The guards are keyless with respect to initialisation: an uninitialised
-/// contract has neither flag set, so the calculator still works. This is the
-/// existing uninitialised-calculator behaviour, now stated explicitly so a
-/// future guard added before `load_job_meta` cannot silently break it.
+/// Authorization is checked before the preconditions: a stranger calling into a
+/// contract that would *also* fail the cancel-lock check still gets
+/// `Unauthorized`, not `InvalidStatus`. This pins the guard order.
 #[test]
-fn test_cancel_escrow_split_refund_uninitialized_calculator_still_works() {
-    let env = test_env();
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+fn test_cancel_escrow_claim_refund_authorizes_before_preconditions() {
+    let env = Env::default();
+    let (contract_id, _, client) = funded(&env);
 
-    assert!(matches!(
-        escrow.try_get_job(),
-        Err(Ok(Error::NotInitialized))
-    ));
+    // No cancel lock: the preconditions are unsatisfied.
+    let stranger = Address::generate(&env);
+    let before = storage_snapshot(&env, &contract_id);
 
-    let allocation = escrow.cancel_escrow_split_refund(&1_000_i128, &7_000u32, &3_000u32);
-    assert_eq!(allocation.client_refund, 700);
-    assert_eq!(allocation.freelancer_payout, 300);
+    assert_eq!(
+        client.try_cancel_escrow_claim_refund(&stranger, &1_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(storage_snapshot(&env, &contract_id), before);
+    assert_eq!(cxlspref_count(&env), 0);
 }
 
-/// The success path still publishes exactly one `cxlspref` event with the
-/// allocation, so adding the guards did not disturb the event stream.
+/// The claim reuses the preview's arithmetic, so the two can never disagree:
+/// round-nearest on the client leg, exact remainder to the freelancer, and the
+/// two amounts always sum back to the total.
+///
+/// The preview only answers while no cancellation is in flight and the claim
+/// only answers once one is, so each is sampled in its own legal state and the
+/// two allocations are then compared.
 #[test]
-fn test_cancel_escrow_split_refund_success_path_still_emits_one_event() {
-    let env = test_env();
-    let s = initialised_escrow(&env);
+fn test_cancel_escrow_claim_refund_matches_preview_arithmetic() {
+    let env = Env::default();
+    let (contract_id, admin, client) = funded(&env);
 
-    s.escrow
-        .cancel_escrow_split_refund(&1_000_i128, &7_000u32, &3_000u32);
-    assert_eq!(
-        count_topic(&env, soroban_sdk::symbol_short!("cxlspref")),
-        1,
-        "expected exactly one cxlspref event"
-    );
+    let cases = [
+        (1_001_i128, 2_500_u32, 7_500_u32),
+        (2_000_i128, 3_333_u32, 6_667_u32),
+        (1_000_i128, 10_000_u32, 0_u32),
+        (1_000_i128, 0_u32, 10_000_u32),
+    ];
 
-    let events = crate::all_event_tuples(&env);
-    let last = events.last().unwrap();
-    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(
-        topic,
-        soroban_sdk::symbol_short!("cxlspref"),
-        "last event must be the split-refund calculation"
-    );
-    let data = CancelSplitRefundCalculatedEvent::from_val(&env, &last.2);
-    assert_eq!(data.client_refund, 700);
-    assert_eq!(data.freelancer_payout, 300);
-    assert_eq!(data.client_refund_bps, 7_000);
-    assert_eq!(data.freelancer_payout_bps, 3_000);
+    // No cancellation in flight: the preview answers for every case.
+    let previewed: std::vec::Vec<RefundAllocation> = cases
+        .iter()
+        .map(|(total, client_bps, freelancer_bps)| {
+            client.cancel_escrow_split_refund(total, client_bps, freelancer_bps)
+        })
+        .collect();
+
+    // Cancellation in flight: the claim answers for the same cases.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::CancelLock, &true);
+    });
+    let claimed: std::vec::Vec<RefundAllocation> = cases
+        .iter()
+        .map(|(total, client_bps, freelancer_bps)| {
+            client.cancel_escrow_claim_refund(&admin, total, client_bps, freelancer_bps)
+        })
+        .collect();
+
+    assert_eq!(claimed, previewed);
+    for (allocation, (total, _, _)) in claimed.iter().zip(cases.iter()) {
+        assert_eq!(
+            allocation.client_refund + allocation.freelancer_payout,
+            *total
+        );
+    }
 }

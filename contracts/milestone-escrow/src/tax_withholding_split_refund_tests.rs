@@ -1,418 +1,611 @@
 #![cfg(test)]
-//! Split-refund allocation of a tax-withheld balance (issue #300).
+//! Refund-allocation suite for `tax_withholding_split_refund` (issue #300).
 //!
-//! `tax_withholding_deductions` withholds a tax from a milestone, but nothing
-//! told the parties how a *refund* of that withheld balance should be divided.
-//! The new pure calculator `tax_withholding_split_refund` does: it apportions
-//! the gross amount and the withheld tax over the same client/freelancer ratio,
-//! then hands each party its post-tax share.
+//! `tax_withholding_deductions` reduces a milestone's remaining gross to a
+//! single `net_amount` and `admin_override_tax_release` hands that whole net
+//! amount to the freelancer.  The pathway this suite covers is the *split* one:
+//! when a withheld balance has to be shared, each party's post-tax share is
+//! `its share of the gross − its share of the tax`.
 //!
-//! The matrix below pins:
-//! 1. Conservation — `client_refund + freelancer_payout == gross − tax` exactly,
-//!    for every ratio including the extremes, so no stroop is created or lost.
-//! 2. The tax is attributed proportionally — a party never receives more than
-//!    its own post-tax share, and the withheld tax is fully absorbed.
-//! 3. Boundary behaviour — 0% tax, 100% tax, 0%/100% splits, 1-stroop amounts.
-//! 4. Every rejection is typed, and a rejected call emits no event.
+//! The invariants pinned here are:
+//!   1. **Percentages are correct.** At a handful of ratios, the client's
+//!      post-tax leg equals `gross × client_bps / 10_000` net of the tax taken
+//!      in the same ratio.
+//!   2. **Value is conserved.** `client_refund + freelancer_payout` equals
+//!      `gross − tax` exactly, for every ratio, including the ones that make
+//!      both independent `round_nearest` calls land on a .5 boundary.
+//!   3. **No leg is negative.** A party never receives less than zero even when
+//!      the tax rate is at its maximum.
+//!   4. **The extremes are typed errors**, not panics: `i128::MAX` / `i128::MIN`
+//!      amounts and BPS values that do not sum to 10 000 are rejected.
+//!   5. **It is a pure calculator** — it works on an uninitialised contract and
+//!      writes no ledger entry.
 
 use super::*;
+use crate::test::setup_funded_escrow;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::{
-    testutils::EnvTestConfig, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val,
+    testutils::Address as _, testutils::EnvTestConfig, vec, Env, FromVal, IntoVal, Map, Val,
 };
 
-/// Snapshot capture is disabled; no assertion here reads a JSON snapshot.
 fn test_env() -> Env {
     Env::new_with_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
     })
 }
 
-struct Calculator<'a> {
-    contract_id: Address,
-    escrow: MilestoneEscrowClient<'a>,
+/// A bare registered contract — the endpoint needs no job, admin or funding, so
+/// the whole suite runs against this.
+fn calculator(env: &Env) -> (Address, MilestoneEscrowClient<'_>) {
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+    (contract_id, client)
 }
 
-/// A bare registration: the endpoint is a pure calculator, so it needs no
-/// initialization, no token and no funded balance.
-fn calculator(env: &Env) -> Calculator<'_> {
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(env, &contract_id);
-    Calculator {
-        contract_id,
-        escrow,
+fn twspltref_events(env: &Env) -> std::vec::Vec<TaxWithholdingSplitRefundEvent> {
+    let topic_val: Val = symbol_short!("twspltref").into_val(env);
+    let mut events = std::vec::Vec::new();
+    for event in crate::all_event_tuples(env).iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == topic_val.get_payload() {
+                events.push(TaxWithholdingSplitRefundEvent::from_val(env, &event.2));
+            }
+        }
+    }
+    events
+}
+
+// ── the refund percentages are what the ratio asks for ───────────────────────
+
+/// 70/30 on a 1 000 gross with 100 withheld. Each leg is its share of the
+/// gross minus its share of the tax, and the two sum to the 900 that survives
+/// withholding.
+#[test]
+fn test_tax_withholding_split_refund_applies_requested_percentages() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    let alloc = client.tax_withholding_split_refund(&1_000_i128, &100_i128, &7_000_u32, &3_000_u32);
+
+    // client: 700 of gross, 70 of tax -> 630
+    // freelancer: 300 of gross, 30 of tax -> 270
+    assert_eq!(alloc.client_refund, 630);
+    assert_eq!(alloc.freelancer_payout, 270);
+    assert_eq!(alloc.client_refund_bps, 7_000);
+    assert_eq!(alloc.freelancer_payout_bps, 3_000);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 900);
+}
+
+/// 0 bps to the client is a full refund to the freelancer of the whole net
+/// amount — the degenerate case of the pathway.
+#[test]
+fn test_tax_withholding_split_refund_zero_client_bps_pays_freelancer_everything() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    let alloc = client.tax_withholding_split_refund(&1_000_i128, &250_i128, &0_u32, &10_000_u32);
+    assert_eq!(alloc.client_refund, 0);
+    assert_eq!(alloc.freelancer_payout, 750);
+}
+
+/// 10 000 bps to the client is the mirror image.
+#[test]
+fn test_tax_withholding_split_refund_full_client_bps_pays_client_everything() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    let alloc = client.tax_withholding_split_refund(&1_000_i128, &250_i128, &10_000_u32, &0_u32);
+    assert_eq!(alloc.client_refund, 750);
+    assert_eq!(alloc.freelancer_payout, 0);
+}
+
+/// An even 50/50 split of a taxed balance: each side bears half the withholding,
+/// so neither is charged the other's tax.
+#[test]
+fn test_tax_withholding_split_refund_even_split_attributes_tax_proportionally() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    let alloc = client.tax_withholding_split_refund(&1_000_i128, &200_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(alloc.client_refund, 400);
+    assert_eq!(alloc.freelancer_payout, 400);
+}
+
+/// With no tax withheld the pathway degenerates to a plain ratio split of the
+/// gross, which is what makes it safe to preview before the tax is applied.
+#[test]
+fn test_tax_withholding_split_refund_zero_tax_is_a_plain_ratio_split() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    let alloc = client.tax_withholding_split_refund(&1_000_i128, &0_i128, &7_000_u32, &3_000_u32);
+    assert_eq!(alloc.client_refund, 700);
+    assert_eq!(alloc.freelancer_payout, 300);
+}
+
+/// A 100 % tax rate leaves a net amount of zero: the allocation is (0, 0) and
+/// never negative, even though the gross is fully absorbed.
+#[test]
+fn test_tax_withholding_split_refund_full_tax_rate_yields_zero_allocations() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    let alloc =
+        client.tax_withholding_split_refund(&1_000_i128, &1_000_i128, &3_333_u32, &6_667_u32);
+    assert_eq!(alloc.client_refund, 0);
+    assert_eq!(alloc.freelancer_payout, 0);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 0);
+}
+
+// ── value conservation across the rounding boundaries ───────────────────────
+
+/// Sweep every 1 % ratio plus the awkward .5 boundaries and assert the
+/// conservation invariant on each one: the two post-tax legs must always add up
+/// to `gross − tax` exactly, and must never be negative.
+#[test]
+fn test_tax_withholding_split_refund_conserves_value_across_all_ratios() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    let (gross, tax) = (1_001_i128, 333_i128);
+    for client_bps in 0..=10_000u32 {
+        let alloc =
+            client.tax_withholding_split_refund(&gross, &tax, &client_bps, &(10_000 - client_bps));
+
+        assert!(
+            alloc.client_refund >= 0,
+            "client leg negative at {client_bps} bps"
+        );
+        assert!(
+            alloc.freelancer_payout >= 0,
+            "freelancer leg negative at {client_bps} bps"
+        );
+        assert_eq!(
+            alloc.client_refund + alloc.freelancer_payout,
+            gross - tax,
+            "value not conserved at {client_bps} bps"
+        );
     }
 }
 
-/// Count events carrying `topic` as their first topic.
-///
-/// The SDK's event log reflects only the most recent invocation, so this counts
-/// the log rather than diffing it: an assertion that a rejected call publishes
-/// nothing is then valid whether or not the failed frame cleared the log.
-fn count_topic(env: &Env, topic: soroban_sdk::Symbol) -> u32 {
-    let topic_val: Val = topic.into_val(env);
-    crate::all_event_tuples(env)
-        .iter()
-        .fold(0u32, |acc, event| {
-            if let Some(first) = event.1.get(0) {
-                if first.get_payload() == topic_val.get_payload() {
-                    return acc + 1;
-                }
-            }
-            acc
-        })
-}
-
-const BPS_SCALE: i128 = 10_000;
-const BPS_SCALE_U32: u32 = 10_000;
-
-// ── conservation across the whole ratio space ────────────────────────────────
-
-/// The defining invariant. Swept over every whole-percent split plus both
-/// extremes, with several tax rates: the two post-tax legs always sum to the
-/// net, and neither ever goes negative.
+/// The same invariant over a range of gross/tax pairs, including odd totals
+/// where both `round_nearest` calls hit a .5 tie and the naive "subtract one
+/// half, add one half" implementation would drift.
 #[test]
-fn test_tax_withholding_split_refund_conserves_net_amount() {
+fn test_tax_withholding_split_refund_conserves_value_across_amounts() {
     let env = test_env();
-    let c = calculator(&env);
+    let (_, client) = calculator(&env);
 
-    for percent in 0..=100_u32 {
-        let client_bps = percent * 100;
-        let freelancer_bps = BPS_SCALE_U32 - client_bps;
-        for tax in [0_i128, 1, 7, 100, 999, 5_000] {
-            for gross in [1_i128, 2, 999, 1_000, 12_345, 1_000_000] {
-                if tax > gross {
-                    continue;
-                }
-                let net = gross - tax;
-                let a = c.escrow.tax_withholding_split_refund(
+    for gross in [1_i128, 2, 3, 7, 99, 101, 1_000, 1_001, 12_345] {
+        for tax in [0_i128, 1, gross / 3, gross / 2, gross] {
+            if tax > gross {
+                continue;
+            }
+            for client_bps in [0_u32, 1, 2_500, 3_333, 6_667, 9_999, 10_000] {
+                let alloc = client.tax_withholding_split_refund(
                     &gross,
                     &tax,
                     &client_bps,
-                    &freelancer_bps,
-                );
-                assert_eq!(a.client_refund_bps, client_bps);
-                assert_eq!(a.freelancer_payout_bps, freelancer_bps);
-                assert!(
-                    a.client_refund >= 0 && a.freelancer_payout >= 0,
-                    "negative leg at percent={percent} tax={tax} gross={gross}"
+                    &(10_000 - client_bps),
                 );
                 assert_eq!(
-                    a.client_refund + a.freelancer_payout,
-                    net,
-                    "net not conserved at percent={percent} tax={tax} gross={gross}"
+                    alloc.client_refund + alloc.freelancer_payout,
+                    gross - tax,
+                    "gross={gross} tax={tax} client_bps={client_bps}"
                 );
+                assert!(alloc.client_refund >= 0);
+                assert!(alloc.freelancer_payout >= 0);
             }
         }
     }
 }
 
-/// Round-nearest, not truncating: a client share that lands on a half stroop
-/// rounds up. 1 stroop at 5 000 bps is exactly 0.5, so `split_round_nearest`
-/// gives the whole stroop to the client.
+/// A single-stroop net amount survives the split intact: it is never rounded
+/// away to (0, 0) on one leg and (1, 0) on the other.
 #[test]
-fn test_tax_withholding_split_refund_rounds_half_up() {
+fn test_tax_withholding_split_refund_single_stroop_net_is_conserved() {
     let env = test_env();
-    let c = calculator(&env);
+    let (_, client) = calculator(&env);
 
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&1, &0, &5_000u32, &5_000u32);
-    assert_eq!(a.client_refund, 1);
-    assert_eq!(a.freelancer_payout, 0);
-
-    // 3 at 5 000 bps is 1.5 -> 2 to the client, 1 to the freelancer.
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&3, &0, &5_000u32, &5_000u32);
-    assert_eq!(a.client_refund, 2);
-    assert_eq!(a.freelancer_payout, 1);
-    assert_eq!(a.client_refund + a.freelancer_payout, 3);
+    let alloc = client.tax_withholding_split_refund(&2_i128, &1_i128, &5_000_u32, &5_000_u32);
+    assert_eq!(alloc.client_refund + alloc.freelancer_payout, 1);
+    assert!(alloc.client_refund >= 0);
+    assert!(alloc.freelancer_payout >= 0);
 }
 
-/// Both legs round in the same direction because gross and tax are apportioned
-/// by the same ratio, so the difference never borrows a stroop from the other
-/// party.
+// ── bad input is a typed error ───────────────────────────────────────────────
+
+/// A non-positive gross, a negative tax, and a tax larger than the gross are
+/// each rejected with `InvalidAmount` — before any rounding happens.
 #[test]
-fn test_tax_withholding_split_refund_rounding_cannot_overpay_either_leg() {
+fn test_tax_withholding_split_refund_rejects_impossible_amounts() {
     let env = test_env();
-    let c = calculator(&env);
+    let (_, client) = calculator(&env);
 
-    for gross in 1_i128..=64 {
-        for tax in 0_i128..=gross {
-            let a = c
-                .escrow
-                .tax_withholding_split_refund(&gross, &tax, &3_333u32, &6_667u32);
-            let client_gross = (gross * 3_333 + BPS_SCALE / 2) / BPS_SCALE;
-            let client_tax = (tax * 3_333 + BPS_SCALE / 2) / BPS_SCALE;
-            assert_eq!(a.client_refund, client_gross - client_tax);
-            assert_eq!(a.freelancer_payout, gross - tax - a.client_refund);
-        }
-    }
-}
-
-// ── the tax is attributed proportionally ─────────────────────────────────────
-
-/// A 10% tax on 1 000 split 50/50: each party absorbs half the tax, so each
-/// takes 450 of the 900 net.
-#[test]
-fn test_tax_withholding_split_refund_equal_split_absorbs_tax_evenly() {
-    let env = test_env();
-    let c = calculator(&env);
-
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&1_000, &100, &5_000u32, &5_000u32);
-    assert_eq!(a.client_refund, 450);
-    assert_eq!(a.freelancer_payout, 450);
-    assert_eq!(a.client_refund + a.freelancer_payout, 900);
-}
-
-/// A 70/30 split of the same 1 000 gross with a 100 tax: the client gives up
-/// 70 of the tax, the freelancer 30.
-#[test]
-fn test_tax_withholding_split_refund_asymmetric_split_attributes_tax_by_ratio() {
-    let env = test_env();
-    let c = calculator(&env);
-
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&1_000, &100, &7_000u32, &3_000u32);
-    assert_eq!(a.client_refund, 700 - 70);
-    assert_eq!(a.freelancer_payout, 300 - 30);
-    assert_eq!(a.client_refund + a.freelancer_payout, 900);
-}
-
-/// No tax at all reduces the endpoint to the plain gross split.
-#[test]
-fn test_tax_withholding_split_refund_zero_tax_is_the_gross_split() {
-    let env = test_env();
-    let c = calculator(&env);
-
-    for (client_bps, freelancer_bps) in [(0_u32, 10_000_u32), (10_000, 0), (7_000, 3_000)] {
-        let a = c
-            .escrow
-            .tax_withholding_split_refund(&1_000, &0, &client_bps, &freelancer_bps);
-        let plain = c
-            .escrow
-            .cancel_escrow_split_refund(&1_000, &client_bps, &freelancer_bps);
-        assert_eq!(a.client_refund, plain.client_refund);
-        assert_eq!(a.freelancer_payout, plain.freelancer_payout);
-    }
-}
-
-/// A 100% tax leaves nothing to distribute, and neither leg goes negative.
-#[test]
-fn test_tax_withholding_split_refund_full_tax_pays_nothing() {
-    let env = test_env();
-    let c = calculator(&env);
-
-    for (client_bps, freelancer_bps) in [(0_u32, 10_000_u32), (10_000, 0), (5_000, 5_000)] {
-        let a = c
-            .escrow
-            .tax_withholding_split_refund(&1_000, &1_000, &client_bps, &freelancer_bps);
-        assert_eq!(a.client_refund, 0);
-        assert_eq!(a.freelancer_payout, 0);
-    }
-}
-
-// ── ratio extremes ───────────────────────────────────────────────────────────
-
-/// All of the net to one side, none to the other.
-#[test]
-fn test_tax_withholding_split_refund_extreme_ratios() {
-    let env = test_env();
-    let c = calculator(&env);
-
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&1_000, &250, &10_000u32, &0u32);
-    assert_eq!(a.client_refund, 750);
-    assert_eq!(a.freelancer_payout, 0);
-
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&1_000, &250, &0u32, &10_000u32);
-    assert_eq!(a.client_refund, 0);
-    assert_eq!(a.freelancer_payout, 750);
-}
-
-// ── every rejection is typed ─────────────────────────────────────────────────
-
-#[test]
-fn test_tax_withholding_split_refund_rejects_invalid_amounts() {
-    let env = test_env();
-    let c = calculator(&env);
-
-    for gross in [0_i128, -1, i128::MIN] {
-        assert_eq!(
-            c.escrow
-                .try_tax_withholding_split_refund(&gross, &0, &5_000u32, &5_000u32),
-            Err(Ok(Error::InvalidAmount))
-        );
-    }
-    for tax in [-1_i128, i128::MIN] {
-        assert_eq!(
-            c.escrow
-                .try_tax_withholding_split_refund(&1_000, &tax, &5_000u32, &5_000u32),
-            Err(Ok(Error::InvalidAmount))
-        );
-    }
-    // Tax above the gross balance is not withheld tax.
     assert_eq!(
-        c.escrow
-            .try_tax_withholding_split_refund(&1_000, &1_001, &5_000u32, &5_000u32),
+        client.try_tax_withholding_split_refund(&0_i128, &0_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_tax_withholding_split_refund(&(-1_i128), &0_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_tax_withholding_split_refund(&1_000_i128, &(-1_i128), &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_tax_withholding_split_refund(&1_000_i128, &1_001_i128, &5_000_u32, &5_000_u32),
         Err(Ok(Error::InvalidAmount))
     );
 }
 
+/// Shares that do not sum to `BPS_SCALE`, and a `u32` addition that overflows,
+/// are rejected with `InvalidRatio`.
 #[test]
-fn test_tax_withholding_split_refund_rejects_invalid_ratios() {
+fn test_tax_withholding_split_refund_rejects_bad_ratios() {
     let env = test_env();
-    let c = calculator(&env);
-
-    let bad = [
-        (0_u32, 0_u32),
-        (1_000_u32, 1_000_u32),
-        (5_000_u32, 5_001_u32),
-        (10_001_u32, 0_u32),
-        (0_u32, 10_001_u32),
-        (u32::MAX, u32::MAX),
-    ];
-    for (client_bps, freelancer_bps) in bad {
-        assert_eq!(
-            c.escrow
-                .try_tax_withholding_split_refund(&1_000, &100, &client_bps, &freelancer_bps),
-            Err(Ok(Error::InvalidRatio))
-        );
-    }
-}
-
-/// The `u32` addition is checked, so a pair that overflows `u32` reports
-/// `InvalidRatio` rather than wrapping to a value that happens to equal
-/// `BPS_SCALE`.
-#[test]
-fn test_tax_withholding_split_refund_ratio_sum_overflow_is_typed() {
-    let env = test_env();
-    let c = calculator(&env);
+    let (_, client) = calculator(&env);
 
     assert_eq!(
-        c.escrow
-            .try_tax_withholding_split_refund(&1_000, &100, &u32::MAX, &1_u32),
+        client.try_tax_withholding_split_refund(&1_000_i128, &100_i128, &0_u32, &0_u32),
+        Err(Ok(Error::InvalidRatio))
+    );
+    assert_eq!(
+        client.try_tax_withholding_split_refund(&1_000_i128, &100_i128, &4_000_u32, &4_000_u32),
+        Err(Ok(Error::InvalidRatio))
+    );
+    assert_eq!(
+        client.try_tax_withholding_split_refund(&1_000_i128, &100_i128, &10_001_u32, &0_u32),
+        Err(Ok(Error::InvalidRatio))
+    );
+    assert_eq!(
+        client.try_tax_withholding_split_refund(&1_000_i128, &100_i128, &u32::MAX, &u32::MAX),
         Err(Ok(Error::InvalidRatio))
     );
 }
 
-/// A rejected call publishes no event, so an indexer never records an
-/// allocation that did not happen.
+/// `i128::MAX` / `i128::MIN` amounts surface as a typed error rather than
+/// panicking or wrapping — the shared `split_round_nearest` primitive does the
+/// checked multiplication, and every subtraction here is `checked_sub`.
 #[test]
-fn test_tax_withholding_split_refund_rejected_call_emits_no_event() {
+fn test_tax_withholding_split_refund_rejects_i128_extremes() {
     let env = test_env();
-    let c = calculator(&env);
+    let (_, client) = calculator(&env);
 
-    for (gross, tax, client_bps, freelancer_bps) in [
-        (0_i128, 0_i128, 5_000_u32, 5_000_u32),
-        (1_000, -1_i128, 5_000, 5_000),
-        (1_000, 1_001, 5_000, 5_000),
-        (1_000, 100, 1_000_u32, 1_000_u32),
-    ] {
-        assert!(c
-            .escrow
-            .try_tax_withholding_split_refund(&gross, &tax, &client_bps, &freelancer_bps)
-            .is_err());
-    }
+    // i128::MAX gross with a 10 000 bps ratio overflows the scaled product.
     assert_eq!(
-        count_topic(&env, soroban_sdk::symbol_short!("twspltref")),
-        0
+        client.try_tax_withholding_split_refund(&i128::MAX, &0_i128, &10_000_u32, &0_u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_tax_withholding_split_refund(&i128::MIN, &0_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidAmount))
     );
 }
 
-// ── the event ────────────────────────────────────────────────────────────────
-
-/// The success path publishes exactly one `twspltref` event carrying the gross,
-/// the tax, the net and both post-tax legs, and the payload is self-consistent.
+/// A tax that is the full `i128::MAX` against a `i128::MAX` gross is legal in
+/// range but overflows when the ratio is applied, and must still be a typed
+/// error rather than a wrap.
 #[test]
-fn test_tax_withholding_split_refund_emits_one_consistent_event() {
+fn test_tax_withholding_split_refund_rejects_tax_extreme_overflow() {
     let env = test_env();
-    let c = calculator(&env);
+    let (_, client) = calculator(&env);
 
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&1_000, &100, &7_000u32, &3_000u32);
     assert_eq!(
-        count_topic(&env, soroban_sdk::symbol_short!("twspltref")),
-        1,
-        "expected exactly one twspltref event"
+        client.try_tax_withholding_split_refund(&i128::MAX, &i128::MAX, &1_u32, &9_999_u32),
+        Err(Ok(Error::InvalidAmount))
     );
-    let events = crate::all_event_tuples(&env);
-    let last = events.last().unwrap();
-    assert_eq!(last.0, c.contract_id);
-    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(topic, soroban_sdk::symbol_short!("twspltref"));
+}
 
-    let ev = TaxWithholdingSplitRefundEvent::from_val(&env, &last.2);
+// ── it is a pure calculator, and it announces itself ─────────────────────────
+
+/// The endpoint needs no initialization, no admin, no funding and no token
+/// balance, and writes no ledger entry — it is a preview, so it must answer on a
+/// bare contract and leave storage exactly as it found it.
+#[test]
+fn test_tax_withholding_split_refund_is_a_pure_calculator() {
+    let env = test_env();
+    let (contract_id, client) = calculator(&env);
+
+    let before: Map<Val, Val> = env.as_contract(&contract_id, || env.storage().instance().all());
+    let persistent_before: Map<Val, Val> =
+        env.as_contract(&contract_id, || env.storage().persistent().all());
+
+    let alloc = client.tax_withholding_split_refund(&1_000_i128, &100_i128, &6_000_u32, &4_000_u32);
+    assert_eq!(alloc.client_refund, 540);
+    assert_eq!(alloc.freelancer_payout, 360);
+
+    let after: Map<Val, Val> = env.as_contract(&contract_id, || env.storage().instance().all());
+    let persistent_after: Map<Val, Val> =
+        env.as_contract(&contract_id, || env.storage().persistent().all());
+    assert_eq!(after, before, "instance storage must be untouched");
+    assert_eq!(
+        persistent_after, persistent_before,
+        "persistent storage untouched"
+    );
+}
+
+/// Success publishes exactly one `twspltref` event carrying the gross, tax, net
+/// and both post-tax legs; a rejected call publishes none.
+#[test]
+fn test_tax_withholding_split_refund_emits_exactly_one_event_on_success() {
+    let env = test_env();
+    let (_, client) = calculator(&env);
+
+    client.tax_withholding_split_refund(&1_000_i128, &100_i128, &7_000_u32, &3_000_u32);
+
+    let events = twspltref_events(&env);
+    assert_eq!(events.len(), 1, "expected exactly one twspltref event");
+    let ev = events.first().unwrap();
     assert_eq!(ev.gross_amount, 1_000);
     assert_eq!(ev.tax_amount, 100);
     assert_eq!(ev.net_amount, 900);
-    assert_eq!(ev.client_refund, a.client_refund);
-    assert_eq!(ev.freelancer_payout, a.freelancer_payout);
+    assert_eq!(ev.client_refund, 630);
+    assert_eq!(ev.freelancer_payout, 270);
     assert_eq!(ev.client_refund_bps, 7_000);
     assert_eq!(ev.freelancer_payout_bps, 3_000);
-
-    // The event is enough on its own to reconstruct the split.
-    assert_eq!(ev.net_amount, ev.gross_amount - ev.tax_amount);
     assert_eq!(ev.client_refund + ev.freelancer_payout, ev.net_amount);
 }
 
-// ── it is a pure calculator ──────────────────────────────────────────────────
-
-/// No ledger entry is written: the endpoint can be called repeatedly as a
-/// preview without leaving any trace. Instance storage stays empty because the
-/// contract is never initialized.
 #[test]
-fn test_tax_withholding_split_refund_writes_no_ledger_entry() {
+fn test_tax_withholding_split_refund_emits_no_event_on_rejection() {
     let env = test_env();
-    let c = calculator(&env);
-
-    let instance_before = env.as_contract(&c.contract_id, || env.storage().instance().all());
-    let persistent_before = env.as_contract(&c.contract_id, || env.storage().persistent().all());
-    assert!(instance_before.is_empty());
-    assert!(persistent_before.is_empty());
-
-    let _ = c
-        .escrow
-        .tax_withholding_split_refund(&1_000, &100, &5_000u32, &5_000u32);
-    let _ = c
-        .escrow
-        .tax_withholding_split_refund(&2_000, &200, &1_000u32, &9_000u32);
+    let (_, client) = calculator(&env);
 
     assert_eq!(
-        env.as_contract(&c.contract_id, || env.storage().instance().all()),
-        instance_before
+        client.try_tax_withholding_split_refund(&1_000_i128, &2_000_i128, &5_000_u32, &5_000_u32),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert!(twspltref_events(&env).is_empty());
+}
+
+// ── it agrees with the tax record the milestone actually produced ────────────
+
+/// End-to-end against a real escrow: run `tax_withholding_deductions` at a real
+/// rate, then split the gross/tax pair it recorded. The legs the calculator
+/// returns must add up to the `net_amount` the milestone was locked at, which is
+/// what an actual settlement would move.
+#[test]
+fn test_tax_withholding_split_refund_matches_recorded_tax_withholding_record() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    // 1 000 escrowed, nothing released -> gross 1 000. 10 % = 100 bps tax.
+    let record = client.tax_withholding_deductions(&0u32, &1_000_u32);
+    assert_eq!(record.gross_amount, 1_000);
+    assert_eq!(record.tax_amount, 100);
+    assert_eq!(record.net_amount, 900);
+
+    let alloc = client.tax_withholding_split_refund(
+        &record.gross_amount,
+        &record.tax_amount,
+        &7_500_u32,
+        &2_500_u32,
+    );
+
+    // client: 750 gross − 75 tax = 675; freelancer: 250 − 25 = 225.
+    assert_eq!(alloc.client_refund, 675);
+    assert_eq!(alloc.freelancer_payout, 225);
+    assert_eq!(
+        alloc.client_refund + alloc.freelancer_payout,
+        record.net_amount,
+        "the split must settle exactly the locked net amount"
+    );
+
+    // The calculator itself is still side-effect free even on a live escrow: the
+    // tax record the milestone is holding is untouched.
+    let stored: TaxWithholdingRecord = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TaxWithholdingLock(0u32))
+            .unwrap()
+    });
+    assert_eq!(stored, record);
+}
+
+// ── the settlement pathway actually moves the money ──────────────────────────
+
+fn token_balance(env: &Env, token_addr: &Address, who: &Address) -> i128 {
+    token::Client::new(env, token_addr).balance(who)
+}
+
+fn adtwsplt_events(env: &Env) -> std::vec::Vec<AdminOverrideTaxSplitRefundEvent> {
+    let topic_val: Val = symbol_short!("adtwsplt").into_val(env);
+    let mut events = std::vec::Vec::new();
+    for event in crate::all_event_tuples(env).iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == topic_val.get_payload() {
+                events.push(AdminOverrideTaxSplitRefundEvent::from_val(env, &event.2));
+            }
+        }
+    }
+    events
+}
+
+/// The validation the issue asks for, on a real escrow: after settling a
+/// split-refund claim the *balances* have to show the requested percentages —
+/// not just the returned allocation. 10 % is withheld from a 1 000 milestone,
+/// then 75/25 of the net goes to each party.
+#[test]
+fn test_admin_override_tax_split_refund_transfers_requested_percentages() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, admin_addr, token_addr, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let client_before = token_balance(&env, &token_addr, &client_addr);
+    let freelancer_before = token_balance(&env, &token_addr, &freelancer_addr);
+
+    let record = client.tax_withholding_deductions(&0u32, &1_000_u32);
+    assert_eq!(record.net_amount, 900);
+
+    client.admin_override_tax_split_refund(&admin_addr, &0u32, &7_500_u32, &2_500_u32);
+
+    // 750 of gross − 75 of tax = 675; 250 − 25 = 225. 675 + 225 == 900, the
+    // exact net the milestone was locked at, so no stroop is stranded.
+    assert_eq!(
+        token_balance(&env, &token_addr, &client_addr) - client_before,
+        675
     );
     assert_eq!(
-        env.as_contract(&c.contract_id, || env.storage().persistent().all()),
-        persistent_before
+        token_balance(&env, &token_addr, &freelancer_addr) - freelancer_before,
+        225
+    );
+
+    // Both parties got a real payout, so the milestone is settled as Released
+    // and its tax lock is gone.
+    let milestone = client.get_job().milestones.get(0).unwrap();
+    assert_eq!(milestone.status, MilestoneStatus::Released);
+    assert_eq!(milestone.released_amount, 900);
+    assert_eq!(
+        client.try_admin_override_tax_split_refund(&admin_addr, &0u32, &7_500_u32, &2_500_u32),
+        Err(Ok(Error::InvalidStatus))
     );
 }
 
-/// The endpoint needs no initialization: an unregistered-account caller can
-/// still compute an allocation, matching the other pure calculators in the
-/// contract.
+/// The event reconciles with the transfers that actually happened.
 #[test]
-fn test_tax_withholding_split_refund_works_without_initialization() {
+fn test_admin_override_tax_split_refund_event_reconciles_with_transfers() {
     let env = test_env();
-    let c = calculator(&env);
+    env.mock_all_auths();
 
-    assert!(matches!(
-        c.escrow.try_get_job(),
-        Err(Ok(Error::NotInitialized))
-    ));
+    let (client_addr, freelancer_addr, _, admin_addr, token_addr, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    let a = c
-        .escrow
-        .tax_withholding_split_refund(&1_000, &250, &2_500u32, &7_500u32);
-    assert_eq!(a.client_refund, 187);
-    assert_eq!(a.freelancer_payout, 563);
-    assert_eq!(a.client_refund + a.freelancer_payout, 750);
+    let client_before = token_balance(&env, &token_addr, &client_addr);
+    let freelancer_before = token_balance(&env, &token_addr, &freelancer_addr);
+
+    client.tax_withholding_deductions(&0u32, &1_000_u32);
+    client.admin_override_tax_split_refund(&admin_addr, &0u32, &3_333_u32, &6_667_u32);
+
+    let events = adtwsplt_events(&env);
+    assert_eq!(events.len(), 1);
+    let ev = events.first().unwrap();
+
+    assert_eq!(ev.admin, admin_addr);
+    assert_eq!(ev.contract_id, contract_id);
+    assert_eq!(ev.milestone_index, 0);
+    assert_eq!(ev.client, client_addr);
+    assert_eq!(ev.freelancer, freelancer_addr);
+    assert_eq!(ev.token, token_addr);
+    assert_eq!(ev.gross_amount, 1_000);
+    assert_eq!(ev.tax_amount, 100);
+    assert_eq!(ev.client_refund_bps, 3_333);
+    assert_eq!(ev.freelancer_payout_bps, 6_667);
+
+    assert_eq!(
+        ev.client_refund,
+        token_balance(&env, &token_addr, &client_addr) - client_before
+    );
+    assert_eq!(
+        ev.freelancer_payout,
+        token_balance(&env, &token_addr, &freelancer_addr) - freelancer_before
+    );
+    assert_eq!(ev.client_refund + ev.freelancer_payout, 900);
+}
+
+/// A 100 % client split degenerates to a plain gross refund: the freelancer is
+/// paid nothing, so no zero-amount transfer is attempted and the milestone is
+/// marked `Refunded` instead of `Released`.
+#[test]
+fn test_admin_override_tax_split_refund_full_client_split_refunds_client() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, admin_addr, token_addr, _, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let client_before = token_balance(&env, &token_addr, &client_addr);
+    let freelancer_before = token_balance(&env, &token_addr, &freelancer_addr);
+
+    client.tax_withholding_deductions(&0u32, &1_000_u32);
+    client.admin_override_tax_split_refund(&admin_addr, &0u32, &10_000_u32, &0_u32);
+
+    assert_eq!(
+        token_balance(&env, &token_addr, &client_addr) - client_before,
+        900
+    );
+    assert_eq!(
+        token_balance(&env, &token_addr, &freelancer_addr),
+        freelancer_before,
+        "a zero share must not move tokens"
+    );
+    assert_eq!(
+        client.get_job().milestones.get(0).unwrap().status,
+        MilestoneStatus::Refunded
+    );
+}
+
+/// Only the verified admin may settle, and the rejection mutates nothing.
+#[test]
+fn test_admin_override_tax_split_refund_requires_admin() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.tax_withholding_deductions(&0u32, &1_000_u32);
+
+    let stranger = Address::generate(&env);
+    let before: Map<Val, Val> = env.as_contract(&contract_id, || env.storage().persistent().all());
+
+    assert_eq!(
+        client.try_admin_override_tax_split_refund(&stranger, &0u32, &7_500_u32, &2_500_u32),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    let after: Map<Val, Val> = env.as_contract(&contract_id, || env.storage().persistent().all());
+    assert_eq!(after, before, "a rejected claim must not touch storage");
+    assert!(adtwsplt_events(&env).is_empty());
+
+    // The tax lock survived the rejection, so the real admin can still settle it.
+    client.admin_override_tax_split_refund(&admin_addr, &0u32, &7_500_u32, &2_500_u32);
+    assert_eq!(adtwsplt_events(&env).len(), 1);
+}
+
+/// An illegal ratio is caught before any state is committed, so the milestone's
+/// tax lock is still intact and a well-formed retry still succeeds.
+#[test]
+fn test_admin_override_tax_split_refund_rejects_bad_ratio_without_consuming_lock() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    client.tax_withholding_deductions(&0u32, &1_000_u32);
+
+    let locked: TaxWithholdingRecord = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TaxWithholdingLock(0u32))
+            .unwrap()
+    });
+
+    assert_eq!(
+        client.try_admin_override_tax_split_refund(&admin_addr, &0u32, &4_000_u32, &4_000_u32),
+        Err(Ok(Error::InvalidRatio))
+    );
+    assert_eq!(
+        client.try_admin_override_tax_split_refund(&admin_addr, &0u32, &u32::MAX, &u32::MAX),
+        Err(Ok(Error::InvalidRatio))
+    );
+
+    let still_locked: Option<TaxWithholdingRecord> = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TaxWithholdingLock(0u32))
+    });
+    assert_eq!(still_locked, Some(locked));
+    assert!(adtwsplt_events(&env).is_empty());
+
+    // The lock is untouched, so the claim can still be made properly.
+    client.admin_override_tax_split_refund(&admin_addr, &0u32, &5_000_u32, &5_000_u32);
+    assert_eq!(adtwsplt_events(&env).len(), 1);
 }

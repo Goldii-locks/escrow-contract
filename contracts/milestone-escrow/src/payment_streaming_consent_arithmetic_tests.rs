@@ -69,6 +69,7 @@ fn initialised_escrow(env: &Env) -> Consent<'_> {
     }
 }
 
+/// Every ledger entry the contract holds, in all three storage tiers.
 #[allow(clippy::type_complexity)]
 fn storage_snapshot(
     env: &Env,
