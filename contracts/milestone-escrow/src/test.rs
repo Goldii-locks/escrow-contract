@@ -3366,8 +3366,8 @@ fn test_multisig_lock_before_initialize_returns_not_initialized() {
     assert_eq!(locked, None);
 }
 
-/// Calling multisig_lock twice is idempotent — the flag stays set and no
-/// error is returned on the second call.
+/// Calling multisig_lock twice rejects the second call with InvalidStatus —
+/// the flag stays set (already locked -> InvalidStatus).
 #[test]
 fn test_multisig_lock_idempotent() {
     let env = Env::default();
@@ -3378,8 +3378,9 @@ fn test_multisig_lock_idempotent() {
     client.multisig_lock(&admin_addr);
     assert!(client.is_multisig_locked());
 
-    // Second call must succeed and leave the flag set.
-    client.multisig_lock(&admin_addr);
+    // Second call must fail with InvalidStatus and leave the flag set.
+    let second = client.try_multisig_lock(&admin_addr);
+    assert_eq!(second, Err(Ok(Error::InvalidStatus)));
     assert!(client.is_multisig_locked());
 }
 
