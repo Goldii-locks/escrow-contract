@@ -1667,6 +1667,31 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Precondition guard for callers that are about to *create or replace* the
+    /// interest/yield share configuration.
+    ///
+    /// `ensure_interest_yield_unlocked` maps a missing state to
+    /// `NotInitialized`, which is what the read paths
+    /// (`get_escrow_interest_yield`, `is_escrow_interest_yield_locked`) need.
+    /// A write path cannot reuse it: the very first `set_escrow_interest_yield`
+    /// call is *expected* to find no state and is supposed to create it. Such
+    /// callers therefore had to pair a `has()` probe with the `ensure` call,
+    /// costing two reads of the same instance entry.
+    ///
+    /// This helper collapses the pair into a single read, so a caller that
+    /// replaces the configuration pays one ledger read instead of two:
+    /// * absent state  – not locked, so the write is allowed to create it;
+    /// * present, `locked == false` – writable;
+    /// * present, `locked == true`  – the illegal source state, `EscrowLocked`.
+    fn ensure_interest_yield_writable(env: &Env) -> Result<(), Error> {
+        let state: Option<EscrowInterestYieldState> =
+            env.storage().instance().get(&DataKey::InterestYieldState);
+        if state.is_some_and(|state| state.locked) {
+            return Err(Error::EscrowLocked);
+        }
+        Ok(())
+    }
+
     fn split_round_nearest(
         total: i128,
         numerator: i128,
@@ -5733,6 +5758,31 @@ impl MilestoneEscrow {
     /// default on first write). Rejects invalid share totals and modifications
     /// while an execution lock is held.
     ///
+    /// ## Guard order
+    ///
+    /// Every guard runs before this function reads the payload ledger entry or
+    /// performs its single write, in this order:
+    ///
+    /// 1. **Authorization** — `require_admin_from_instance` performs
+    ///    `admin.require_auth()` (so a transaction that omits the admin
+    ///    signature is rejected by the host before the contract body executes)
+    ///    and then compares against the stored admin.  Being first, an
+    ///    unauthorized caller learns nothing about the configuration.
+    /// 2. **Illegal source state** — `ensure_interest_yield_writable` rejects a
+    ///    locked configuration with `EscrowLocked`.  This runs *before* the
+    ///    argument validation below so the state guard is authoritative: a
+    ///    caller that is refused because the configuration is frozen for
+    ///    execution always gets `EscrowLocked`, never `InvalidRatio`, and so
+    ///    cannot use the error to probe the guard's state.
+    /// 3. **Argument validation** — `validate_interest_yield_share_config` is
+    ///    pure (no ledger access), so a malformed ratio is rejected without
+    ///    touching the ledger at all.
+    ///
+    /// Because the guards are exhaustive, the only way to reach the write is
+    /// with an authenticated admin, an unlocked configuration, and a ratio that
+    /// sums to `BPS_SCALE`; every rejection path returns above the write and
+    /// therefore leaves the ledger byte-for-byte unchanged.
+    ///
     /// ## Storage-footprint note
     ///
     /// This function uses `require_admin_from_instance` rather than the
@@ -5740,26 +5790,39 @@ impl MilestoneEscrow {
     /// (`DataKey::Admin`, instance) and all `InterestYieldState` reads/writes
     /// (`DataKey::InterestYieldState`, instance) touch the **same single
     /// ledger entry** (instance storage) instead of two (persistent + instance).
+    /// The precondition guard also issues exactly one read of
+    /// `InterestYieldState`, so an update costs two reads total rather than
+    /// three.
     ///
     /// # Errors
+    /// Listed in evaluation order; a call that violates more than one guard
+    /// fails with the first match.
     /// * `NotInitialized` – Contract admin key is missing.
     /// * `Unauthorized`   – Caller is not the stored admin.
-    /// * `InvalidRatio`   – Shares do not sum to exactly 10_000 bps.
     /// * `EscrowLocked`   – Configuration is locked for execution.
+    /// * `InvalidRatio`   – Shares do not sum to exactly 10_000 bps.
     pub fn set_escrow_interest_yield(
         env: Env,
         admin: Address,
         client_share_bps: u32,
         freelancer_share_bps: u32,
     ) -> Result<(), Error> {
-        // Both the Admin read and all InterestYieldState reads/writes are in
-        // instance storage, so the whole function touches a single ledger entry.
+        // Authorization: `admin.require_auth()` inside the helper makes the
+        // host reject a missing signature before this body runs at all; the
+        // equality check then rejects a validly-signed non-admin. Both the
+        // Admin read and all InterestYieldState reads/writes are in instance
+        // storage, so the whole function touches a single ledger entry.
         Self::require_admin_from_instance(&env, &admin)?;
-        Self::validate_interest_yield_share_config(client_share_bps, freelancer_share_bps)?;
 
-        if env.storage().instance().has(&DataKey::InterestYieldState) {
-            Self::ensure_interest_yield_unlocked(&env)?;
-        }
+        // Illegal source state: a locked configuration may not be replaced
+        // until an admin clears the lock. Checked before the pure argument
+        // validation so the freeze takes precedence over the ratio, and in a
+        // single read of the instance entry.
+        Self::ensure_interest_yield_writable(&env)?;
+
+        // Argument validation: pure, so a bad ratio is rejected without any
+        // further ledger access.
+        Self::validate_interest_yield_share_config(client_share_bps, freelancer_share_bps)?;
 
         Self::store_interest_yield_state(
             &env,

@@ -47,6 +47,8 @@ mod propose_admin_transfer_footprint_tests;
 mod read_path_tests;
 #[path = "revoke_cancel_approval_tests.rs"]
 mod revoke_cancel_approval_tests;
+#[path = "set_escrow_interest_yield_guards_tests.rs"]
+mod set_escrow_interest_yield_guards_tests;
 #[path = "split_refund_net_distribution_tests.rs"]
 mod split_refund_net_distribution_tests;
 #[path = "tax_withholding_tests.rs"]
