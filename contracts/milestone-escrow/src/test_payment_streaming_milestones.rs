@@ -487,14 +487,25 @@ fn test_streaming_matrix_large_total_without_overflow() {
 fn test_streaming_matrix_overflow_is_rejected_not_wrapped() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = calculator_only(&env);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
 
     // total × numerator overflows i128 — must surface as an error rather
-    // than silently wrapping to a bogus payout.
+    // than silently wrapping to a bogus payout or writing an execution lock.
     assert_eq!(
         escrow.try_payment_streaming_milestones(&i128::MAX, &i128::MAX, &i128::MAX),
         Err(Ok(Error::InvalidAmount))
     );
+    // The product is representable here, but adding the rounding bias is not.
+    assert_eq!(
+        escrow.try_payment_streaming_milestones(&i128::MAX, &1_i128, &i128::MAX),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert!(!env.as_contract(&contract_id, || env
+        .storage()
+        .instance()
+        .has(&DataKey::PaymentStreamingExecutionLock)));
+    assert!(crate::all_event_tuples(&env).is_empty());
 }
 
 #[test]

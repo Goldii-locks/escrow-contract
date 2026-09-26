@@ -2701,7 +2701,7 @@ impl MilestoneEscrow {
     ///
     /// Strictly read-only: performs a single `get` on instance storage and no
     /// writes to instance, persistent, or temporary storage. Keep it that way —
-    /// the storage handle is only ever used through [`Self::read_whitelist`].
+    /// the storage handle is only ever used through `Self::read_whitelist`.
     ///
     /// # Errors
     /// * `NotInitialized` – The whitelist has never been written (the contract
@@ -4403,7 +4403,7 @@ impl MilestoneEscrow {
     /// Lift an emergency freeze, restoring normal operation.
     ///
     /// # Business rules
-    /// Mirrors [`emergency_pause`]: the contract must be initialised, the
+    /// Mirrors `emergency_pause`: the contract must be initialised, the
     /// caller must be the stored admin, no transition may be mid-execution,
     /// and the contract must actually be paused.  Unpausing a running
     /// contract is rejected with `NotPaused` rather than silently succeeding,
@@ -4844,7 +4844,7 @@ impl MilestoneEscrow {
     ///
     /// # Overflow safety
     ///
-    /// Every `i128` step performed by [`Self::allocate_platform_fee`] is a
+    /// Every `i128` step performed by `Self::allocate_platform_fee` is a
     /// `checked_*` counterpart, so no arithmetic in this function can panic
     /// (the release profile sets `overflow-checks = true` and `panic = "abort"`,
     /// which would abort the whole transaction) or silently wrap into a
@@ -4898,54 +4898,53 @@ impl MilestoneEscrow {
         Ok(distribution)
     }
 
+    /// Calculate a nearest-rounded split of a total between a streamed payout
+    /// and a client refund. This is an unauthenticated calculator and does not
+    /// read job metadata or transfer funds.
+    ///
+    /// # Returns
+    /// `RatioSplit.first` is the streamed payout; `RatioSplit.second` is the
+    /// client refund. The two values sum exactly to `total_amount`.
+    ///
+    /// # Errors
+    /// * `InvalidAmount` – `total_amount` is not positive, or checked
+    ///   arithmetic overflows while calculating the split.
+    /// * `InvalidRatio` – `denominator` is not positive, or `numerator` is
+    ///   outside `0..=denominator`.
+    ///
+    /// Arithmetic and input validation complete before the execution lock is
+    /// written, so rejected calls leave no storage entry or event behind.
     pub fn payment_streaming_milestones(
         env: Env,
         total_amount: i128,
         numerator: i128,
         denominator: i128,
     ) -> Result<RatioSplit, Error> {
+        Self::validate_streaming_ratio(total_amount, numerator, denominator)?;
+        let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
+
         // Acquire execution lock so concurrent state mutations observe the
-        // in-progress status and bail rather than interleaving.
+        // in-progress status while the successful calculation is published.
         env.storage()
             .instance()
             .set(&DataKey::PaymentStreamingExecutionLock, &true);
 
-        let result = (|| {
-            // Guard: reject zero or negative totals so that streaming operations
-            // are never initiated on an empty balance.  A zero total would
-            // distribute nothing to either party and signals a misconfigured or
-            // already-drained escrow.
-            if total_amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-            if denominator <= 0 {
-                return Err(Error::InvalidRatio);
-            }
-            if numerator < 0 || numerator > denominator {
-                return Err(Error::InvalidRatio);
-            }
-
-            let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
-
-            env.events().publish(
-                (symbol_short!("p_stream"),),
-                PaymentStreamingEvent {
-                    total_amount,
-                    numerator,
-                    denominator,
-                    streamed_payout: split.first,
-                    client_refund: split.second,
-                },
-            );
-
-            Ok(split)
-        })();
+        env.events().publish(
+            (symbol_short!("p_stream"),),
+            PaymentStreamingEvent {
+                total_amount,
+                numerator,
+                denominator,
+                streamed_payout: split.first,
+                client_refund: split.second,
+            },
+        );
 
         env.storage()
             .instance()
             .remove(&DataKey::PaymentStreamingExecutionLock);
 
-        result
+        Ok(split)
     }
 
     /// Compute a streaming milestone split that requires **dual consent**:
@@ -7202,7 +7201,7 @@ impl MilestoneEscrow {
     /// This is a pure calculator — it moves no tokens and writes no ledger
     /// entry — so it can be used to preview a split-refund claim against a
     /// withheld balance before anything is committed.  It is the calculator
-    /// counterpart of [`Self::allocate_withholding_refund`], which holds the
+    /// counterpart of `Self::allocate_withholding_refund`, which holds the
     /// arithmetic.
     ///
     /// Emits [`TaxWithholdingSplitRefundEvent`] on success carrying the gross,
@@ -7434,7 +7433,7 @@ impl MilestoneEscrow {
     /// share of the withheld tax.
     ///
     /// This is the settlement counterpart of
-    /// [`Self::tax_withholding_split_refund`]: the calculator decides the
+    /// `Self::tax_withholding_split_refund`: the calculator decides the
     /// distribution, this function moves the money. The gross and the withheld
     /// tax are apportioned over the same ratio, so the two transfers always add
     /// up to exactly `gross_amount − tax_amount` and the tax is never paid out
@@ -8153,8 +8152,8 @@ impl MilestoneEscrow {
     /// Because it moves no tokens and writes no ledger entry, authorization
     /// cannot be bypassed by calling it — the only way to actually settle a
     /// split refund on the cancellation path is the admin-gated
-    /// [`Self::cancel_escrow_claim_refund`], and moving funds outright is
-    /// [`Self::admin_override_cancel_refund`].  The source-state guards above
+    /// `Self::cancel_escrow_claim_refund`, and moving funds outright is
+    /// `Self::admin_override_cancel_refund`.  The source-state guards above
     /// are therefore the complete set of conditions under which the preview is
     /// allowed to answer; the guards deliberately mirror the claim's, which
     /// requires a cancellation to be in flight.
