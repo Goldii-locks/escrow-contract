@@ -9,8 +9,8 @@ use soroban_sdk::{
 fn positive_times_preserve_amount_across_boundaries() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 101_i128];
+    let (_, _, _, _, _, _contract_id, client) = setup_funded_escrow(&env, amounts);
 
     for (elapsed, total, expected_freelancer) in [
         (0_i128, 10_i128, 0_i128),
@@ -28,8 +28,8 @@ fn positive_times_preserve_amount_across_boundaries() {
 fn invalid_amount_and_time_inputs_return_specific_errors() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_i128];
+    let (_, _, _, _, _, _contract_id, client) = setup_funded_escrow(&env, amounts);
 
     for amount in [0_i128, -1_i128] {
         assert_eq!(
@@ -49,8 +49,8 @@ fn invalid_amount_and_time_inputs_return_specific_errors() {
 fn arithmetic_overflow_is_reported_without_panicking() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, i128::MAX];
+    let (_, _, _, _, _, _contract_id, client) = setup_funded_escrow(&env, amounts);
 
     assert_eq!(
         client.try_milestone_time_extensions(&i128::MAX, &i128::MAX, &i128::MAX),
@@ -59,11 +59,69 @@ fn arithmetic_overflow_is_reported_without_panicking() {
 }
 
 #[test]
+fn test_milestone_time_extensions_rejects_invalid_source_state_without_acquiring_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, amounts);
+
+    // An invalid amount must be rejected with a typed error and must not
+    // acquire the execution lock, leaving no on-chain state mutated.
+    assert_eq!(
+        client.try_milestone_time_extensions(&0, &1, &2),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    let lock_held = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
+            .unwrap_or(false)
+    });
+    assert!(
+        !lock_held,
+        "execution lock must not be acquired on invalid source state"
+    );
+}
+
+#[test]
+fn test_milestone_time_extensions_rejects_unauthorized_single_signature() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amounts = vec![&env, 1_000_i128];
+    let (client_addr, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, amounts);
+
+    // Only the client signs. The dual-consent guard in
+    // `milestone_time_extensions` (via `require_client_and_freelancer_consent`)
+    // triggers when the freelancer's signature is missing, so a single-signed
+    // invocation must never reach the split arithmetic and must not mutate any
+    // on-chain state.
+    let invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "time_extensions_consent",
+        args: (&1_000_i128, &1_i128, &2_i128).into_val(&env),
+        sub_invokes: &[],
+    };
+
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &client_addr,
+            invoke: &invoke,
+        }])
+        .try_milestone_time_extensions(&1_000, &1, &2);
+
+    assert!(
+        matches!(result, Err(Err(_))),
+        "single-signature attempt must revert"
+    );
+}
+
+#[test]
 fn successful_split_emits_complete_event_payload() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 101_i128];
+    let (_, _, _, _, _, _contract_id, client) = setup_funded_escrow(&env, amounts);
 
     let split = client.milestone_time_extensions(&101, &1, &2);
     let all_events = crate::all_event_tuples(&env);
@@ -251,8 +309,8 @@ fn test_milestone_time_extensions_lock_blocks_extend_deadline() {
 fn test_milestone_time_extensions_releases_lock_after_success() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128];
+    let (_, _, _, _, _, contract_id, client) = setup_funded_escrow(&env, amounts);
 
     let _ = client.milestone_time_extensions(&1_000, &1, &2);
 
