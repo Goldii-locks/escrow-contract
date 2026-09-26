@@ -936,6 +936,26 @@ pub struct EscrowInterestYieldUnlockedEvent {
     pub locked: bool,
 }
 
+/// Emitted by `lock_escrow_interest_yield` when the admin takes the execution
+/// lock on the interest/yield share configuration. Every field reconciles with
+/// the state the call persisted under `DataKey::InterestYieldState`:
+/// `client_share_bps` / `freelancer_share_bps` are the shares the lock freezes
+/// (which always sum to `BPS_SCALE`) and `locked` is `true` because the lock is
+/// what the call applied. Emitted only on the success path — a rejected call
+/// (`Unauthorized` / `NotInitialized`) publishes nothing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowInterestYieldLockedEvent {
+    /// Admin that authorised and applied the lock (the acting address).
+    pub admin: Address,
+    /// Client share frozen by the lock, in basis points.
+    pub client_share_bps: u32,
+    /// Freelancer share frozen by the lock, in basis points.
+    pub freelancer_share_bps: u32,
+    /// Lock flag persisted with the state; always `true` after a lock.
+    pub locked: bool,
+}
+
 /// Emitted by `admin_override_streaming_release` when the admin proportionally
 /// settles a `Disputed` milestone using the streaming/time-extension split.
 #[contracttype]
@@ -5826,11 +5846,39 @@ impl MilestoneEscrow {
     }
 
     /// Lock interest/yield share state during pending execution.
+    ///
+    /// Once locked, `set_escrow_interest_yield`, `set_interest_yield_consent`,
+    /// and `interest_yield_split_refund` are all rejected until an admin calls
+    /// `unlock_escrow_interest_yield`.
+    ///
+    /// A `yldlock` / `EscrowInterestYieldLockedEvent` is published once the new
+    /// state is durable so indexers and auditors get an immutable record of the
+    /// lock without polling storage. The event mirrors the persisted state
+    /// field-for-field: the two BPS values are the shares the lock froze and
+    /// `locked` is `true`.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Contract admin key or interest/yield state missing.
+    /// * `Unauthorized` – `admin` does not match the stored admin.
     pub fn lock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
         let mut state = Self::load_interest_yield_state(&env)?;
         state.locked = true;
         Self::store_interest_yield_state(&env, &state);
+
+        // Emitted after the write so the payload can only describe state that
+        // is already durable; no fallible step follows, so a success always
+        // carries exactly one event and a failure carries none.
+        env.events().publish(
+            (symbol_short!("yldlock"),),
+            EscrowInterestYieldLockedEvent {
+                admin,
+                client_share_bps: state.client_share_bps,
+                freelancer_share_bps: state.freelancer_share_bps,
+                locked: state.locked,
+            },
+        );
+
         Ok(())
     }
 
