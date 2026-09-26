@@ -17,7 +17,6 @@
 
 use super::*;
 use crate::{DataKey, Error};
-use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env};
 
 /// Key count and XDR byte size of `contract_id`'s instance storage entry.
@@ -81,7 +80,10 @@ fn revoke_restores_instance_footprint_to_baseline() {
     let (revoked_keys, revoked_bytes) = instance_footprint(&env, &contract_id);
 
     assert!(!has_cancel_approval(&env, &contract_id));
-    assert_eq!(revoked_keys, baseline_keys, "revoke must not leave a key behind");
+    assert_eq!(
+        revoked_keys, baseline_keys,
+        "revoke must not leave a key behind"
+    );
     assert_eq!(
         revoked_bytes, baseline_bytes,
         "revoke must not leave any bytes behind"

@@ -24,7 +24,6 @@
 
 use super::*;
 use crate::DataKey;
-use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env};
 
 fn initialized_escrow(env: &Env) -> (Address, MilestoneEscrowClient<'_>) {
@@ -126,11 +125,11 @@ fn version_emits_no_events() {
     let env = Env::default();
     let (_, escrow) = initialized_escrow(&env);
 
-    let before = crate::all_event_tuples(&env).len();
     escrow.version();
-    let after = crate::all_event_tuples(&env).len();
 
-    assert_eq!(before, after);
+    // The test env only records events from the latest invocation, so this
+    // is exactly what `version` emitted.
+    assert_eq!(crate::all_event_tuples(&env).len(), 0);
 }
 
 // ── #559: documented return contract ─────────────────────────────────────────
