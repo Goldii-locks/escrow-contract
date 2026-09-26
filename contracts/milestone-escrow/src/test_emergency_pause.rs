@@ -82,7 +82,12 @@ fn test_pause_requires_an_initialised_contract() {
         escrow.try_emergency_pause(&stranger, &stranger),
         Err(Ok(Error::NotInitialized))
     );
-    assert!(!escrow.is_emergency_paused());
+    // The rejected pause created no flag, and the read reports the missing
+    // initialization as a typed error rather than a defaulted `false`.
+    assert_eq!(
+        escrow.try_is_emergency_paused(),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]

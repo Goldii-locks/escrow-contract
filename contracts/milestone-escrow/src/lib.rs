@@ -3960,7 +3960,10 @@ impl MilestoneEscrow {
 
         Self::assert_emergency_pause_not_locked(&env)?;
 
-        if Self::is_emergency_paused(env.clone()) {
+        // `load_job_meta` above already proved the contract is initialized, so
+        // the pause-flag read cannot miss here; `?` keeps the path honest
+        // rather than defaulting a missing flag to `false`.
+        if Self::load_emergency_paused(&env)? {
             return Err(Error::AlreadyPaused);
         }
 
@@ -4016,8 +4019,9 @@ impl MilestoneEscrow {
 
         // Reject the illegal source state before any further ledger access
         // (including the transition lock) so a mistaken unpause never mutates
-        // storage.
-        if !Self::is_emergency_paused(env.clone()) {
+        // storage.  The stored-admin check above already proved the contract is
+        // initialized, so the pause-flag read cannot miss here.
+        if !Self::load_emergency_paused(&env)? {
             return Err(Error::NotPaused);
         }
 
@@ -4085,8 +4089,65 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    pub fn is_emergency_paused(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Ep).unwrap_or(false)
+    /// Report whether the emergency-pause flag (`DataKey::Ep`) is set.
+    ///
+    /// This is a **pure read**: it never writes to instance, persistent, or
+    /// temporary storage, emits no events, and requires no authorisation, so
+    /// any caller may invoke it at any time — including while the contract is
+    /// itself emergency-paused.
+    ///
+    /// `initialize` writes `DataKey::Ep = false` as part of its state commit
+    /// (see its rustdoc), so the key is present for every initialized contract
+    /// and the reported flag is always the value last written by
+    /// `emergency_pause`, `emergency_unpause`, or
+    /// `emergency_pause_admin_override`.
+    ///
+    /// # Return values
+    ///
+    /// | State                                          | Return value |
+    /// |------------------------------------------------|--------------|
+    /// | `initialize` never completed successfully       | `Err(Error::NotInitialized)` |
+    /// | Initialized, never paused                       | `Ok(false)` |
+    /// | Initialized, frozen by `emergency_pause` / `emergency_pause_admin_override(_, true)` | `Ok(true)` |
+    /// | Initialized, released by `emergency_unpause` / `emergency_pause_admin_override(_, false)` | `Ok(false)` |
+    ///
+    /// # Errors
+    /// * `NotInitialized` – `DataKey::Ep` is absent from instance storage,
+    ///   which is the case only for contracts on which `initialize` has not
+    ///   yet been successfully invoked.  Callers can therefore distinguish
+    ///   "not paused" (`Ok(false)`) from "not set up yet"
+    ///   (`Err(NotInitialized)`) instead of reading a defaulted `false` for
+    ///   both.
+    ///
+    /// No other error is possible: the function takes no arguments, touches no
+    /// token balance, and does not inspect the pause-transition lock
+    /// (`DataKey::EpLk`) — a pause transition that is mid-execution in the
+    /// same transaction is still reported by whatever value is currently
+    /// stored.
+    pub fn is_emergency_paused(env: Env) -> Result<bool, Error> {
+        Self::load_emergency_paused(&env)
+    }
+
+    /// Pure-read inner implementation for `is_emergency_paused`.
+    ///
+    /// Extracted as a named private helper so that:
+    /// * the public entry-point stays one line, making an accidental write
+    ///   immediately obvious in diff review, and
+    /// * the internal guards (`emergency_pause`, `emergency_unpause`,
+    ///   `emergency_pause_claim_refund`) can share the same read path without
+    ///   re-spelling the storage key or cloning `Env`.
+    ///
+    /// Returns `Err(Error::NotInitialized)` when the pause flag has never been
+    /// written.  A single instance-storage read serves as both the
+    /// initialization guard and the value lookup, so the function touches
+    /// exactly one ledger entry.
+    ///
+    /// **This function must contain only read operations.**
+    fn load_emergency_paused(env: &Env) -> Result<bool, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Ep)
+            .ok_or(Error::NotInitialized)
     }
 
     /// Sets the global platform fee allocation in basis points (BPS).
@@ -5562,6 +5623,8 @@ mod cancel_admin_transfer_tests;
 mod get_pending_admin_transfer_tests;
 #[cfg(test)]
 mod interest_yield_consent_tests;
+#[cfg(test)]
+mod is_emergency_paused_not_initialized_tests;
 #[cfg(test)]
 mod reputation_tests;
 #[cfg(test)]
@@ -7146,7 +7209,9 @@ impl MilestoneEscrow {
         Self::require_admin(&env, &admin)?;
         Self::assert_emergency_pause_not_locked(&env)?;
 
-        if !Self::is_emergency_paused(env.clone()) {
+        // `require_admin` already proved an admin key is stored, so the
+        // pause-flag read cannot miss here.
+        if !Self::load_emergency_paused(&env)? {
             return Err(Error::NotPaused);
         }
 
