@@ -39,6 +39,8 @@ mod multisig_transfer_admin_tests;
 mod platform_fee_allocation_no_mutation_tests;
 #[path = "propose_admin_transfer_footprint_tests.rs"]
 mod propose_admin_transfer_footprint_tests;
+#[path = "set_escrow_interest_yield_guards_tests.rs"]
+mod set_escrow_interest_yield_guards_tests;
 #[path = "split_refund_net_distribution_tests.rs"]
 mod split_refund_net_distribution_tests;
 #[path = "tax_withholding_tests.rs"]
