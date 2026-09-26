@@ -6913,7 +6913,9 @@ impl MilestoneEscrow {
     ///
     /// # Checks (in order)
     /// 1. `admin.require_auth()` — SDK-level signature check.
-    /// 2. `require_admin` — verified admin key matches `DataKey::Admin`.
+    /// 2. `require_admin_from_instance` — verified admin key matches the
+    ///    instance copy of `DataKey::Admin` (see the storage-footprint note
+    ///    on the function body).
     /// 3. Contract must currently be paused (`NotPaused`).
     /// 4. No pause transition may already be mid-execution
     ///    (`EmergencyPauseInProgress`).
@@ -6927,16 +6929,15 @@ impl MilestoneEscrow {
     /// * `NotPaused`                – The escrow is not currently paused.
     /// * `EmergencyPauseInProgress` – A pause transition is already running.
     pub fn admin_resume_escrow(env: Env, admin: Address) -> Result<(), Error> {
-        // Auth + init guards first — a single require_auth so the host does not
-        // abort on a duplicated auth requirement.
-        admin.require_auth();
-        if !env.storage().persistent().has(&DataKey::Admin) {
-            return Err(Error::NotInitialized);
-        }
-        let stored_admin = Self::load_admin(&env)?;
-        if stored_admin != admin {
-            return Err(Error::Unauthorized);
-        }
+        // Storage-footprint note (issue #449): authorize against the *instance*
+        // copy of `DataKey::Admin` via `require_admin_from_instance` instead of
+        // probing the persistent copy twice (`has` + `load_admin`'s `get`).
+        // `initialize` writes both copies atomically and every admin-transfer
+        // path keeps them in sync, so this is the same logical check — but now
+        // the admin read and every `Paused` / `EpLk` read and write below land
+        // on the single instance ledger entry, reducing the call from two
+        // distinct ledger entries touched to one.
+        Self::require_admin_from_instance(&env, &admin)?;
 
         let currently_paused: bool = env
             .storage()
