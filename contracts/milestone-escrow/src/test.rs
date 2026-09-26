@@ -15,6 +15,8 @@ use soroban_sdk::{
 mod admin_override_refund_tests;
 #[path = "admin_pause_escrow_tests.rs"]
 mod admin_pause_escrow_tests;
+#[path = "admin_resume_escrow_footprint_tests.rs"]
+mod admin_resume_escrow_footprint_tests;
 #[path = "admin_tax_withholding_guards_tests.rs"]
 mod admin_tax_withholding_guards_tests;
 #[path = "arbitration_split_event_tests.rs"]
