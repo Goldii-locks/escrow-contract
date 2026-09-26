@@ -1332,12 +1332,7 @@ impl MilestoneEscrow {
     }
 
     fn ensure_not_paused(env: &Env) -> Result<(), Error> {
-        let paused = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Ep)
-            .unwrap_or(false);
-        if paused {
+        if Self::read_emergency_paused(env) {
             return Err(Error::Paused);
         }
         let cancel_locked = env
@@ -4250,8 +4245,42 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Report whether the contract is currently emergency-paused.
+    ///
+    /// # Returns
+    /// The `bool` stored under the instance key `DataKey::Ep`:
+    /// * **Populated, `true`** – `emergency_pause` succeeded, or
+    ///   `emergency_pause_admin_override(.., true)` was called, and no unpause
+    ///   has happened since → `true`.
+    /// * **Populated, `false`** – `initialize` writes `false`, and
+    ///   `emergency_unpause` / `emergency_pause_admin_override(.., false)`
+    ///   write it back → `false`.
+    /// * **Empty** – the key is absent (contract never initialized, or
+    ///   registered but not yet set up) → `false`.  Absence is treated as
+    ///   "not paused", matching `ensure_not_paused`.
+    /// * **Boundary** – a pause transition in progress (`DataKey::EpLk` held)
+    ///   does not affect the result: only the committed `Ep` flag is reported.
+    ///
+    /// # Guarantees
+    /// * **Read-only.**  Exactly one instance-storage `get` on `DataKey::Ep`,
+    ///   via `read_emergency_paused`.  No `set`, `remove`, `extend_ttl`, or
+    ///   event publish in instance, persistent, or temporary storage.  The
+    ///   whole ledger is byte-identical before and after the call (enforced by
+    ///   `read_path_tests`).
+    /// * Requires no authorization and never fails or panics.
     pub fn is_emergency_paused(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Ep).unwrap_or(false)
+        Self::read_emergency_paused(&env)
+    }
+
+    /// Single source of truth for reading the emergency-pause flag: one
+    /// `get` on `DataKey::Ep`, absent → `false`.
+    ///
+    /// **This function must contain only read operations.**
+    fn read_emergency_paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Ep)
+            .unwrap_or(false)
     }
 
     /// Sets the global platform fee allocation in basis points (BPS).
@@ -5149,9 +5178,35 @@ impl MilestoneEscrow {
     }
 
     /// Query whether a proposal has reached the required approval threshold.
-    /// Pure read — does not require auth and does not mutate state.
+    ///
+    /// # Returns
+    /// A `MultiSigApprovalState` built from the instance `MultiSigThreshold`
+    /// and the temporary `MultiSigApproval(proposal_id)` bitmap.  An unknown
+    /// or expired proposal reads as an empty bitmap (`approvals == 0`).
+    ///
+    /// # Guarantees
+    /// * **Read-only.**  Exactly two `get`s (instance threshold, temporary
+    ///   bitmap), via `read_multisig_approval`.  No `set`, `remove`,
+    ///   `extend_ttl`, or event publish in instance, persistent, or temporary
+    ///   storage — in particular it never re-writes the bitmap or bumps its
+    ///   TTL.  The whole ledger is byte-identical before and after the call
+    ///   (enforced by `read_path_tests`).
+    /// * Requires no authorization.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – `multisig_approval_init` has not been called.
     pub fn is_multisig_approved(
         env: Env,
+        proposal_id: u32,
+    ) -> Result<MultiSigApprovalState, Error> {
+        Self::read_multisig_approval(&env, proposal_id)
+    }
+
+    /// Read path behind `is_multisig_approved`.
+    ///
+    /// **This function must contain only read operations.**
+    fn read_multisig_approval(
+        env: &Env,
         proposal_id: u32,
     ) -> Result<MultiSigApprovalState, Error> {
         let threshold: u32 = env
