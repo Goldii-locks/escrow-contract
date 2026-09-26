@@ -596,28 +596,23 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "MultiSigSigners"
+                            "symbol": "MultiSigConfig"
                           }
                         ]
                       },
                       "val": {
                         "vec": [
                           {
-                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
+                            "vec": [
+                              {
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                              }
+                            ]
+                          },
                           {
-                            "symbol": "MultiSigThreshold"
+                            "u32": 1
                           }
                         ]
-                      },
-                      "val": {
-                        "u32": 1
                       }
                     },
                     {
