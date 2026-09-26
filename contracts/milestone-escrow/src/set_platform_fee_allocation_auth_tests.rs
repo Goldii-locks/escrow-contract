@@ -8,7 +8,7 @@ use crate::test::setup_funded_escrow;
 use crate::{DataKey, Error, MilestoneEscrow, MilestoneEscrowClient, PlatformFeeAllocation};
 use soroban_sdk::{testutils::Address as _, vec, Address, Env};
 
-fn setup(env: &Env) -> (Address, MilestoneEscrowClient<''_>, Address) {
+fn setup(env: &Env) -> (Address, MilestoneEscrowClient<'_>, Address) {
     env.mock_all_auths();
     let amounts = vec![env, 1_000_i128];
     let (_, _, _, admin_addr, _, contract_id, escrow) = setup_funded_escrow(env, amounts);
