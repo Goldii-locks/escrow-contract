@@ -103,9 +103,22 @@ pub enum Error {
     /// A platform-fee allocation exceeded its per-party cap: treasury above
     /// `MAX_TREASURY_FEE_BPS` or client above `MAX_CLIENT_FEE_BPS`.
     FeeTooHigh = 35,
-    /// A checked `i128` operation in a settlement path overflowed or
-    /// underflowed.  Returned instead of panicking or wrapping so the caller
-    /// receives a typed failure and no state is committed.
+    /// A checked `i128` operation inside a ratio/allocation computation would
+    /// have overflowed or underflowed.
+    ///
+    /// Ratio maths (platform-fee splits, refund splits, streaming splits,
+    /// emergency-pause allocations) is reached with caller-supplied amounts, so
+    /// an `i128::MAX` total combined with a non-zero basis-point weight is a
+    /// reachable input. Every such step is evaluated with `checked_mul`,
+    /// `checked_add`, `checked_sub`, `checked_div`, and `checked_rem`; when one
+    /// of them cannot be represented the endpoint aborts with this variant
+    /// instead of panicking (release builds abort on overflow) or silently
+    /// wrapping and returning a nonsensical split.
+    ///
+    /// This variant is deliberately distinct from `InvalidAmount`: the input
+    /// was not merely out of range, the arithmetic itself was unrepresentable.
+    /// It is also distinct from `NotInitialized`, so an indexer can tell a
+    /// failed calculation apart from a missing configuration.
     ArithmeticOverflow = 36,
     /// A settlement asked to distribute more than the contract currently
     /// holds in the escrowed token.
@@ -1657,10 +1670,51 @@ impl MilestoneEscrow {
         })
     }
 
+    /// Split `total_amount` across the three configured platform-fee ratios.
+    ///
+    /// # Overflow policy
+    ///
+    /// `total_amount` is caller-supplied, so the intermediate
+    /// `total_amount * bps` products are reachable overflow candidates: a
+    /// `total_amount` of `i128::MAX` against any non-zero weight cannot be
+    /// represented. Every `i128` operation below is therefore a `checked_*`
+    /// counterpart, and every failure maps to [`Error::ArithmeticOverflow`]
+    /// rather than a panic (release builds abort on overflow) or a silent wrap.
+    /// `checked_div` / `checked_rem` are used instead of `/` and `%` so that a
+    /// zero `scale` would surface as the same typed error instead of a
+    /// divide-by-zero trap; `scale` is the `BPS_SCALE` constant and can never
+    /// be zero today, so this is defence in depth.
+    ///
+    /// # Atomicity
+    ///
+    /// All three shares are computed into a local `[i128; 3]` and only returned
+    /// once every step has succeeded, so a failure on the last party cannot
+    /// leave a partially-populated `PlatformFeeDistribution` behind. The
+    /// helper also performs no storage writes; the only externally visible
+    /// side effect of `calculate_platform_fee_split` is the `pf_split` event,
+    /// which is published strictly after this helper returns `Ok`.
+    ///
+    /// # Errors
+    ///
+    /// * `InvalidAmount`      – `total_amount` is negative.
+    /// * `ArithmeticOverflow` – any intermediate `i128` value is not
+    ///   representable, including the `i128::MIN` input (whose magnitude has no
+    ///   `i128` counterpart, so the whole-total distribution below cannot be
+    ///   expressed).
     fn allocate_platform_fee(
         total_amount: i128,
         allocation: &PlatformFeeAllocation,
     ) -> Result<PlatformFeeDistribution, Error> {
+        // `i128::MIN` is the single input for which the *magnitude* of the
+        // total is not representable as an `i128`. Because this helper
+        // distributes the entire total and asserts that the three shares sum
+        // back to it, an `i128::MIN` total has no valid decomposition. It is
+        // reported as an arithmetic overflow (rather than a range error) so the
+        // failure mode is unambiguous; every other negative total remains a
+        // plain `InvalidAmount`.
+        if total_amount == i128::MIN {
+            return Err(Error::ArithmeticOverflow);
+        }
         if total_amount < 0 {
             return Err(Error::InvalidAmount);
         }
@@ -1678,19 +1732,29 @@ impl MilestoneEscrow {
         for index in 0..3 {
             let weighted = total_amount
                 .checked_mul(ratios[index])
-                .ok_or(Error::InvalidAmount)?;
-            amounts[index] = weighted / scale;
-            remainders[index] = weighted % scale;
+                .ok_or(Error::ArithmeticOverflow)?;
+            // `checked_div` / `checked_rem` also reject `i128::MIN / -1`, which
+            // the plain operators trap on; `scale` is positive so neither can
+            // trip, but going through the checked forms keeps the whole helper
+            // free of panic paths.
+            amounts[index] = weighted
+                .checked_div(scale)
+                .ok_or(Error::ArithmeticOverflow)?;
+            remainders[index] = weighted
+                .checked_rem(scale)
+                .ok_or(Error::ArithmeticOverflow)?;
             allocated = allocated
                 .checked_add(amounts[index])
-                .ok_or(Error::InvalidAmount)?;
+                .ok_or(Error::ArithmeticOverflow)?;
         }
 
         // Largest-remainder allocation preserves every unit. Ties are resolved
         // by field order, making the result deterministic across runtimes.
+        // The three weights always sum to `BPS_SCALE`, so `remaining` is at most
+        // two and the loop below is bounded regardless of `total_amount`.
         let mut remaining = total_amount
             .checked_sub(allocated)
-            .ok_or(Error::InvalidAmount)?;
+            .ok_or(Error::ArithmeticOverflow)?;
         while remaining > 0 {
             let mut best = 0_usize;
             for index in 1..3 {
@@ -1698,9 +1762,25 @@ impl MilestoneEscrow {
                     best = index;
                 }
             }
-            amounts[best] = amounts[best].checked_add(1).ok_or(Error::InvalidAmount)?;
-            remainders[best] = -1;
-            remaining -= 1;
+            amounts[best] = amounts[best]
+                .checked_add(1)
+                .ok_or(Error::ArithmeticOverflow)?;
+            // Retire this party so it cannot win a second residue unit. Every
+            // live remainder is in `0..scale` and therefore strictly greater
+            // than `i128::MIN`, so the sentinel can never be selected again.
+            remainders[best] = i128::MIN;
+            remaining = remaining.checked_sub(1).ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        // Final conservation check. `allocated` plus the residue units handed
+        // out above must reconstruct `total_amount` exactly; if it does not,
+        // fail loudly rather than returning a split that does not sum.
+        let distributed = amounts[0]
+            .checked_add(amounts[1])
+            .and_then(|v| v.checked_add(amounts[2]))
+            .ok_or(Error::ArithmeticOverflow)?;
+        if distributed != total_amount {
+            return Err(Error::ArithmeticOverflow);
         }
 
         Ok(PlatformFeeDistribution {
@@ -4548,6 +4628,41 @@ impl MilestoneEscrow {
     /// Each component is calculated with checked integer arithmetic. Any
     /// units left after flooring are assigned by largest remainder, so the
     /// three returned amounts always sum exactly to `total_amount`.
+    ///
+    /// # Overflow safety
+    ///
+    /// Every `i128` step performed by [`Self::allocate_platform_fee`] is a
+    /// `checked_*` counterpart, so no arithmetic in this function can panic
+    /// (the release profile sets `overflow-checks = true` and `panic = "abort"`,
+    /// which would abort the whole transaction) or silently wrap into a
+    /// negative, nonsensical split.
+    ///
+    /// Because `total_amount` is fully caller-supplied, the intermediate
+    /// `total_amount * bps` products are reachable overflow candidates — a
+    /// total of `i128::MAX` multiplied by any non-zero basis-point weight
+    /// exceeds `i128::MAX`. Such inputs are rejected with
+    /// [`Error::ArithmeticOverflow`] instead.
+    ///
+    /// # Atomicity
+    ///
+    /// The endpoint is a **pure calculation**: it reads the allocation, returns
+    /// the distribution, and performs no storage write. The `pf_split` event is
+    /// published strictly *after* every arithmetic step has succeeded, so a
+    /// rejected input leaves the ledger byte-for-byte unchanged — no event, no
+    /// storage mutation, and no partially-populated `PlatformFeeDistribution`
+    /// is ever observed. A regression test
+    /// (`platform_fee_split_overflow_tests`) snapshots the whole ledger before
+    /// and after each `i128::MAX` / `i128::MIN` invocation and asserts the two
+    /// snapshots are identical.
+    ///
+    /// # Errors
+    ///
+    /// * `NotInitialized`      – the contract has not been initialised, so no
+    ///   allocation is stored.
+    /// * `InvalidAmount`       – `total_amount` is negative (but not
+    ///   `i128::MIN`).
+    /// * `ArithmeticOverflow`  – `total_amount` is `i128::MIN`, or any
+    ///   intermediate value is not representable as an `i128`.
     pub fn calculate_platform_fee_split(
         env: Env,
         total_amount: i128,
