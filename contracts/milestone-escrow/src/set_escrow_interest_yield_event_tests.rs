@@ -2,7 +2,7 @@
 //! Tests for `set_escrow_interest_yield` structured event (#462)
 
 use crate::test::setup_funded_escrow;
-use crate::{Error, EscrowInterestYieldSetEvent, MilestoneEscrow, MilestoneEscrowClient};
+use crate::{Error, EscrowInterestYieldSetEvent, MilestoneEscrowClient};
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Val};
 
 fn event_count(env: &Env) -> u32 {
