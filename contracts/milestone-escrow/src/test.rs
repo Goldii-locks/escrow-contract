@@ -37,6 +37,8 @@ mod multisig_split_refund_tests;
 mod multisig_transfer_admin_tests;
 #[path = "platform_fee_allocation_no_mutation_tests.rs"]
 mod platform_fee_allocation_no_mutation_tests;
+#[path = "platform_fee_split_overflow_tests.rs"]
+mod platform_fee_split_overflow_tests;
 #[path = "propose_admin_transfer_footprint_tests.rs"]
 mod propose_admin_transfer_footprint_tests;
 #[path = "split_refund_net_distribution_tests.rs"]
