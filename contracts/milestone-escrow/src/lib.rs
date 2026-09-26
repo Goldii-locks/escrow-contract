@@ -7196,6 +7196,21 @@ impl MilestoneEscrow {
     ///   remainder is also `0`, so it never wins a residue unit ahead of a
     ///   party with a real fractional claim.
     ///
+    /// # Validation order
+    /// The total and the weight vector are fully validated *before* the first
+    /// division by `Σweights` is attempted, so a malformed vector can never
+    /// reach the arithmetic and can never trap:
+    /// 1. `total_amount` ≤ 0                    → `InvalidAmount`
+    /// 2. `weights` empty, or over the cap      → `InvalidAllocationWeights`
+    /// 3. any `weight` < 0                      → `InvalidAllocationWeights`
+    /// 4. `Σweights` overflowing, or `≤ 0`      → `InvalidAllocationWeights`
+    ///
+    /// Step 3 is a per-entry scan, not a property of the total: a vector such
+    /// as `[5, -1, 6]` sums to `10`, so the sum check alone would let a
+    /// negative share cancel itself out of the divisor and hand that party a
+    /// negative allocation.  Step 4 is what keeps `weighted / weight_sum` from
+    /// ever being a division by zero.
+    ///
     /// # Parameters
     /// * `total_amount` – Amount to divide; must be > 0.
     /// * `weights`      – Per-party weights.  Need not sum to any particular
