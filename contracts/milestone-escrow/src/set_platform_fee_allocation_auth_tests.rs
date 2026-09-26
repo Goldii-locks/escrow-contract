@@ -5,10 +5,10 @@
 //! each return their specific typed error and that no storage entry is mutated.
 
 use crate::test::setup_funded_escrow;
-use crate::{DataKey, Error, MilestoneEscrow, MilestoneEscrowClient, PlatformFeeAllocation};
+use crate::{DataKey, Error, MilestoneEscrowClient, PlatformFeeAllocation};
 use soroban_sdk::{testutils::Address as _, vec, Address, Env};
 
-fn setup(env: &Env) -> (Address, MilestoneEscrowClient<''_>, Address) {
+fn setup(env: &Env) -> (Address, MilestoneEscrowClient<'_>, Address) {
     env.mock_all_auths();
     let amounts = vec![env, 1_000_i128];
     let (_, _, _, admin_addr, _, contract_id, escrow) = setup_funded_escrow(env, amounts);
@@ -35,7 +35,10 @@ fn unauthorized_caller_returns_unauthorized_and_does_not_mutate_storage() {
     let res = escrow.try_set_platform_fee_allocation(&attacker, &1000_u32, &8000_u32, &1000_u32);
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
     let after = read_allocation(&env, &contract_id);
-    assert_eq!(before, after, "storage must not be mutated on unauthorized caller");
+    assert_eq!(
+        before, after,
+        "storage must not be mutated on unauthorized caller"
+    );
 }
 
 #[test]
@@ -49,7 +52,10 @@ fn locked_allocation_returns_invalid_status_and_does_not_mutate_storage() {
     let res = escrow.try_set_platform_fee_allocation(&admin_addr, &1000_u32, &8000_u32, &1000_u32);
     assert_eq!(res, Err(Ok(Error::InvalidStatus)));
     let after = read_allocation(&env, &contract_id);
-    assert_eq!(before, after, "storage must not be mutated on illegal state");
+    assert_eq!(
+        before, after,
+        "storage must not be mutated on illegal state"
+    );
     // also ensure no new allocation was written and lock still held
     assert!(after.locked);
 }

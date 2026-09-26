@@ -5657,13 +5657,13 @@ mod interest_yield_consent_tests;
 #[cfg(test)]
 mod reputation_tests;
 #[cfg(test)]
+mod set_platform_fee_allocation_auth_tests;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_emergency_pause;
 #[cfg(test)]
 mod test_payment_streaming_milestones;
-#[cfg(test)]
-mod set_platform_fee_allocation_auth_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
