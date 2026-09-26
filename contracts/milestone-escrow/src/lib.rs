@@ -873,6 +873,17 @@ pub struct EscrowInterestYieldEvent {
     pub yield_amount: i128,
 }
 
+/// Emitted by set_escrow_interest_yield when the admin updates the yield-share configuration.
+/// Every field reconciles with the state persisted under DataKey::InterestYieldState.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowInterestYieldSetEvent {
+    pub admin: Address,
+    pub client_share_bps: u32,
+    pub freelancer_share_bps: u32,
+    pub locked: bool,
+}
+
 /// Emitted by unlock_escrow_interest_yield when the admin clears the execution lock.
 /// Every field reconciles with the state persisted under DataKey::InterestYieldState.
 #[contracttype]
@@ -5411,6 +5422,17 @@ impl MilestoneEscrow {
                 locked: false,
             },
         );
+        // Publish structured event carrying acting address and resulting values
+        // Reconciles exactly with persisted state; emitted only on success path
+        env.events().publish(
+            (symbol_short!("yldset"),),
+            EscrowInterestYieldSetEvent {
+                admin: admin.clone(),
+                client_share_bps,
+                freelancer_share_bps,
+                locked: false,
+            },
+        );
         Ok(())
     }
 
@@ -5678,6 +5700,7 @@ mod get_pending_admin_transfer_tests;
 mod interest_yield_consent_tests;
 #[cfg(test)]
 mod reputation_tests;
+mod set_escrow_interest_yield_event_tests;
 #[cfg(test)]
 mod set_platform_fee_allocation_auth_tests;
 #[cfg(test)]
