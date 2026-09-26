@@ -5205,10 +5205,7 @@ impl MilestoneEscrow {
     /// Read path behind `is_multisig_approved`.
     ///
     /// **This function must contain only read operations.**
-    fn read_multisig_approval(
-        env: &Env,
-        proposal_id: u32,
-    ) -> Result<MultiSigApprovalState, Error> {
+    fn read_multisig_approval(env: &Env, proposal_id: u32) -> Result<MultiSigApprovalState, Error> {
         let threshold: u32 = env
             .storage()
             .instance()

@@ -29,7 +29,6 @@
 
 use super::*;
 use crate::{DataKey, Error};
-use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env, Vec};
 
 fn initialized_escrow(env: &Env) -> (Address, Address, MilestoneEscrowClient<'_>) {
@@ -89,7 +88,10 @@ fn is_emergency_paused_does_not_mutate_ledger_when_unpaused() {
     let after = env.to_ledger_snapshot();
 
     assert!(!paused);
-    assert_eq!(before, after, "is_emergency_paused must not mutate the ledger");
+    assert_eq!(
+        before, after,
+        "is_emergency_paused must not mutate the ledger"
+    );
 }
 
 #[test]
@@ -103,7 +105,10 @@ fn is_emergency_paused_does_not_mutate_ledger_when_paused() {
     let after = env.to_ledger_snapshot();
 
     assert!(paused);
-    assert_eq!(before, after, "is_emergency_paused must not mutate the ledger");
+    assert_eq!(
+        before, after,
+        "is_emergency_paused must not mutate the ledger"
+    );
 }
 
 #[test]
@@ -119,9 +124,7 @@ fn is_emergency_paused_does_not_mutate_ledger_when_uninitialized() {
     assert!(!paused);
     assert_eq!(before, after);
     // The `false` default must not be materialized into storage.
-    let stored = env.as_contract(&contract_id, || {
-        env.storage().instance().has(&DataKey::Ep)
-    });
+    let stored = env.as_contract(&contract_id, || env.storage().instance().has(&DataKey::Ep));
     assert!(!stored);
 }
 
@@ -147,9 +150,9 @@ fn is_emergency_paused_emits_no_events() {
     let env = Env::default();
     let (_, _, escrow) = initialized_escrow(&env);
 
-    let before = crate::all_event_tuples(&env).len();
     escrow.is_emergency_paused();
-    assert_eq!(crate::all_event_tuples(&env).len(), before);
+    // The test env only records events from the latest invocation.
+    assert_eq!(crate::all_event_tuples(&env).len(), 0);
 }
 
 // ── #502: single read, identical results ─────────────────────────────────────
@@ -172,9 +175,7 @@ fn is_emergency_paused_matches_stored_flag_in_every_state() {
             MilestoneEscrow::read_emergency_paused(&env)
         });
         assert_eq!(helper, expected);
-        let guard = env.as_contract(&contract_id, || {
-            MilestoneEscrow::ensure_not_paused(&env)
-        });
+        let guard = env.as_contract(&contract_id, || MilestoneEscrow::ensure_not_paused(&env));
         if expected {
             assert_eq!(guard, Err(Error::Paused));
         }
@@ -211,9 +212,8 @@ fn emergency_paused_is_false_after_initialize() {
     let env = Env::default();
     let (contract_id, _, escrow) = initialized_escrow(&env);
 
-    let stored: Option<bool> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Ep)
-    });
+    let stored: Option<bool> =
+        env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::Ep));
     assert_eq!(stored, Some(false));
     assert!(!escrow.is_emergency_paused());
 }
@@ -269,7 +269,10 @@ fn is_multisig_approved_does_not_mutate_ledger_with_no_approvals() {
     assert!(!state.approved);
     assert_eq!(state.approvals, 0);
     assert_eq!(state.bitmap, 0);
-    assert_eq!(before, after, "is_multisig_approved must not mutate the ledger");
+    assert_eq!(
+        before, after,
+        "is_multisig_approved must not mutate the ledger"
+    );
 }
 
 #[test]
@@ -284,7 +287,10 @@ fn is_multisig_approved_does_not_mutate_ledger_below_threshold() {
 
     assert!(!state.approved);
     assert_eq!(state.approvals, 1);
-    assert_eq!(before, after, "is_multisig_approved must not mutate the ledger");
+    assert_eq!(
+        before, after,
+        "is_multisig_approved must not mutate the ledger"
+    );
 }
 
 #[test]
@@ -301,7 +307,10 @@ fn is_multisig_approved_does_not_mutate_ledger_when_approved() {
     assert!(state.approved);
     assert_eq!(state.approvals, 2);
     assert_eq!(state.threshold, 2);
-    assert_eq!(before, after, "is_multisig_approved must not mutate the ledger");
+    assert_eq!(
+        before, after,
+        "is_multisig_approved must not mutate the ledger"
+    );
 }
 
 /// The temporary approval bitmap's TTL must not be bumped by a read.
@@ -318,7 +327,10 @@ fn is_multisig_approved_does_not_extend_ttl() {
     escrow.is_multisig_approved(&1u32);
     let after = env.to_ledger_snapshot();
 
-    assert_eq!(before, after, "is_multisig_approved must not extend any TTL");
+    assert_eq!(
+        before, after,
+        "is_multisig_approved must not extend any TTL"
+    );
 }
 
 #[test]
@@ -327,9 +339,9 @@ fn is_multisig_approved_emits_no_events() {
     let (_, signers, escrow) = multisig_escrow(&env);
     escrow.multisig_approve(&signers.get(0).unwrap(), &1u32);
 
-    let before = crate::all_event_tuples(&env).len();
     escrow.is_multisig_approved(&1u32);
-    assert_eq!(crate::all_event_tuples(&env).len(), before);
+    // The test env only records events from the latest invocation.
+    assert_eq!(crate::all_event_tuples(&env).len(), 0);
 }
 
 /// The error path is read-only too.
