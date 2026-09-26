@@ -1181,6 +1181,33 @@ pub struct EmergencyPauseAllocationEvent {
 
 // ── multisig_approval events ────────────────────────────────────────────────
 
+/// Emitted by `multisig_approval_init` when the multisig signer set and
+/// approval threshold are successfully registered (issue #455).
+///
+/// The initialisation is a one-time state transition: it is the *only* write
+/// path for `DataKey::MultiSigSigners` / `DataKey::MultiSigThreshold`, so
+/// without an event the original configuration could only be recovered by
+/// replaying the ledger.  Both payload fields therefore reconcile exactly with
+/// what the call persisted — `signers` is the vector written under
+/// `DataKey::MultiSigSigners` and `threshold` the value written under
+/// `DataKey::MultiSigThreshold` (read back from instance storage after the
+/// writes).  Emitted only on the success path: every rejection
+/// (`NotInitialized` / `Unauthorized` / `AlreadyInitialized` /
+/// `MultiSigNoSigners` / `MultiSigTooManySigners` /
+/// `MultiSigInvalidThreshold` / `MultiSigDuplicateSigner`) returns before the
+/// publish, so a failed call publishes nothing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultisigApprovalInitEvent {
+    /// Admin that authorised and applied the initialisation (the acting
+    /// address, verified by `require_admin` against `DataKey::Admin`).
+    pub admin: Address,
+    /// Full signer set persisted under `DataKey::MultiSigSigners`.
+    pub signers: Vec<Address>,
+    /// Approval threshold persisted under `DataKey::MultiSigThreshold`.
+    pub threshold: u32,
+}
+
 /// Emitted by `multisig_admin_override_release` when the admin force-releases
 /// a multisig-locked allocation to the freelancer.
 #[contracttype]
@@ -5410,6 +5437,11 @@ impl MilestoneEscrow {
 
     /// Initialise a multisig approval regime with a fixed set of signers and
     /// the required approval threshold.  Must be called exactly once.
+    ///
+    /// On success the call publishes a `MultisigApprovalInitEvent` under the
+    /// `msiginit` topic carrying the acting admin and the values that were
+    /// actually persisted.  A rejected call (`NotInitialized` /
+    /// `Unauthorized` / `AlreadyInitialized` / `MultiSig*`) publishes nothing.
     pub fn multisig_approval_init(
         env: Env,
         admin: Address,
@@ -5430,6 +5462,36 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::MultiSigThreshold, &threshold);
+
+        // Structured event for indexers / auditors (issue #455).  The two
+        // payload fields are read back from instance storage right after the
+        // writes above, so the event reconciles exactly with the state this
+        // call persisted rather than with the raw inputs.  Nothing fallible
+        // follows the publish: every rejection above (`NotInitialized`,
+        // `Unauthorized`, `AlreadyInitialized`, `MultiSigNoSigners`,
+        // `MultiSigTooManySigners`, `MultiSigInvalidThreshold`,
+        // `MultiSigDuplicateSigner`) returns before this point, so a
+        // successful call carries exactly one `msiginit` event and a rejected
+        // call carries none.
+        let stored_signers: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigSigners)
+            .expect("MultiSigSigners was written above");
+        let stored_threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigThreshold)
+            .expect("MultiSigThreshold was written above");
+
+        env.events().publish(
+            (symbol_short!("msiginit"),),
+            MultisigApprovalInitEvent {
+                admin,
+                signers: stored_signers,
+                threshold: stored_threshold,
+            },
+        );
 
         Ok(())
     }
