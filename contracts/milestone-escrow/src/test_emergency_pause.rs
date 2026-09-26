@@ -695,6 +695,323 @@ fn test_allocation_rejects_weights_summing_to_zero() {
     );
 }
 
+// ── weight-vector validation ───────────────────────────────────────────────
+//
+// The three malformed shapes the contract documents — an empty vector, a
+// zero-sum vector, and a vector holding a negative weight — all have to be
+// turned away by a *typed contract error* before the largest-remainder phase
+// reaches its first division by `weight_sum`.
+//
+// A trap would look different at the call site: a panic (division by zero,
+// an out-of-bounds index, an escaping overflow) surfaces as `Err(Err(..))`
+// with a host/invoke error, whereas a guard that returns cleanly surfaces as
+// `Err(Ok(Error::InvalidAllocationWeights))`. Every assertion below matches
+// on the outer `Ok`, so a guard that panicked instead of returning would fail
+// the test rather than pass it.
+
+/// Count the `epalloc` events on the ledger. A rejected weight vector must
+/// never reach the allocation phase, so this must stay at zero.
+fn epalloc_event_count(env: &Env) -> usize {
+    let topic: Val = symbol_short!("epalloc").into_val(env);
+
+    crate::all_event_tuples(env)
+        .iter()
+        .filter(|e| match e.1.get(0) {
+            Some(t) => t.get_payload() == topic.get_payload(),
+            None => false,
+        })
+        .count()
+}
+
+/// Every all-zero weight vector divides by a zero sum. All of them must be
+/// rejected with the typed error — a single-element `[0]` is included because
+/// it is the smallest vector that would panic on `weighted / weight_sum`.
+#[test]
+fn test_allocation_rejects_every_all_zero_weight_vector() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    let all_zero = [
+        vec![&env, 0_i128],
+        vec![&env, 0_i128, 0_i128],
+        vec![&env, 0_i128, 0_i128, 0_i128],
+        vec![&env, 0_i128, 0_i128, 0_i128, 0_i128, 0_i128],
+    ];
+
+    for weights in all_zero.iter() {
+        assert_eq!(
+            escrow.try_emergency_pause_allocation(&100_i128, weights),
+            Err(Ok(Error::InvalidAllocationWeights)),
+            "an all-zero weight vector must be rejected, never divided through"
+        );
+    }
+}
+
+/// A zero *sum* is the case the divisor guard protects. A vector of all zeros
+/// is the only way to reach it once negatives are excluded, so this pins both
+/// facts: the sum check is reachable, and it fires before any division.
+#[test]
+fn test_allocation_rejects_a_zero_weight_sum_before_dividing() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    // total 100 across zero weights is `100 × 0 / 0` — a division by zero on
+    // every iteration, and a residue loop over undefined remainders after it.
+    let weights = vec![&env, 0_i128, 0_i128, 0_i128];
+
+    assert_eq!(
+        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        Err(Ok(Error::InvalidAllocationWeights))
+    );
+    assert_eq!(
+        epalloc_event_count(&env),
+        0,
+        "the zero-sum guard must fire before the allocation phase"
+    );
+}
+
+/// A negative weight has to be caught by its own per-entry scan, not merely
+/// by the sum check. This vector sums to a perfectly healthy `10`, so if only
+/// the sum were validated the negative share would silently subtract itself
+/// out of the divisor and hand party 1 a negative allocation.
+#[test]
+fn test_allocation_rejects_a_negative_weight_even_when_the_sum_stays_positive() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    // 5 + (-1) + 6 = 10 > 0 — a positive sum cannot launder a negative entry.
+    let weights = vec![&env, 5_i128, -1_i128, 6_i128];
+
+    assert_eq!(
+        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        Err(Ok(Error::InvalidAllocationWeights))
+    );
+    assert_eq!(epalloc_event_count(&env), 0);
+}
+
+/// The scan walks the whole vector, so a negative entry is caught wherever it
+/// sits: head, middle, or tail. A guard that only looked at the first element
+/// would let the tail case through.
+#[test]
+fn test_allocation_rejects_a_negative_weight_at_any_position() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    let with_negative = [
+        vec![&env, -1_i128, 10_i128],        // head
+        vec![&env, 5_i128, -1_i128, 5_i128], // middle
+        vec![&env, 10_i128, -1_i128],        // tail
+        vec![&env, -1_i128],                 // sole entry
+        vec![&env, 4_i128, -4_i128],         // sum is exactly zero
+        vec![&env, 1_i128, 2_i128, 3_i128, -6_i128],
+    ];
+
+    for weights in with_negative.iter() {
+        assert_eq!(
+            escrow.try_emergency_pause_allocation(&100_i128, weights),
+            Err(Ok(Error::InvalidAllocationWeights)),
+            "a negative weight at any index must be rejected"
+        );
+    }
+}
+
+/// `i128::MIN` is the one weight that negates into a positive value, so a
+/// naive `< 0` scan on the *abs* value would miss it. It is also a useful
+/// overflow probe: `i128::MIN + anything` never traps, so the sum check
+/// cannot stand in for the per-entry scan.
+#[test]
+fn test_allocation_rejects_the_most_negative_weight() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    let weights = vec![&env, i128::MIN, 7_i128];
+    assert_eq!(
+        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        Err(Ok(Error::InvalidAllocationWeights))
+    );
+}
+
+/// An empty vector has no divisor to build and no party to pay. A loop that
+/// iterated over it would return an empty allocation rather than an error —
+/// a silent, unpayable settlement — so the emptiness check must come first
+/// and must not emit anything.
+#[test]
+fn test_allocation_rejects_an_empty_vector_before_any_allocation_work() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    let empty: Vec<i128> = Vec::new(&env);
+    assert!(empty.is_empty());
+
+    assert_eq!(
+        escrow.try_emergency_pause_allocation(&100_i128, &empty),
+        Err(Ok(Error::InvalidAllocationWeights))
+    );
+    assert_eq!(
+        epalloc_event_count(&env),
+        0,
+        "an empty weight vector must not reach the allocation phase"
+    );
+}
+
+/// One matrix over every documented malformed shape, asserting the same typed
+/// error each time. Keeping it in a single loop pins the contract's promise
+/// that all three shapes are the *same* caller-visible failure, so off-chain
+/// callers need only match one variant.
+#[test]
+fn test_allocation_rejects_every_malformed_weight_shape_with_one_typed_error() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    let empty: Vec<i128> = Vec::new(&env);
+    let malformed = [
+        // empty
+        empty.clone(),
+        // zero total weight
+        vec![&env, 0_i128],
+        vec![&env, 0_i128, 0_i128, 0_i128],
+        // negative entry, positive sum
+        vec![&env, 5_i128, -1_i128, 6_i128],
+        // negative entry, zero sum
+        vec![&env, 4_i128, -4_i128],
+        // over the party cap
+        {
+            let mut over_cap: Vec<i128> = Vec::new(&env);
+            for _ in 0..(MAX_EMERGENCY_ALLOCATION_PARTIES + 1) {
+                over_cap.push_back(1_i128);
+            }
+            over_cap
+        },
+        // weight sum overflows i128
+        vec![&env, i128::MAX, 1_i128],
+    ];
+
+    for weights in malformed.iter() {
+        assert_eq!(
+            escrow.try_emergency_pause_allocation(&100_i128, weights),
+            Err(Ok(Error::InvalidAllocationWeights)),
+            "weights {weights:?} must map onto the single typed error"
+        );
+    }
+}
+
+/// The guards must be total: no malformed vector may reach the ledger. The
+/// full ledger snapshot (instance, persistent and temporary entries, plus the
+/// live-until TTLs) is byte-identical before and after the three rejected
+/// calls, and no `epalloc` event is recorded.
+#[test]
+fn test_allocation_rejects_malformed_weights_without_touching_the_ledger() {
+    let env = test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let empty: Vec<i128> = Vec::new(&env);
+
+    let before = env.to_ledger_snapshot();
+    let rejected = [
+        escrow.try_emergency_pause_allocation(&100_i128, &empty),
+        escrow.try_emergency_pause_allocation(&100_i128, &vec![&env, 0_i128, 0_i128]),
+        escrow.try_emergency_pause_allocation(&100_i128, &vec![&env, 3_i128, -1_i128]),
+    ];
+    let after = env.to_ledger_snapshot();
+
+    for result in rejected.iter() {
+        assert_eq!(*result, Err(Ok(Error::InvalidAllocationWeights)));
+    }
+    assert_eq!(
+        before, after,
+        "a rejected weight vector must not mutate any ledger entry"
+    );
+    assert_eq!(epalloc_event_count(&env), 0);
+}
+
+/// The guards are pure reads, so they must not poison the endpoint: a valid
+/// call in the same env, immediately after all three rejections, still
+/// allocates and still conserves the total exactly.
+#[test]
+fn test_allocation_still_allocates_after_every_rejection() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    let empty: Vec<i128> = Vec::new(&env);
+    assert!(escrow
+        .try_emergency_pause_allocation(&100_i128, &empty)
+        .is_err());
+    assert!(escrow
+        .try_emergency_pause_allocation(&100_i128, &vec![&env, 0_i128])
+        .is_err());
+    assert!(escrow
+        .try_emergency_pause_allocation(&100_i128, &vec![&env, 1_i128, -2_i128])
+        .is_err());
+
+    let out = escrow.emergency_pause_allocation(&100_i128, &vec![&env, 1_i128, 1_i128, 2_i128]);
+    let sum: i128 = out.iter().sum();
+
+    assert_eq!(out.len(), 3);
+    assert_eq!(sum, 100, "the happy path must be unaffected by the guards");
+    assert_eq!(epalloc_event_count(&env), 1);
+}
+
+/// The total is validated first, so a zero/negative total wins over malformed
+/// weights and reports `InvalidAmount` — still a typed error, never a panic,
+/// and never a division.
+#[test]
+fn test_allocation_validates_the_total_before_the_weight_vector() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    let empty: Vec<i128> = Vec::new(&env);
+
+    assert_eq!(
+        escrow.try_emergency_pause_allocation(&0_i128, &empty),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        escrow.try_emergency_pause_allocation(&-1_i128, &vec![&env, 0_i128, 0_i128]),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        escrow.try_emergency_pause_allocation(&-1_i128, &vec![&env, 1_i128, -1_i128]),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(epalloc_event_count(&env), 0);
+}
+
+/// The guard boundary must sit exactly where the documentation says it does:
+/// the smallest usable vector `[1]` and the largest legal one (exactly the
+/// party cap) are accepted, and neither a zero total nor a zero weight is
+/// needed for the happy path to work.
+#[test]
+fn test_allocation_accepts_the_boundary_weight_vectors() {
+    let env = test_env();
+    env.mock_all_auths();
+    let escrow = bare_contract(&env);
+
+    // Smallest non-empty vector.
+    let single = escrow.emergency_pause_allocation(&7_i128, &vec![&env, 1_i128]);
+    assert_eq!(single.get(0).unwrap(), 7);
+
+    // Largest legal vector: exactly the cap.
+    let mut at_cap: Vec<i128> = Vec::new(&env);
+    for _ in 0..MAX_EMERGENCY_ALLOCATION_PARTIES {
+        at_cap.push_back(1_i128);
+    }
+    let wide = escrow.emergency_pause_allocation(&1_000_000_i128, &at_cap);
+    let sum: i128 = wide.iter().sum();
+    assert_eq!(wide.len(), MAX_EMERGENCY_ALLOCATION_PARTIES);
+    assert_eq!(sum, 1_000_000);
+}
+
 #[test]
 fn test_allocation_rejects_more_parties_than_the_cap() {
     let env = test_env();
