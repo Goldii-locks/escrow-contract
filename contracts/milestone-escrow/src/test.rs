@@ -14673,3 +14673,281 @@ fn test_initialize_overflow_in_middle_of_list_returns_typed_error() {
         );
     });
 }
+
+// ============================================================================
+// raise_dispute — hardened authorization and precondition guard tests (#566)
+//
+// These tests verify that:
+//   1. An unauthorized caller (neither client nor freelancer) is rejected
+//      with Error::Unauthorized and no storage is mutated.
+//   2. A caller with an illegal milestone source state (Released) is rejected
+//      with Error::InvalidStatus and no storage is mutated.
+//   3. Both the client and the freelancer can legitimately raise a dispute
+//      (regression guard).
+// ============================================================================
+
+/// Guard 1 — UNAUTHORIZED CALLER:
+/// An address that is neither the client nor the freelancer must receive
+/// `Error::Unauthorized`.  The milestone must remain in its original
+/// `Pending` state, confirming no storage mutation occurred (in particular,
+/// the DisputeLock must not have been set and left behind).
+#[test]
+fn test_raise_dispute_unauthorized_caller_returns_error_and_no_storage_mutated() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let bad_actor = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &2_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // `bad_actor` is neither the client nor the freelancer.
+    let result = client.try_raise_dispute(&bad_actor, &0u32);
+    assert_eq!(
+        result,
+        Err(Ok(Error::Unauthorized)),
+        "expected Unauthorized for a caller that is not the client or freelancer"
+    );
+
+    // No storage should have been mutated: the milestone must still be Pending.
+    let job = client.get_job();
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Pending,
+        "milestone status must not change when raise_dispute is called by an unauthorized party"
+    );
+}
+
+/// Guard 2 — ILLEGAL SOURCE STATE (Released milestone):
+/// Attempting to dispute a milestone that has already been `Released` must
+/// return `Error::InvalidStatus`.  The milestone status must remain
+/// `Released` after the rejected call, confirming no storage mutation.
+#[test]
+fn test_raise_dispute_illegal_source_state_returns_error_and_no_storage_mutated() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &2_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // Advance the milestone to Released via the normal happy path.
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_milestone(&client_addr, &0u32);
+
+    // Confirm the milestone is Released before we attempt the dispute.
+    let job_before = client.get_job();
+    assert_eq!(
+        job_before.milestones.get(0).unwrap().status,
+        MilestoneStatus::Released,
+        "precondition: milestone should be Released before attempting raise_dispute"
+    );
+
+    // Disputing a Released milestone must be rejected.
+    let result = client.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidStatus)),
+        "expected InvalidStatus when raise_dispute is called on a Released milestone"
+    );
+
+    // The milestone must still be Released — no mutation occurred.
+    let job_after = client.get_job();
+    assert_eq!(
+        job_after.milestones.get(0).unwrap().status,
+        MilestoneStatus::Released,
+        "milestone status must not change when raise_dispute is rejected due to invalid state"
+    );
+}
+
+/// Guard 3 — ILLEGAL SOURCE STATE (Refunded milestone):
+/// Attempting to dispute a milestone that has been `Refunded` must return
+/// `Error::InvalidStatus`.  The milestone status must remain `Refunded`.
+#[test]
+fn test_raise_dispute_refunded_state_returns_invalid_status_and_no_storage_mutated() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &2_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    // First raise a dispute legitimately, then resolve it as a refund.
+    client.raise_dispute(&client_addr, &0u32);
+    client.resolve_dispute(&arbiter_addr, &0u32, &false);
+
+    // Confirm the milestone is Refunded.
+    let job_before = client.get_job();
+    assert_eq!(
+        job_before.milestones.get(0).unwrap().status,
+        MilestoneStatus::Refunded,
+        "precondition: milestone should be Refunded"
+    );
+
+    // Attempting to re-dispute a Refunded milestone must be rejected.
+    let result = client.try_raise_dispute(&client_addr, &0u32);
+    assert_eq!(
+        result,
+        Err(Ok(Error::InvalidStatus)),
+        "expected InvalidStatus when raise_dispute is called on a Refunded milestone"
+    );
+
+    // The milestone must still be Refunded — no mutation occurred.
+    let job_after = client.get_job();
+    assert_eq!(
+        job_after.milestones.get(0).unwrap().status,
+        MilestoneStatus::Refunded,
+        "milestone status must not change when raise_dispute is rejected on a Refunded milestone"
+    );
+}
+
+/// Regression guard — CLIENT can raise a dispute on a Pending milestone.
+#[test]
+fn test_raise_dispute_by_client_on_pending_milestone_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &2_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+
+    client.raise_dispute(&client_addr, &0u32);
+
+    let job = client.get_job();
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Disputed,
+        "client should be able to raise a dispute on a Pending milestone"
+    );
+}
+
+/// Regression guard — FREELANCER can raise a dispute on a Delivered milestone.
+#[test]
+fn test_raise_dispute_by_freelancer_on_delivered_milestone_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let token_contract_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
+    token_admin.mint(&client_addr, &2_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    let amounts = vec![&env, 2_000_i128];
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &amounts,
+    );
+    client.fund(&client_addr);
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    client.raise_dispute(&freelancer_addr, &0u32);
+
+    let job = client.get_job();
+    assert_eq!(
+        job.milestones.get(0).unwrap().status,
+        MilestoneStatus::Disputed,
+        "freelancer should be able to raise a dispute on a Delivered milestone"
+    );
+}

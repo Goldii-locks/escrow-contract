@@ -3075,7 +3075,37 @@ impl MilestoneEscrow {
     ///                        or `PartiallyReleased`.
     pub fn raise_dispute(env: Env, caller: Address, milestone_index: u32) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
+        Self::assert_tax_withholding_not_locked(&env)?;
+        Self::assert_platform_fee_allocation_not_locked(&env)?;
+        Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
+
+        // ── Caller validation (before any storage write) ─────────────────
+        // Reject zero addresses before touching ledger state so that no
+        // storage entry is mutated on an invalid caller.
+        let zero_account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        let zero_contract = Address::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        );
+        if caller == zero_account || caller == zero_contract {
+            return Err(Error::InvalidAddress);
+        }
+
+        // require_dispute_party performs caller.require_auth() + verifies the
+        // caller matches the stored client or freelancer in a single step.
+        // Running this before the DisputeLock write ensures that neither an
+        // unauthorized caller nor a wrong-party caller can cause any storage
+        // mutation.
+        let meta = Self::require_dispute_party(&env, &caller)?;
+
         // ── Re-entrancy lock ─────────────────────────────────────────────
+        // The lock is acquired only after the caller is confirmed to be
+        // authorized, so a rejected call leaves no trace in storage.
         if env
             .storage()
             .temporary()
@@ -3087,7 +3117,7 @@ impl MilestoneEscrow {
             .temporary()
             .set(&DataKey::DisputeLock(milestone_index), &true);
 
-        let result = Self::raise_dispute_inner(&env, caller, milestone_index);
+        let result = Self::raise_dispute_inner(&env, caller, milestone_index, meta);
 
         // Always release the lock regardless of success or failure.
         Self::release_dispute_lock(&env, milestone_index);
@@ -3099,24 +3129,16 @@ impl MilestoneEscrow {
     /// `raise_dispute` wraps every path uniformly.  This function
     /// is never called directly — it exists only to keep the
     /// lock/release pairing in one place.
-    fn raise_dispute_inner(env: &Env, caller: Address, milestone_index: u32) -> Result<(), Error> {
-        // Check for zero addresses (both account and contract types)
-        let zero_account = Address::from_str(
-            env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
-
-        // require_dispute_party performs caller.require_auth() + verifies the
-        // caller matches the stored client or freelancer in a single step.
-        let meta = Self::require_dispute_party(env, &caller)?;
+    ///
+    /// `meta` is pre-validated by `raise_dispute` (zero-address check and
+    /// `require_auth` already performed) so this function can proceed
+    /// directly to business-logic checks.
+    fn raise_dispute_inner(
+        env: &Env,
+        caller: Address,
+        milestone_index: u32,
+        meta: JobMeta,
+    ) -> Result<(), Error> {
 
         if !meta.funded {
             return Err(Error::NotFunded);
