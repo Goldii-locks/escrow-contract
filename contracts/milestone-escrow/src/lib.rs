@@ -2259,6 +2259,18 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Removes a token from the escrow's whitelist.
+    ///
+    /// # Returns
+    /// * `Ok(())`            - The token was successfully removed.
+    ///
+    /// # Errors
+    /// * `NotInitialized`      - The contract has not been initialized (missing admin, job, or whitelisted tokens data).
+    /// * `Unauthorized`        - The provided `admin` address does not match the stored admin address.
+    /// * `AlreadyFunded`       - The job has already been funded, preventing further whitelist modifications.
+    /// * `InvalidAddress`      - The provided `token` address is the zero account or the zero contract.
+    /// * `TokenNotWhitelisted` - The whitelist is empty, or the provided `token` is not present in the whitelist.
+    /// * `InvalidAmount`       - Removing the token would leave the whitelist empty (the contract requires at least one token to remain).
     pub fn remove_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
 
@@ -2707,8 +2719,10 @@ impl MilestoneEscrow {
             .and_then(|d| d.checked_add(extension as u64))
             .ok_or(Error::InvalidAmount)?;
         let current = env.ledger().timestamp();
-        (deadline as i64)
-            .checked_sub(current as i64)
+        let deadline_i64 = i64::try_from(deadline).map_err(|_| Error::InvalidAmount)?;
+        let current_i64 = i64::try_from(current).map_err(|_| Error::InvalidAmount)?;
+        deadline_i64
+            .checked_sub(current_i64)
             .ok_or(Error::InvalidAmount)
     }
 
