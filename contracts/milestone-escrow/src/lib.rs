@@ -873,6 +873,17 @@ pub struct EscrowInterestYieldEvent {
     pub yield_amount: i128,
 }
 
+/// Emitted by unlock_escrow_interest_yield when the admin clears the execution lock.
+/// Every field reconciles with the state persisted under DataKey::InterestYieldState.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct EscrowInterestYieldUnlockedEvent {
+    pub admin: Address,
+    pub client_share_bps: u32,
+    pub freelancer_share_bps: u32,
+    pub locked: bool,
+}
+
 /// Emitted by `admin_override_streaming_release` when the admin proportionally
 /// settles a `Disputed` milestone using the streaming/time-extension split.
 #[contracttype]
@@ -5480,7 +5491,7 @@ impl MilestoneEscrow {
     /// * `NotInitialized` - Contract admin key or interest/yield state missing.
     /// * `Unauthorized` - Caller is not the stored admin.
     /// * `InvalidStatus` - Interest/yield lock is not active (already unlocked).
-    pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
+pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
         let mut state = Self::load_interest_yield_state(&env)?;
         if !state.locked {
@@ -5488,6 +5499,17 @@ impl MilestoneEscrow {
         }
         state.locked = false;
         Self::store_interest_yield_state(&env, &state);
+        // Publish structured event carrying acting address and resulting values
+        // Reconciles exactly with persisted state; emitted only on success path
+        env.events().publish(
+            (symbol_short!("yldunlock"),),
+            EscrowInterestYieldUnlockedEvent {
+                admin: admin.clone(),
+                client_share_bps: state.client_share_bps,
+                freelancer_share_bps: state.freelancer_share_bps,
+                locked: state.locked,
+            },
+        );
         Ok(())
     }
 
@@ -5664,6 +5686,8 @@ mod test;
 mod test_emergency_pause;
 #[cfg(test)]
 mod test_payment_streaming_milestones;
+#[cfg(test)]
+mod unlock_escrow_interest_yield_event_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
