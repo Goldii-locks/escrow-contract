@@ -856,6 +856,68 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Add a token contract address to the escrow's settlement-token whitelist.
+    ///
+    /// The whitelist controls which tokens are acceptable as settlement
+    /// currencies. It is checked at funding time and any token in it may be
+    /// used as the job's settlement token. Only the admin may modify the
+    /// whitelist, and only before the escrow is funded.
+    ///
+    /// # Parameters
+    /// * `admin` – Must match the stored admin address. Must authorize the
+    ///             call (`admin.require_auth()` is called internally).
+    /// * `token` – Token contract address to add to the whitelist. Must not
+    ///             be a sentinel zero address or the escrow contract itself.
+    ///
+    /// # Returns
+    /// `Ok(())` on success. At that point:
+    /// * `token` has been appended to `DataKey::WhitelistedTokens` in
+    ///   instance storage.
+    /// * A `"wtok"` event carrying a [`TokenWhitelistedEvent`] has been
+    ///   published with the acting `admin` and the newly whitelisted `token`.
+    ///
+    /// # Errors
+    /// Errors are returned in the order the checks appear in the function body.
+    ///
+    /// * [`Error::NotInitialized`] – Returned from any of three call sites
+    ///   inside the function:
+    ///   1. `require_admin` fails to load `DataKey::Admin` from persistent
+    ///      storage (the contract was never initialized).
+    ///   2. `load_job_meta` fails to load `DataKey::JobMeta` from instance
+    ///      storage (initialize was never called or storage was cleared).
+    ///   3. The whitelist load fails to find `DataKey::WhitelistedTokens` in
+    ///      instance storage (same root cause as case 2).
+    ///   In practice, all three keys are written atomically by `initialize`,
+    ///   so only case 1 is reachable after a fully successful initialization.
+    ///
+    /// * [`Error::Unauthorized`] – `admin` does not match the stored admin
+    ///   address, or `admin.require_auth()` was not satisfied by the
+    ///   transaction's authorization envelope.
+    ///
+    /// * [`Error::InvalidAddress`] – `token` is one of the sentinel invalid
+    ///   addresses (checked immediately after the admin check, before any
+    ///   storage reads for job metadata or the whitelist):
+    ///   - The Stellar zero account
+    ///     (`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF`),
+    ///   - The canonical Soroban zero contract
+    ///     (`CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4`),
+    ///   - The escrow contract's own address
+    ///     (`env.current_contract_address()`).
+    ///
+    /// * [`Error::AlreadyFunded`] – The escrow has already been funded
+    ///   (`JobMeta::funded` is `true`). Token whitelist changes are locked
+    ///   once the client has deposited funds to prevent post-funding token
+    ///   substitution attacks.
+    ///
+    /// * [`Error::TokenAlreadyWhitelisted`] – `token` is already present in
+    ///   the whitelist. This check runs before the capacity check, so a
+    ///   duplicate token is always reported as `TokenAlreadyWhitelisted` even
+    ///   when the whitelist is at capacity.
+    ///
+    /// * [`Error::InvalidAmount`] – The whitelist already contains
+    ///   `MAX_WHITELIST_SIZE` (50) entries. Adding another would exceed the
+    ///   capacity cap. This guards against unbounded `Vec` growth and `u32`
+    ///   length-counter overflow.
     pub fn add_whitelisted_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
 

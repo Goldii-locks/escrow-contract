@@ -7027,6 +7027,117 @@ fn test_add_whitelisted_token_does_not_whitelist_other_tokens() {
     assert_eq!(client.get_whitelisted_tokens().len(), 2);
 }
 
+/// add_whitelisted_token must reject the Stellar zero account address
+/// (`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF`) with
+/// `Error::InvalidAddress` before touching any job-state storage.
+#[test]
+fn test_add_whitelisted_token_rejects_zero_account_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    let zero_account = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let result = client.try_add_whitelisted_token(&admin_addr, &zero_account);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// add_whitelisted_token must reject the canonical Soroban zero contract
+/// address (`CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4`) with
+/// `Error::InvalidAddress` before touching any job-state storage.
+#[test]
+fn test_add_whitelisted_token_rejects_zero_contract_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    let zero_contract = Address::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    );
+    let result = client.try_add_whitelisted_token(&admin_addr, &zero_contract);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
+/// add_whitelisted_token must reject the escrow contract's own address with
+/// `Error::InvalidAddress`. Whitelisting the contract itself could be used to
+/// drain funds by routing settlement back to the contract address.
+#[test]
+fn test_add_whitelisted_token_rejects_self_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin_addr = Address::generate(&env);
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+
+    let token1 = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token1,
+        &604800,
+        &vec![&env, 1_000_i128],
+    );
+
+    // The escrow contract's own address must never be accepted as a token.
+    let result = client.try_add_whitelisted_token(&admin_addr, &contract_id);
+    assert_eq!(result, Err(Ok(Error::InvalidAddress)));
+}
+
 /// Verify raise_dispute by client succeeds (client is an authorized party).
 #[test]
 fn test_raise_dispute_by_client_succeeds() {
