@@ -877,7 +877,7 @@ pub struct EscrowInterestYieldEvent {
 /// Every field reconciles with the state persisted under DataKey::InterestYieldState.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
- pub struct EscrowInterestYieldSetEvent {
+pub struct EscrowInterestYieldSetEvent {
     pub admin: Address,
     pub client_share_bps: u32,
     pub freelancer_share_bps: u32,
@@ -5296,7 +5296,7 @@ impl MilestoneEscrow {
     /// * `Unauthorized`   – Caller is not the stored admin.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10_000 bps.
     /// * `EscrowLocked`   – Configuration is locked for execution.
-pub fn set_escrow_interest_yield(
+    pub fn set_escrow_interest_yield(
         env: Env,
         admin: Address,
         client_share_bps: u32,
