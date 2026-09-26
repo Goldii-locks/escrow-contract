@@ -33,6 +33,8 @@ mod lock_escrow_interest_yield_event_tests;
 mod milestone_time_extensions_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
+#[path = "multisig_lock_event_tests.rs"]
+mod multisig_lock_event_tests;
 #[path = "multisig_split_refund_tests.rs"]
 mod multisig_split_refund_tests;
 #[path = "multisig_transfer_admin_tests.rs"]

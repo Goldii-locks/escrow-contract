@@ -1168,6 +1168,20 @@ pub struct MultisigAdminOverrideRefundEvent {
     pub amount: i128,
 }
 
+/// Emitted by `multisig_lock` when the admin takes the multisig execution
+/// lock.  `locked` reconciles with the flag the call persisted under
+/// `DataKey::MultisigLocked` and is always `true`, because taking the lock is
+/// what the call does.  Emitted only on the success path — a rejected call
+/// (`Unauthorized` / `NotInitialized`) publishes nothing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultisigLockedEvent {
+    /// Admin that authorised and applied the lock (the acting address).
+    pub admin: Address,
+    /// Lock flag persisted in instance storage; always `true` after a lock.
+    pub locked: bool,
+}
+
 /// Emitted by `multisig_split_refund` when a split-refund allocation is
 /// calculated between client and freelancer.
 #[contracttype]
@@ -7966,6 +7980,17 @@ impl MilestoneEscrow {
     /// deadlock condition is detected.  Only the stored admin can invoke
     /// the corresponding override endpoints.
     ///
+    /// A `mslock` / `MultisigLockedEvent` is published once the flag is
+    /// durable so indexers and auditors get an immutable record of the lock
+    /// instead of polling storage.  The event mirrors the persisted state
+    /// field-for-field: `locked` is the value written under
+    /// `DataKey::MultisigLocked`.
+    ///
+    /// The lock is *taken* here and *cleared* by the override endpoints
+    /// (`multisig_admin_override_release` / `multisig_admin_override_refund`),
+    /// which already publish their own events, so a replay of `mslock` can
+    /// never be confused with a release.
+    ///
     /// ## Storage-footprint note
     ///
     /// This function deliberately uses `require_admin_from_instance` rather
@@ -7973,6 +7998,8 @@ impl MilestoneEscrow {
     /// read (`DataKey::Admin`) and the lock write (`DataKey::MultisigLocked`)
     /// therefore target **instance** storage, meaning a single invocation
     /// touches exactly **one** ledger entry instead of two (persistent + instance).
+    /// Publishing the event does not alter that: events are contract logs, not
+    /// ledger entries.
     ///
     /// # Parameters
     /// * `admin` – Must match `DataKey::Admin` (instance storage).
@@ -7999,6 +8026,18 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::MultisigLocked, &true);
+
+        // Emitted after the write so the payload can only describe a flag that
+        // is already durable; no fallible step follows, so a successful call
+        // carries exactly one event and a rejected call carries none.
+        env.events().publish(
+            (symbol_short!("mslock"),),
+            MultisigLockedEvent {
+                admin,
+                locked: true,
+            },
+        );
+
         Ok(())
     }
 
