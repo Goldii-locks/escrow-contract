@@ -6097,12 +6097,62 @@ impl MilestoneEscrow {
     /// field-for-field: the two BPS values are the shares the lock froze and
     /// `locked` is `true`.
     ///
+    /// ## Guards (issue #464)
+    ///
+    /// Both guards run before this function performs its single ledger write, in
+    /// this order:
+    ///
+    /// 1. **Authorization** — `require_admin_from_instance` performs
+    ///    `admin.require_auth()` (so a transaction that omits the admin
+    ///    signature is rejected by the host before the contract body executes)
+    ///    and then compares against the stored admin.  Being first, an
+    ///    unauthorized caller learns nothing about the lock: it cannot
+    ///    distinguish “already locked” from “not configured” on an escrow it
+    ///    is not allowed to administer.
+    /// 2. **Illegal source state** — an absent `InterestYieldState` entry is
+    ///    `NotInitialized`, and a configuration that is *already* locked is
+    ///    `InvalidStatus`.  Re-locking is refused rather than silently
+    ///    no-opping, so an operator (or an indexer replaying the call) can never
+    ///    mistake a redundant call for one that took fresh action.  This mirrors
+    ///    the guard `unlock_escrow_interest_yield` applies to unlocking an
+    ///    unlocked configuration, and is why this endpoint cannot reuse
+    ///    `ensure_interest_yield_writable` — that helper deliberately maps an
+    ///    absent state to “writable” so the first configuration write can
+    ///    create it, whereas `lock` has no create path.
+    ///
+    /// Because the guards are exhaustive, the only way to reach the write is with
+    /// an authenticated admin and a configured-but-unlocked configuration; every
+    /// rejection path returns above the write and therefore leaves the ledger
+    /// unchanged.
+    ///
+    /// ## Storage-footprint note
+    ///
+    /// Like `set_escrow_interest_yield`, this function uses
+    /// `require_admin_from_instance` rather than the standard `require_admin`
+    /// helper, so the admin verification read (`DataKey::Admin`, instance) and
+    /// the `InterestYieldState` read/write (instance) touch the **same single**
+    /// ledger entry instead of two (persistent + instance).
+    ///
     /// # Errors
+    /// Listed in evaluation order; a call that violates more than one guard
+    /// fails with the first match.
     /// * `NotInitialized` – Contract admin key or interest/yield state missing.
-    /// * `Unauthorized` – `admin` does not match the stored admin.
+    /// * `Unauthorized`    – `admin` does not match the stored admin.
+    /// * `InvalidStatus`   – The interest/yield configuration is already locked.
     pub fn lock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Guard 1 — authorization. `admin.require_auth()` inside the helper makes
+        // the host reject a missing signature before this body runs at all; the
+        // equality check then rejects a validly-signed non-admin.
+        Self::require_admin_from_instance(&env, &admin)?;
+
+        // Guard 2 — illegal source state. One read covers both cases: a missing
+        // entry is `NotInitialized`, and an entry that is already locked is the
+        // illegal source state this endpoint must refuse before writing.
         let mut state = Self::load_interest_yield_state(&env)?;
+        if state.locked {
+            return Err(Error::InvalidStatus);
+        }
+
         state.locked = true;
         Self::store_interest_yield_state(&env, &state);
 
