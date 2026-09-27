@@ -4899,27 +4899,75 @@ impl MilestoneEscrow {
     }
 
     /// Calculate a nearest-rounded split of a total between a streamed payout
-    /// and a client refund. This is an unauthenticated calculator and does not
-    /// read job metadata or transfer funds.
+    /// and a client refund.
+    ///
+    /// # Authorization and preconditions
+    /// The guard block runs at the top of this function, before any ledger
+    /// entry is read or written by the calculation itself:
+    ///
+    /// * The transaction must be signed
+    ///   (`env.current_contract_address().require_auth()`), so an unsigned
+    ///   attempt is rejected before any ledger access.
+    /// * The escrow must be initialised (`Self::require_initialized`), so the
+    ///   split is anchored to a real job rather than a fresh instance.
+    /// * No other payment-streaming split may be mid-execution and the escrow
+    ///   must be neither administratively nor emergency paused.
+    /// * Both the client and the freelancer recorded on the job must sign
+    ///   (`Self::require_client_and_freelancer_consent`), so a
+    ///   single-signature attempt reverts before the split arithmetic runs.
     ///
     /// # Returns
     /// `RatioSplit.first` is the streamed payout; `RatioSplit.second` is the
     /// client refund. The two values sum exactly to `total_amount`.
     ///
     /// # Errors
+    /// * `NotInitialized` – The contract has never been initialised, so there
+    ///   is no job metadata to anchor the split to.
+    /// * `PaymentStreamingInProgress` – Another payment-streaming split is
+    ///   mid-execution.
+    /// * `Paused` – The escrow is administratively or emergency paused.
     /// * `InvalidAmount` – `total_amount` is not positive, or checked
     ///   arithmetic overflows while calculating the split.
     /// * `InvalidRatio` – `denominator` is not positive, or `numerator` is
     ///   outside `0..=denominator`.
     ///
-    /// Arithmetic and input validation complete before the execution lock is
-    /// written, so rejected calls leave no storage entry or event behind.
+    /// Authentication, preconditions and input validation all complete before
+    /// the execution lock is written, so rejected calls leave no storage entry
+    /// or event behind.
     pub fn payment_streaming_milestones(
         env: Env,
         total_amount: i128,
         numerator: i128,
         denominator: i128,
     ) -> Result<RatioSplit, Error> {
+        // Authorization: the caller must have signed this transaction. The
+        // SDK aborts the call before any ledger access if the signature is
+        // missing, so an unsigned attempt is rejected outright.
+        env.current_contract_address().require_auth();
+
+        // Precondition: the escrow must be initialized so the split is anchored
+        // to a real job rather than a fresh or uninitialized instance. This is
+        // the same guard used by every other mutating endpoint.
+        Self::require_initialized(&env)?;
+
+        // Reject illegal source states — a split already mid-execution or a
+        // paused escrow — before any further ledger access, so a mistaken
+        // call never mutates storage.
+        Self::assert_payment_streaming_not_locked(&env)?;
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Authorization and precondition checks run BEFORE any ledger entry is
+        // written. Both the client and the freelancer must have signed the
+        // transaction, so a single-signature attempt can never reach the split
+        // arithmetic and no state is mutated.
+        let _meta = Self::require_client_and_freelancer_consent(&env)?;
+
+        // Reject invalid inputs BEFORE the execution lock is acquired, so a
+        // rejected invocation writes no ledger entry and publishes no event.
         Self::validate_streaming_ratio(total_amount, numerator, denominator)?;
         let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
 
@@ -4951,11 +4999,12 @@ impl MilestoneEscrow {
     /// both the client and the freelancer must independently sign the
     /// transaction.
     ///
-    /// `payment_streaming_milestones` is an unauthenticated calculator — any
-    /// caller may ask it what a given ratio works out to.  This endpoint is
-    /// the consent-gated counterpart, for deployments that want a streaming
-    /// settlement to be agreed by both parties before it is computed and
-    /// recorded on-chain.
+    /// `payment_streaming_milestones` shares this guard block: it now
+    /// authenticates the caller, requires an initialised escrow, rejects
+    /// paused or mid-execution source states, and collects both signatures
+    /// before it computes anything.  This endpoint is its settlement
+    /// counterpart, additionally recording a `p_strcns` event that names both
+    /// signers on-chain rather than the anonymous `p_stream` payload.
     ///
     /// # Signature collection
     /// [`require_client_and_freelancer_consent`] calls `require_auth()` on the
