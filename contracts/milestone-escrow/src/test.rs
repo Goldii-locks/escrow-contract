@@ -3289,7 +3289,7 @@ fn test_multisig_lock_requires_admin() {
 
     // Admin should succeed
     client.multisig_lock(&admin_addr);
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 }
 
 /// Verify multisig_lock sets the lock flag and is_multisig_locked reads it.
@@ -3302,7 +3302,7 @@ fn test_multisig_lock_state_transitions() {
 
     assert!(!client.is_multisig_locked());
     client.multisig_lock(&admin_addr);
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 }
 
 /// multisig_lock must touch only instance storage — both the admin
@@ -3352,7 +3352,7 @@ fn test_multisig_lock_uses_single_instance_ledger_entry() {
     );
 
     // The public accessor must agree.
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 }
 
 /// multisig_lock must not touch persistent storage for the admin check —
@@ -3448,7 +3448,7 @@ fn test_multisig_lock_rejects_second_lock() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.multisig_lock(&admin_addr);
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 
     // Locking an already-locked workflow is an illegal source state (#458):
     // it is rejected and the flag stays set.
@@ -3456,7 +3456,7 @@ fn test_multisig_lock_rejects_second_lock() {
         client.try_multisig_lock(&admin_addr),
         Err(Ok(Error::InvalidStatus))
     );
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 }
 
 /// Verify multisig_admin_override_release requires verified admin auth.
@@ -3585,7 +3585,7 @@ fn test_multisig_override_release_clears_locked_flag() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.multisig_lock(&admin_addr);
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 
     client.multisig_admin_override_release(&admin_addr, &0u32);
     assert!(!client.is_multisig_locked());
@@ -3600,7 +3600,7 @@ fn test_multisig_override_refund_clears_locked_flag() {
     let (_, _, _, admin_addr, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.multisig_lock(&admin_addr);
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 
     client.multisig_admin_override_refund(&admin_addr, &0u32);
     assert!(!client.is_multisig_locked());
@@ -3628,7 +3628,7 @@ fn test_multisig_admin_override_release_reduced_storage_footprint() {
 
     // Put the workflow in the locked state the override is meant to resolve.
     client.multisig_lock(&admin_addr);
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 
     // No terminal flag may exist before the call.
     let flag_before: Option<bool> = env.as_contract(&contract_id, || {
@@ -3704,7 +3704,7 @@ fn test_multisig_admin_override_release_amount_overflow_returns_invalid_amount()
 
     let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 }
 
 #[test]
@@ -3730,7 +3730,7 @@ fn test_multisig_admin_override_release_min_amount_returns_invalid_amount() {
 
     let result = client.try_multisig_admin_override_release(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 }
 
 /// Verify multisig override on unfunded escrow fails.
@@ -13636,7 +13636,7 @@ fn test_multisig_admin_override_release_unauthorized_no_mutation() {
 
     let result = client.try_multisig_admin_override_release(&attacker, &0u32);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
     assert_eq!(
         token.balance(&freelancer_addr),
         freelancer_before,

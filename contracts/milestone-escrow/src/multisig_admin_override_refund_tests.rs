@@ -40,7 +40,7 @@ fn snapshot_refund_ledger(
     let milestone = job.milestones.get(0).unwrap();
     let token = token::Client::new(env, token_id);
     RefundLedgerSnapshot {
-        locked: client.is_multisig_locked(),
+        locked: client.is_multisig_locked().unwrap(),
         status: milestone.status,
         released_amount: milestone.released_amount,
         client_balance: token.balance(client_addr),
@@ -188,7 +188,7 @@ fn refund_negative_amount_returns_invalid_amount_without_panic() {
     let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
     assert_eq!(refund_event_count(&env), 0);
 }
 
@@ -210,7 +210,7 @@ fn refund_negative_released_amount_returns_invalid_amount_without_panic() {
     let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
     assert_eq!(refund_event_count(&env), 0);
 }
 
@@ -232,14 +232,14 @@ fn refund_released_exceeds_amount_returns_invalid_amount_without_panic() {
     // released_amount == amount → remaining == 0 → InvalidAmount.
     let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 
     // released_amount > amount → remaining < 0 → InvalidAmount (no wrap).
     let milestone2 = unlocked_milestone(100, 200);
     set_milestone_raw(&env, &contract_id, 0, &milestone2);
     let result = client.try_multisig_admin_override_refund(&admin_addr, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
-    assert!(client.is_multisig_locked());
+    assert!(client.is_multisig_locked().unwrap());
 
     assert_eq!(refund_event_count(&env), 0);
 }

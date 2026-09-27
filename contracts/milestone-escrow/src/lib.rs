@@ -1604,6 +1604,13 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)
     }
 
+    fn load_multisig_locked(env: &Env) -> Result<bool, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultisigLocked)
+            .ok_or(Error::NotInitialized)
+    }
+
     fn store_interest_yield_state(env: &Env, state: &EscrowInterestYieldState) {
         env.storage()
             .instance()
@@ -6337,6 +6344,8 @@ mod test_emergency_pause;
 mod test_payment_streaming_milestones;
 #[cfg(test)]
 mod unlock_escrow_interest_yield_event_tests;
+mod is_multisig_locked_tests;
+mod is_escrow_interest_yield_locked_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
@@ -8670,11 +8679,9 @@ impl MilestoneEscrow {
     ///
     /// Returns `true` if the `MultisigLocked` flag is set, meaning normal
     /// multisig operations are blocked until an admin override resolves the
-    /// deadlock.
-    pub fn is_multisig_locked(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::MultisigLocked)
-            .unwrap_or(false)
+    /// deadlock. Returns `NotInitialized` if the contract has not been
+    /// initialized.
+    pub fn is_multisig_locked(env: Env) -> Result<bool, Error> {
+        Self::load_multisig_locked(&env)
     }
 }
