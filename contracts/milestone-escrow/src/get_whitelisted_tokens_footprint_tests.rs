@@ -7,8 +7,9 @@
 //!
 //! The tests pin that two ways:
 //!   - The per-invocation resource metering (`env.cost_estimate().resources()`)
-//!     reports exactly two distinct ledger entries: the contract code and the
-//!     single contract-instance entry that holds `WhitelistedTokens`.  No
+//!     reports exactly one ledger entry: the single contract-instance entry
+//!     that holds `WhitelistedTokens`.  (The contract is registered natively
+//!     here, so there is no separate contract-code entry to count.)  No
 //!     persistent or temporary entry is touched and nothing is written.
 //!   - The returned value is exactly the stored list, in every state, and
 //!     `is_token_whitelisted` agrees with it.
@@ -59,9 +60,9 @@ fn test_get_whitelisted_tokens_reads_one_storage_entry() {
         let resources = env.cost_estimate().resources();
 
         assert_eq!(
-            resources.memory_read_entries, 2,
-            "get_whitelisted_tokens must touch only contract_code + the \
-             instance entry (n={n}); measured {resources:?}"
+            resources.memory_read_entries, 1,
+            "get_whitelisted_tokens must touch only the instance entry \
+             (n={n}); measured {resources:?}"
         );
         assert_eq!(resources.write_entries, 0, "a read path writes nothing");
         assert_eq!(resources.disk_read_entries, 0);
@@ -81,7 +82,7 @@ fn test_get_whitelisted_tokens_uninitialized_reads_one_storage_entry() {
         Err(Ok(Error::NotInitialized))
     );
     let resources = env.cost_estimate().resources();
-    assert_eq!(resources.memory_read_entries, 2);
+    assert_eq!(resources.memory_read_entries, 1);
     assert_eq!(resources.write_entries, 0);
 }
 
@@ -94,7 +95,7 @@ fn test_is_token_whitelisted_reads_one_storage_entry() {
 
     assert!(escrow.is_token_whitelisted(&whitelist.get(1).unwrap()));
     let resources = env.cost_estimate().resources();
-    assert_eq!(resources.memory_read_entries, 2);
+    assert_eq!(resources.memory_read_entries, 1);
     assert_eq!(resources.write_entries, 0);
 }
 

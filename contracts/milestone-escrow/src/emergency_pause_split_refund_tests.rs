@@ -23,7 +23,7 @@
 use super::*;
 use crate::test::setup_funded_escrow;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _, Temporary as _};
-use soroban_sdk::{symbol_short, testutils::Address as _, vec, Address, Env, IntoVal, Map, Val};
+use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Map, Val};
 
 struct Fixture<'a> {
     contract_id: Address,

@@ -25,10 +25,10 @@ mod arbitration_split_event_tests;
 mod emergency_pause_split_refund_tests;
 #[path = "execute_admin_transfer_tests.rs"]
 mod execute_admin_transfer_tests;
-#[path = "get_whitelisted_tokens_footprint_tests.rs"]
-mod get_whitelisted_tokens_footprint_tests;
 #[path = "get_platform_fee_allocation_tests.rs"]
 mod get_platform_fee_allocation_tests;
+#[path = "get_whitelisted_tokens_footprint_tests.rs"]
+mod get_whitelisted_tokens_footprint_tests;
 #[path = "interest_yield_split_refund_guards_tests.rs"]
 mod interest_yield_split_refund_guards_tests;
 #[path = "load_platform_fee_allocation_tests.rs"]
