@@ -158,19 +158,13 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-              "function_name": "emergency_pause_split_refund",
+              "function_name": "emergency_pause_admin_override",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "i128": "101"
-                },
-                {
-                  "u32": 5000
-                },
-                {
-                  "u32": 5000
+                  "bool": false
                 }
               ]
             }
@@ -178,7 +172,10 @@
           "sub_invocations": []
         }
       ]
-    ]
+    ],
+    [],
+    [],
+    []
   ],
   "ledger": {
     "protocol_version": 28,
@@ -455,7 +452,7 @@
                         ]
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -840,59 +837,5 @@
       }
     ]
   },
-  "events": [
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-        "type": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "epspltref"
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "client_refund"
-                  },
-                  "val": {
-                    "i128": "51"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "client_refund_bps"
-                  },
-                  "val": {
-                    "u32": 5000
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "freelancer_payout"
-                  },
-                  "val": {
-                    "i128": "50"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "freelancer_payout_bps"
-                  },
-                  "val": {
-                    "u32": 5000
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    }
-  ]
+  "events": []
 }

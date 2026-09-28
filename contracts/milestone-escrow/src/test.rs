@@ -21,10 +21,14 @@ mod admin_resume_escrow_footprint_tests;
 mod admin_tax_withholding_guards_tests;
 #[path = "arbitration_split_event_tests.rs"]
 mod arbitration_split_event_tests;
+#[path = "emergency_pause_split_refund_tests.rs"]
+mod emergency_pause_split_refund_tests;
 #[path = "execute_admin_transfer_tests.rs"]
 mod execute_admin_transfer_tests;
 #[path = "get_platform_fee_allocation_tests.rs"]
 mod get_platform_fee_allocation_tests;
+#[path = "get_whitelisted_tokens_footprint_tests.rs"]
+mod get_whitelisted_tokens_footprint_tests;
 #[path = "interest_yield_split_refund_guards_tests.rs"]
 mod interest_yield_split_refund_guards_tests;
 #[path = "load_platform_fee_allocation_tests.rs"]
@@ -57,6 +61,8 @@ mod platform_fee_split_overflow_tests;
 mod propose_admin_transfer_footprint_tests;
 #[path = "read_path_tests.rs"]
 mod read_path_tests;
+#[path = "reputation_no_mutation_tests.rs"]
+mod reputation_no_mutation_tests;
 #[path = "revoke_cancel_approval_tests.rs"]
 mod revoke_cancel_approval_tests;
 #[path = "set_escrow_interest_yield_guards_tests.rs"]
@@ -7316,15 +7322,21 @@ fn test_dispute_flag_only_sets_targeted_milestone() {
 // TASK: emergency_pause_split_refund distribution pathways
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// A funded escrow frozen by `emergency_pause_admin_override`, plus its admin.
+fn emergency_paused_escrow(env: &Env) -> (Address, MilestoneEscrowClient<'_>) {
+    env.mock_all_auths();
+    let (_, _, _, admin, _, _, client) = setup_funded_escrow(env, vec![env, 1_000_i128]);
+    client.emergency_pause_admin_override(&admin, &true);
+    (admin, client)
+}
+
 #[test]
 fn test_emergency_pause_split_refund_even_split() {
     let env = Env::default();
-    env.mock_all_auths();
+    let (admin, client) = emergency_paused_escrow(&env);
 
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
-
-    let allocation = client.emergency_pause_split_refund(&1_000_i128, &5_000_u32, &5_000_u32);
+    let allocation =
+        client.emergency_pause_split_refund(&admin, &1_000_i128, &5_000_u32, &5_000_u32);
     assert_eq!(allocation.client_refund, 500);
     assert_eq!(allocation.freelancer_payout, 500);
     assert_eq!(allocation.client_refund_bps, 5_000);
@@ -7338,13 +7350,10 @@ fn test_emergency_pause_split_refund_even_split() {
 #[test]
 fn test_emergency_pause_split_refund_odd_amount_rounding() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let (admin, client) = emergency_paused_escrow(&env);
 
     // 101 split 50/50: client gets 51, freelancer gets 50
-    let allocation = client.emergency_pause_split_refund(&101_i128, &5_000_u32, &5_000_u32);
+    let allocation = client.emergency_pause_split_refund(&admin, &101_i128, &5_000_u32, &5_000_u32);
     assert_eq!(allocation.client_refund, 51);
     assert_eq!(allocation.freelancer_payout, 50);
     assert_eq!(allocation.client_refund + allocation.freelancer_payout, 101);
@@ -7353,13 +7362,11 @@ fn test_emergency_pause_split_refund_odd_amount_rounding() {
 #[test]
 fn test_emergency_pause_split_refund_invalid_ratio_fails() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    let (admin, client) = emergency_paused_escrow(&env);
 
     // 5000 + 3000 = 8000 != 10000
-    let result = client.try_emergency_pause_split_refund(&1_000_i128, &5_000_u32, &3_000_u32);
+    let result =
+        client.try_emergency_pause_split_refund(&admin, &1_000_i128, &5_000_u32, &3_000_u32);
     assert_eq!(result, Err(Ok(Error::InvalidRatio)));
 }
 
