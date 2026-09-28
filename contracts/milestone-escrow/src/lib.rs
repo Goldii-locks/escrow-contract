@@ -5638,12 +5638,23 @@ impl MilestoneEscrow {
     /// 2. `signer` must be one of the registered multisig signers
     ///    (`Unauthorized`).
     /// 3. Contract token balance must be > 0 (`MultiSigEmptyBalance`).
+    /// 4. The signer's index must be representable as a bit position in the
+    ///    `u32` approval bitmap (`ArithmeticOverflow`). This is evaluated with
+    ///    `try_into` / `checked_shl` / `checked_add` and runs **before** the
+    ///    bitmap is written, so an unrepresentable index cannot leave partial
+    ///    state behind (see `multisig_approve_checked_arithmetic_tests`).
     ///
     /// # Errors
     /// * `NotInitialized`       – `multisig_approval_init` has not been called.
     /// * `Unauthorized`         – `signer` did not sign, or is not a
     ///   registered signer.
     /// * `MultiSigEmptyBalance` – Contract token balance is ≤ 0.
+    /// * `ArithmeticOverflow`   – The signer's position does not fit the `u32`
+    ///   bitmap, i.e. the stored signer set holds more than
+    ///   `MAX_MULTISIG_SIGNERS` = 32 entries (which `multisig_approval_init`
+    ///   itself rejects with `MultiSigTooManySigners`, so this needs corrupt or
+    ///   upgraded storage). Reported as a typed error instead of trapping on
+    ///   the release profile's overflow checks.
     pub fn multisig_approve(
         env: Env,
         signer: Address,
@@ -5687,10 +5698,36 @@ impl MilestoneEscrow {
             .get(&DataKey::MultiSigApproval(proposal_id))
             .unwrap_or(0);
 
-        // Set the bit for this signer (idempotent).
-        let idx: u32 = signer_index.try_into().map_err(|_| Error::InvalidAmount)?;
-        let mask = 1u32.checked_shl(idx).ok_or(Error::InvalidAmount)?;
-        bitmap |= mask;
+        // ── Turn the signer's index into its bitmap bit (issue #583) ─────────
+        // This is the only integer computation in the call, and every step of
+        // it is fallible, so no step uses a bare operator:
+        //   * `position` yields a `usize` while the bitmap is a `u32`, so the
+        //     index is narrowed with `try_into` (`as` would truncate silently);
+        //   * the shift is `checked_shl`, which answers `None` for `idx >= 32`
+        //     instead of wrapping onto bit 0 or trapping;
+        //   * the accumulator is advanced with `checked_add` rather than `|=`,
+        //     so a value the `u32` cannot represent is reported instead of
+        //     wrapping.
+        // The release profile enables `overflow-checks` with `panic = "abort"`,
+        // so a bare operator that overflowed would abort the whole transaction
+        // with no value for the caller to inspect; instead each checked step
+        // maps its failure to `Error::ArithmeticOverflow` (code 36). All of it
+        // runs before the `set` below, so a rejected call writes nothing.
+        let idx: u32 = signer_index
+            .try_into()
+            .map_err(|_| Error::ArithmeticOverflow)?;
+        let mask = 1u32.checked_shl(idx).ok_or(Error::ArithmeticOverflow)?;
+
+        // Set the bit for this signer. Approving twice from the same signer is
+        // a no-op, which is not only the documented behaviour but also what
+        // keeps `checked_add` sound at the top of the range: with the bit
+        // already set the sum would be `u32::MAX + mask`, and that overflows
+        // once all 32 bits are set. Reaching the add only when the bit is clear
+        // makes `bitmap + mask` exactly equal to `bitmap | mask` and provably
+        // representable.
+        if bitmap & mask == 0 {
+            bitmap = bitmap.checked_add(mask).ok_or(Error::ArithmeticOverflow)?;
+        }
 
         // Write the updated bitmap back to temporary storage.
         env.storage()
@@ -6569,6 +6606,8 @@ mod is_emergency_paused_not_initialized_tests;
 mod is_escrow_interest_yield_locked_tests;
 #[cfg(test)]
 mod is_multisig_locked_tests;
+#[cfg(test)]
+mod multisig_approve_checked_arithmetic_tests;
 mod multisig_lock_auth_tests;
 #[cfg(test)]
 mod payment_streaming_consent_arithmetic_tests;
