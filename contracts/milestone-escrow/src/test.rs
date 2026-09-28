@@ -31,10 +31,18 @@ mod interest_yield_split_refund_guards_tests;
 mod load_platform_fee_allocation_tests;
 #[path = "lock_escrow_interest_yield_event_tests.rs"]
 mod lock_escrow_interest_yield_event_tests;
+#[path = "lock_escrow_interest_yield_guards_tests.rs"]
+mod lock_escrow_interest_yield_guards_tests;
 #[path = "milestone_time_extensions_tests.rs"]
 mod milestone_time_extensions_tests;
 #[path = "multisig_admin_override_refund_tests.rs"]
 mod multisig_admin_override_refund_tests;
+#[path = "multisig_approval_init_event_tests.rs"]
+mod multisig_approval_init_event_tests;
+#[path = "multisig_approval_init_footprint_tests.rs"]
+mod multisig_approval_init_footprint_tests;
+#[path = "multisig_approve_footprint_tests.rs"]
+mod multisig_approve_footprint_tests;
 #[path = "multisig_lock_event_tests.rs"]
 mod multisig_lock_event_tests;
 #[path = "multisig_split_refund_tests.rs"]
@@ -8079,6 +8087,15 @@ fn test_multisig_split_refund_emits_event() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &_freelancer_addr,
+        &_arbiter_addr,
+        &token_contract_id,
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     // Negative numerator
     assert_eq!(
@@ -8145,6 +8162,15 @@ fn test_payment_streaming_milestones_negative_amount_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     assert_eq!(
         client.try_payment_streaming_milestones(&-1_i128, &1_i128, &2_i128),
@@ -8159,6 +8185,15 @@ fn test_payment_streaming_milestones_zero_denominator_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     assert_eq!(
         client.try_payment_streaming_milestones(&100_i128, &1_i128, &0_i128),
@@ -8180,6 +8215,15 @@ fn test_payment_streaming_milestones_zero_amount_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     assert_eq!(
         client.try_payment_streaming_milestones(&0_i128, &1_i128, &2_i128),
@@ -8194,6 +8238,15 @@ fn test_payment_streaming_milestones_full_amount() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     let split = client.payment_streaming_milestones(&1000_i128, &100_i128, &100_i128);
     assert_eq!(split.first, 1000);
@@ -8207,6 +8260,15 @@ fn test_payment_streaming_milestones_zero_numerator() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     let split = client.payment_streaming_milestones(&1000_i128, &0_i128, &100_i128);
     assert_eq!(split.first, 0);
@@ -8220,6 +8282,15 @@ fn test_payment_streaming_milestones_overflow_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     assert_eq!(
         client.try_payment_streaming_milestones(&i128::MAX, &i128::MAX, &i128::MAX),
@@ -8234,6 +8305,15 @@ fn test_payment_streaming_milestones_emits_event() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     let amount = 1_000_i128;
     let num = 300_i128;
@@ -11565,6 +11645,15 @@ fn test_payment_streaming_milestones_zero_total_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     let result = client.try_payment_streaming_milestones(&0_i128, &1_i128, &2_i128);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
@@ -11578,6 +11667,15 @@ fn test_payment_streaming_milestones_negative_total_fails() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     let result = client.try_payment_streaming_milestones(&-500_i128, &1_i128, &2_i128);
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
@@ -11591,6 +11689,15 @@ fn test_payment_streaming_milestones_positive_total_succeeds() {
 
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &604800,
+        &vec![&env, 1000_i128],
+    );
 
     // 1000 streamed at 1/4 elapsed: first=250, second=750, sum=1000
     let split = client.payment_streaming_milestones(&1_000_i128, &1_i128, &4_i128);

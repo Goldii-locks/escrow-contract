@@ -293,12 +293,21 @@ pub enum DataKey {
     /// the locked condition is resolved.
     TaxWithholdingLock(u32),
     // ── multisig approval compact storage keys ─────────────────────────────
-    /// The full list of registered multisig signers (instance storage, written
-    /// once by `multisig_approval_init`).  Stored as a single `Vec<Address>`
-    /// rather than N individual keys to minimise read overhead and total bytes.
+    /// **Superseded (issue #456).**  Previously held the registered multisig
+    /// signer set on its own.  `multisig_approval_init` now persists the signer
+    /// set *and* the approval threshold together in the single consolidated
+    /// `DataKey::MultiSigConfig` entry, so this key is no longer written.  It
+    /// is still read as a fallback by `load_multisig_config` (and probed by the
+    /// `multisig_approval_init` already-initialised guard) so a contract
+    /// initialised before the change and then upgraded keeps its multisig
+    /// regime.  The variant is kept, and no variant is reordered, so existing
+    /// variant discriminants stay stable — serialization compatibility for
+    /// already-written ledger entries.
     MultiSigSigners,
-    /// The minimum number of approvals required for a multisig decision.
-    /// Written once during initialisation, read on every approval check.
+    /// **Superseded (issue #456).**  See `MultiSigSigners` above: the approval
+    /// threshold now lives inside the consolidated `DataKey::MultiSigConfig`
+    /// entry instead of occupying its own storage key; read only as the legacy
+    /// fallback in `load_multisig_config`.
     MultiSigThreshold,
     /// Transient approval-bitmap for a given proposal index.  Uses **temporary**
     /// storage so the ledger footprint does not persist beyond the proposal
@@ -362,6 +371,20 @@ pub enum DataKey {
     /// Instance: held while `payment_streaming_milestones` (or its consent
     /// counterpart) executes.
     PaymentStreamingExecutionLock,
+    /// Instance: the **consolidated multisig configuration** — the registered
+    /// signer set and the approval threshold — held as a single `MultiSigConfig`
+    /// value under this one key (issue #456).  Written once by
+    /// `multisig_approval_init`; read by `multisig_approve` and by
+    /// `read_multisig_approval` behind `is_multisig_approved`.  One invocation
+    /// therefore touches one distinct multisig storage key instead of the two
+    /// separate `MultiSigSigners` / `MultiSigThreshold` entries it replaced,
+    /// and the contract-instance entry needs 28 bytes less for a three-signer
+    /// set (the removed key/value pair costs more than the tuple wrapper the
+    /// consolidated value adds).
+    ///
+    /// Appended at the end of `DataKey` so existing variant discriminants stay
+    /// stable (serialization compatibility for already-written ledger entries).
+    MultiSigConfig,
 }
 
 #[contracttype]
@@ -1022,6 +1045,21 @@ pub struct MultiSigApprovalState {
     pub bitmap: u32,
 }
 
+/// Consolidated multisig configuration (issue #456): the registered signer set
+/// and the approval threshold, persisted together in the single instance entry
+/// `DataKey::MultiSigConfig`.
+///
+/// The fields are positional on purpose: field `0` is the signer set, field `1`
+/// the threshold.  `#[contracttype]` encodes a tuple struct as a compact
+/// `ScVec`, whereas a named-field struct would be encoded as a symbol-keyed
+/// `ScMap` whose field symbols alone (`signers`, `threshold`) cost 36 bytes —
+/// more than the 28-byte saving this consolidation achieves — while still using
+/// one key.  Positional fields keep the entry smaller than the legacy two-key
+/// layout, for the same signer set.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiSigConfig(pub Vec<Address>, pub u32);
+
 /// Emitted by `multisig_approve` on every successful call so downstream
 /// indexers can track approval progress without polling contract storage.
 #[contracttype]
@@ -1180,6 +1218,32 @@ pub struct EmergencyPauseAllocationEvent {
 }
 
 // ── multisig_approval events ────────────────────────────────────────────────
+
+/// Emitted by `multisig_approval_init` when the multisig signer set and
+/// approval threshold are successfully registered (issue #455).
+///
+/// The initialisation is a one-time state transition: it is the *only* write
+/// path for the multisig configuration (`DataKey::MultiSigConfig`), so
+/// without an event the original configuration could only be recovered by
+/// replaying the ledger.  Both payload fields therefore reconcile exactly with
+/// what the call persisted — `signers` and `threshold` are the two fields of
+/// the `MultiSigConfig` written under `DataKey::MultiSigConfig` (read back from
+/// instance storage after the write).  Emitted only on the success path: every rejection
+/// (`NotInitialized` / `Unauthorized` / `AlreadyInitialized` /
+/// `MultiSigNoSigners` / `MultiSigTooManySigners` /
+/// `MultiSigInvalidThreshold` / `MultiSigDuplicateSigner`) returns before the
+/// publish, so a failed call publishes nothing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultisigApprovalInitEvent {
+    /// Admin that authorised and applied the initialisation (the acting
+    /// address, verified by `require_admin` against `DataKey::Admin`).
+    pub admin: Address,
+    /// Full signer set persisted in `DataKey::MultiSigConfig`.
+    pub signers: Vec<Address>,
+    /// Approval threshold persisted in `DataKey::MultiSigConfig`.
+    pub threshold: u32,
+}
 
 /// Emitted by `multisig_admin_override_release` when the admin force-releases
 /// a multisig-locked allocation to the freelancer.
@@ -1604,6 +1668,20 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Read the multisig deadlock flag. `MultisigLocked` is only written by
+    /// `multisig_lock`, so an initialized escrow that was never locked has no
+    /// entry and reads as `false`; only a contract without an instance `Admin`
+    /// (never initialized) reports `NotInitialized`.
+    ///
+    /// **This function must contain only read operations.**
+    fn load_multisig_locked(env: &Env) -> Result<bool, Error> {
+        let storage = env.storage().instance();
+        if !storage.has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(storage.get(&DataKey::MultisigLocked).unwrap_or(false))
+    }
+
     fn store_interest_yield_state(env: &Env, state: &EscrowInterestYieldState) {
         env.storage()
             .instance()
@@ -1642,6 +1720,11 @@ impl MilestoneEscrow {
     /// * `Paused`        – Contract is currently paused.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic underflow.
     /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps != 10_000`.
+    ///
+    /// # Validation order
+    /// `total_amount` and the BPS ratio are validated before any storage read,
+    /// so an invalid argument is rejected without touching the ledger; the
+    /// admin and emergency pause checks run afterwards.
     pub fn split_refund_net_distribution(
         env: Env,
         total_amount: i128,
@@ -1649,12 +1732,7 @@ impl MilestoneEscrow {
         freelancer_payout_bps: u32,
         fee_allocation: PlatformFeeAllocation,
     ) -> Result<SplitRefundFeeDistribution, Error> {
-        Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
-
+        // Precondition checks before any storage access
         if total_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -1664,6 +1742,13 @@ impl MilestoneEscrow {
             .ok_or(Error::InvalidRatio)?;
         if total_bps != BPS_SCALE {
             return Err(Error::InvalidRatio);
+        }
+
+        // After preconditions pass, check authorization and contract state
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
         }
 
         // 1. Calculate gross split with explicit round-to-nearest arithmetic.
@@ -2685,6 +2770,12 @@ impl MilestoneEscrow {
         }
     }
 
+    /// Returns whether `token` is present in the stored whitelist.
+    ///
+    /// Returns `false` if the whitelist has not been stored, is empty, or does
+    /// not contain `token`. Returns `true` when it does. A full whitelist is
+    /// checked the same way; its size does not otherwise affect the result.
+    /// This read-only query requires no authorization.
     pub fn is_token_whitelisted(env: Env, token: Address) -> bool {
         if let Some(whitelist) = env
             .storage()
@@ -3060,6 +3151,39 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Compute the seconds remaining until automatic release of a milestone.
+    ///
+    /// This is a read-only query that does not mutate any ledger state. It calculates
+    /// the time until the auto-release deadline based on:
+    /// - The milestone's delivery timestamp (from temporary storage if available, else from persistent)
+    /// - The configured auto-release delay from the job metadata
+    /// - Any active time extension applied to the milestone
+    ///
+    /// # Return Value
+    ///
+    /// - **Positive value**: The number of seconds remaining until auto-release.
+    ///   - At or near the deadline, this approaches 0.
+    ///   - The deadline is: `delivered_at + auto_release_seconds + extension_seconds`.
+    ///
+    /// - **Zero or Negative**: Deadline has passed; auto-release is or was overdue.
+    ///   - In populated state: Returns negative if `current > deadline`.
+    ///   - In boundary state: Returns error if deadline or current timestamp overflows i64.
+    ///
+    /// - **Error**: Returned if:
+    ///   - The deadline calculation overflows (deadline too far in future).
+    ///   - The timestamp conversion to i64 fails.
+    ///   - The subtraction overflows (current > deadline, rare in i64).
+    ///
+    /// A missing milestone or missing job metadata is not reported as a typed
+    /// `Error`: the call traps, and the host surfaces that to the caller as a
+    /// failed invocation.
+    ///
+    /// # Behavior in Edge Cases
+    ///
+    /// - Empty state (no milestone): the call traps (see above).
+    /// - Boundary state (large extensions/timestamps): Returns error on overflow.
+    /// - Expired milestone: Returns 0 or negative value (seconds past deadline).
+    /// - Just-delivered (delivered_at = current): Returns approximately `auto_release_seconds + extension_seconds`.
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> Result<i64, Error> {
         let meta = Self::load_job_meta(&env).unwrap();
         let milestone = Self::load_milestone(&env, milestone_index).unwrap();
@@ -4691,17 +4815,22 @@ impl MilestoneEscrow {
     /// * `Error::NotInitialized` – no platform-fee allocation exists (inside the
     ///   execution lock guard).
     pub fn lock_platform_fee_allocation(env: Env, admin: Address) -> Result<(), Error> {
+        // Perform all authorization and precondition checks before any ledger writes
+        // so unauthorized callers and illegal source states are rejected without
+        // mutating any storage entry.
         Self::require_admin(&env, &admin)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
 
+        // Load the current allocation early to validate it exists
+        let mut current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
+
+        // All checks passed; now proceed with mutation under re-entrancy guard
         env.storage()
             .instance()
             .set(&DataKey::PlatformFeeAllocationLock, &true);
 
         let result = (|| {
-            let mut current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
-
             // Emit a structured event so downstream indexers can track
             // lock state changes without polling storage.
             env.events().publish(
@@ -4899,27 +5028,75 @@ impl MilestoneEscrow {
     }
 
     /// Calculate a nearest-rounded split of a total between a streamed payout
-    /// and a client refund. This is an unauthenticated calculator and does not
-    /// read job metadata or transfer funds.
+    /// and a client refund.
+    ///
+    /// # Authorization and preconditions
+    /// The guard block runs at the top of this function, before any ledger
+    /// entry is read or written by the calculation itself:
+    ///
+    /// * The transaction must be signed
+    ///   (`env.current_contract_address().require_auth()`), so an unsigned
+    ///   attempt is rejected before any ledger access.
+    /// * The escrow must be initialised (`Self::require_initialized`), so the
+    ///   split is anchored to a real job rather than a fresh instance.
+    /// * No other payment-streaming split may be mid-execution and the escrow
+    ///   must be neither administratively nor emergency paused.
+    /// * Both the client and the freelancer recorded on the job must sign
+    ///   (`Self::require_client_and_freelancer_consent`), so a
+    ///   single-signature attempt reverts before the split arithmetic runs.
     ///
     /// # Returns
     /// `RatioSplit.first` is the streamed payout; `RatioSplit.second` is the
     /// client refund. The two values sum exactly to `total_amount`.
     ///
     /// # Errors
+    /// * `NotInitialized` – The contract has never been initialised, so there
+    ///   is no job metadata to anchor the split to.
+    /// * `PaymentStreamingInProgress` – Another payment-streaming split is
+    ///   mid-execution.
+    /// * `Paused` – The escrow is administratively or emergency paused.
     /// * `InvalidAmount` – `total_amount` is not positive, or checked
     ///   arithmetic overflows while calculating the split.
     /// * `InvalidRatio` – `denominator` is not positive, or `numerator` is
     ///   outside `0..=denominator`.
     ///
-    /// Arithmetic and input validation complete before the execution lock is
-    /// written, so rejected calls leave no storage entry or event behind.
+    /// Authentication, preconditions and input validation all complete before
+    /// the execution lock is written, so rejected calls leave no storage entry
+    /// or event behind.
     pub fn payment_streaming_milestones(
         env: Env,
         total_amount: i128,
         numerator: i128,
         denominator: i128,
     ) -> Result<RatioSplit, Error> {
+        // Authorization: the caller must have signed this transaction. The
+        // SDK aborts the call before any ledger access if the signature is
+        // missing, so an unsigned attempt is rejected outright.
+        env.current_contract_address().require_auth();
+
+        // Precondition: the escrow must be initialized so the split is anchored
+        // to a real job rather than a fresh or uninitialized instance. This is
+        // the same guard used by every other mutating endpoint.
+        Self::require_initialized(&env)?;
+
+        // Reject illegal source states — a split already mid-execution or a
+        // paused escrow — before any further ledger access, so a mistaken
+        // call never mutates storage.
+        Self::assert_payment_streaming_not_locked(&env)?;
+        Self::assert_not_paused(&env)?;
+        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
+        if emergency_paused {
+            return Err(Error::Paused);
+        }
+
+        // Authorization and precondition checks run BEFORE any ledger entry is
+        // written. Both the client and the freelancer must have signed the
+        // transaction, so a single-signature attempt can never reach the split
+        // arithmetic and no state is mutated.
+        let _meta = Self::require_client_and_freelancer_consent(&env)?;
+
+        // Reject invalid inputs BEFORE the execution lock is acquired, so a
+        // rejected invocation writes no ledger entry and publishes no event.
         Self::validate_streaming_ratio(total_amount, numerator, denominator)?;
         let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
 
@@ -4951,14 +5128,15 @@ impl MilestoneEscrow {
     /// both the client and the freelancer must independently sign the
     /// transaction.
     ///
-    /// `payment_streaming_milestones` is an unauthenticated calculator — any
-    /// caller may ask it what a given ratio works out to.  This endpoint is
-    /// the consent-gated counterpart, for deployments that want a streaming
-    /// settlement to be agreed by both parties before it is computed and
-    /// recorded on-chain.
+    /// `payment_streaming_milestones` shares this guard block: it now
+    /// authenticates the caller, requires an initialised escrow, rejects
+    /// paused or mid-execution source states, and collects both signatures
+    /// before it computes anything.  This endpoint is its settlement
+    /// counterpart, additionally recording a `p_strcns` event that names both
+    /// signers on-chain rather than the anonymous `p_stream` payload.
     ///
     /// # Signature collection
-    /// [`require_client_and_freelancer_consent`] calls `require_auth()` on the
+    /// `require_client_and_freelancer_consent` calls `require_auth()` on the
     /// client address and then on the freelancer address, both taken from the
     /// stored job metadata rather than from caller-supplied arguments.  If
     /// either signature is missing from the transaction the host-level auth
@@ -4981,12 +5159,12 @@ impl MilestoneEscrow {
     /// surfaces as a typed `Error::InvalidAmount` rather than a panic or a
     /// silent wrap:
     /// * `total_amount × numerator` is probed with `i128::checked_mul` in
-    ///   [`Self::validate_streaming_ratio`] **before** the
+    ///   `validate_streaming_ratio` **before** the
     ///   `PaymentStreamingExecutionLock` is taken, so a rejected invocation
     ///   writes no ledger entry.
     /// * The same product, the `denominator / 2` rounding bias and the
     ///   `total − rounded` remainder are all `checked_mul` / `checked_add` /
-    ///   `checked_sub` inside [`Self::split_round_nearest`].
+    ///   `checked_sub` inside `split_round_nearest`.
     ///
     /// # Errors
     /// * `NotInitialized` – Job metadata missing, so no signers are known.
@@ -4994,9 +5172,6 @@ impl MilestoneEscrow {
     ///   overflows `i128`.
     /// * `InvalidRatio`   – `denominator` ≤ 0, or `numerator` outside
     ///   `0..=denominator`.
-    ///
-    /// [`Self::validate_streaming_ratio`]: Self::validate_streaming_ratio
-    /// [`Self::split_round_nearest`]: Self::split_round_nearest
     pub fn payment_streaming_consent(
         env: Env,
         total_amount: i128,
@@ -5258,6 +5433,87 @@ impl MilestoneEscrow {
         result
     }
 
+    /// Split `total_amount` into per-party shares for a multi-party admin
+    /// transfer and return those shares.
+    ///
+    /// This is a **pure allocation helper**: it authorises `admin`, computes
+    /// the split with the largest-remainder (Hare quota) method, and publishes
+    /// one `msigtrx` event.  It never moves a single token and never writes to
+    /// instance, persistent, or temporary storage, so callers can compute the
+    /// whole distribution before deciding how to execute it — the transfers
+    /// themselves are performed by the caller from the returned vector.
+    ///
+    /// # Authorization
+    /// `admin.require_auth()` runs before anything else, so a transaction
+    /// missing `admin`'s signature is rejected by the host and never enters
+    /// the body.  That host-level auth failure is **not** one of the `Error`
+    /// variants below.  With the signature present, `admin` must still equal
+    /// the stored admin.
+    ///
+    /// # Parameters
+    /// * `admin`        – Caller.  Must be the address written by
+    ///                    `initialize`.
+    /// * `total_amount` – Amount to split.  Must be > 0.
+    /// * `ratios`       – Per-party weights, index-aligned with the returned
+    ///                    vector.  Only their relative sizes matter, so they
+    ///                    need not be normalised.  Must be non-empty, at most
+    ///                    `MAX_MULTISIG_RATIO_COUNT` (255) entries long, with
+    ///                    no negative entry, and must sum to > 0 without
+    ///                    overflowing `i128`.
+    ///
+    /// # Returns
+    /// `Ok(allocations)` — a `Vec<i128>` with **exactly `ratios.len()`
+    /// entries, index-aligned with `ratios`**, where `allocations[i]` is party
+    /// `i`'s share of `total_amount`:
+    ///
+    /// * **Conservation** – `Σ allocations == total_amount` exactly, for every
+    ///   valid input.  No value is lost and none is created.
+    /// * **Non-negative** – every entry is ≥ 0.  A party weighted `0` receives
+    ///   exactly `0`.
+    /// * **Bounded error** – entry `i` is either
+    ///   `floor(total_amount × ratios[i] / Σratios)` or that floor `+ 1`, so a
+    ///   party is never rounded below its floor share.  The indivisible
+    ///   residue units (at most `ratios.len() − 1` of them) go to the parties
+    ///   with the largest fractional remainders.
+    /// * **Determinism** – remainder ties are broken by lowest index, so
+    ///   identical inputs always produce the identical vector.
+    ///
+    /// A successful call publishes exactly one `msigtrx` event whose
+    /// `MultiSigTransferAdminEvent` payload carries `total_amount`,
+    /// `num_parties == ratios.len()`, and an `allocations` vector equal to the
+    /// return value.  Every `Err` path below returns before that publish, so a
+    /// rejected call emits no event at all.
+    ///
+    /// # Validation order
+    /// Guards run in the order below and a call violating more than one fails
+    /// with the first match:
+    ///
+    /// 1. `admin.require_auth()`             → missing signature: host-level
+    ///    auth failure (not an `Error` variant)
+    /// 2. stored-admin lookup / comparison  → `NotInitialized` /
+    ///    `Unauthorized`
+    /// 3. `total_amount` ≤ 0                → `InvalidAmount`
+    /// 4. `ratios` empty                    → `InvalidRatio`
+    /// 5. `ratios.len()` > 255              → `InvalidAmount`
+    /// 6. negative entry, overflowing sum, or `Σratios` ≤ 0 → `InvalidRatio`
+    /// 7. allocation arithmetic overflow    → `InvalidAmount`
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The contract has not been initialised: no stored
+    ///   admin exists.  Reachable only after `admin.require_auth()` has
+    ///   succeeded.
+    /// * `Unauthorized`   – `admin` signed but is not the stored admin, e.g. a
+    ///   client, freelancer, arbiter, or arbitrary third-party address.
+    /// * `InvalidAmount`  – `total_amount` ≤ 0; `ratios` longer than
+    ///   `MAX_MULTISIG_RATIO_COUNT`; or an `i128` checked operation inside the
+    ///   allocation maths (weighted product, running base sum, residue
+    ///   subtraction, per-entry increment) is unrepresentable.
+    /// * `InvalidRatio`   – `ratios` is empty; any entry is negative; `Σratios`
+    ///   overflows `i128`; or `Σratios` ≤ 0 (every entry zero).
+    ///
+    /// Arithmetic overflow maps to `InvalidAmount` / `InvalidRatio` rather
+    /// than `ArithmeticOverflow`, preserving this endpoint's original error
+    /// codes for existing callers and indexers.
     pub fn multisig_transfer_admin(
         env: Env,
         admin: Address,
@@ -5361,9 +5617,10 @@ impl MilestoneEscrow {
     //
     // This implementation uses three optimisations to minimise bytes stored:
     //
-    // 1. **Signer list is stored once** (instance storage) under a single
-    //    `MultiSigSigners` key rather than storing individual key-value pairs
-    //    per signer.
+    // 1. **Signer set and threshold are stored once** (instance storage) in a
+    //    single consolidated `MultiSigConfig` entry — rather than one key per
+    //    signer, and rather than the two separate `MultiSigSigners` /
+    //    `MultiSigThreshold` keys used before issue #456.
     //
     // 2. **Approval tracking uses a compact u32 bitmap** in temporary storage
     //    under `MultiSigApproval(proposal_id)`.  Each bit represents one signer
@@ -5373,6 +5630,16 @@ impl MilestoneEscrow {
     // 3. **Temporary storage tier** is used for the bitmap so that the ledger
     //    footprint is automatically evicted once the proposal lifecycle ends,
     //    rather than persisting indefinitely.
+    //
+    // Issue #457 audited the *write* path of `multisig_approve` against this
+    // design and found the layout itself already minimal: the bitmap is one key
+    // of key type `u32` holding one `u32`, there is no separate per-proposal
+    // metadata key, and the signer set/threshold metadata is read from the
+    // instance entry the call needs anyway (for `DataKey::Job`).  The one
+    // remaining redundant storage access was the unconditional bitmap write,
+    // which re-wrote an unchanged `u32` on every duplicate approval; it is now
+    // skipped whenever the signer's bit is already set, so a duplicate approval
+    // writes no contract storage key at all.  See `multisig_approve`.
 
     const MAX_MULTISIG_SIGNERS: u32 = 32;
 
@@ -5407,28 +5674,105 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Load the multisig signer set and threshold.
+    ///
+    /// Reads the consolidated `DataKey::MultiSigConfig` entry (issue #456).
+    /// A contract initialised before that change and then upgraded still holds
+    /// the two halves under the legacy `MultiSigSigners` / `MultiSigThreshold`
+    /// keys, so those are read as a fallback; without it such a contract would
+    /// report `NotInitialized` for an existing multisig regime.  Both layouts
+    /// live in the same contract-instance entry, so the fallback adds no
+    /// ledger entry to the footprint.
+    ///
+    /// **This function must contain only read operations.**
+    fn load_multisig_config(env: &Env) -> Option<MultiSigConfig> {
+        let instance = env.storage().instance();
+        if let Some(config) = instance.get(&DataKey::MultiSigConfig) {
+            return Some(config);
+        }
+        let signers: Vec<Address> = instance.get(&DataKey::MultiSigSigners)?;
+        let threshold: u32 = instance.get(&DataKey::MultiSigThreshold)?;
+        Some(MultiSigConfig(signers, threshold))
+    }
+
     /// Initialise a multisig approval regime with a fixed set of signers and
     /// the required approval threshold.  Must be called exactly once.
+    ///
+    /// On success the call publishes a `MultisigApprovalInitEvent` under the
+    /// `msiginit` topic carrying the acting admin and the values that were
+    /// actually persisted.  A rejected call (`NotInitialized` /
+    /// `Unauthorized` / `AlreadyInitialized` / `MultiSig*`) publishes nothing.
+    ///
+    /// # Storage footprint (issue #456)
+    /// Two reductions, both measured by
+    /// `multisig_approval_init_footprint_tests`:
+    ///
+    /// 1. The signer set and the threshold are persisted as **one**
+    ///    `DataKey::MultiSigConfig` entry, so the call writes a single distinct
+    ///    multisig storage key instead of the two separate `MultiSigSigners` /
+    ///    `MultiSigThreshold` entries used before, and the contract-instance
+    ///    ledger entry ends up 28 bytes smaller for a three-signer set.  The
+    ///    already-initialised guard probes that same consolidated key — it is
+    ///    the only key this call writes, so it *is* the initialisation
+    ///    condition.
+    /// 2. Authorization uses `require_admin_from_instance` rather than
+    ///    `require_admin`, so the admin verification read lands on the same
+    ///    instance entry as every other access of this call instead of adding
+    ///    the persistent `Admin` entry to the invocation footprint — the same
+    ///    consolidation already landed for `multisig_lock` (#460),
+    ///    `set_escrow_interest_yield` (#463), `set_platform_fee_allocation`
+    ///    (#472) and `admin_resume_escrow` (#449).  `initialize` writes both
+    ///    `Admin` copies atomically and every admin-transfer path keeps them in
+    ///    sync, so the check is logically identical; a contract whose only
+    ///    `Admin` copy is the instance one is accepted, exactly like those
+    ///    endpoints.
     pub fn multisig_approval_init(
         env: Env,
         admin: Address,
         signers: Vec<Address>,
         threshold: u32,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        Self::require_admin_from_instance(&env, &admin)?;
 
-        if env.storage().instance().has(&DataKey::MultiSigSigners) {
+        // Either layout means the regime already exists: a contract upgraded
+        // from before issue #456 still holds its signer set under the legacy
+        // `MultiSigSigners` key, and must not be re-initialisable.
+        let instance = env.storage().instance();
+        if instance.has(&DataKey::MultiSigConfig) || instance.has(&DataKey::MultiSigSigners) {
             return Err(Error::AlreadyInitialized);
         }
 
         Self::validate_multisig_setup(&signers, threshold)?;
 
+        let config = MultiSigConfig(signers, threshold);
         env.storage()
             .instance()
-            .set(&DataKey::MultiSigSigners, &signers);
-        env.storage()
+            .set(&DataKey::MultiSigConfig, &config);
+
+        // Structured event for indexers / auditors (issue #455).  The two
+        // payload fields are read back from instance storage right after the
+        // writes above, so the event reconciles exactly with the state this
+        // call persisted rather than with the raw inputs.  Nothing fallible
+        // follows the publish: every rejection above (`NotInitialized`,
+        // `Unauthorized`, `AlreadyInitialized`, `MultiSigNoSigners`,
+        // `MultiSigTooManySigners`, `MultiSigInvalidThreshold`,
+        // `MultiSigDuplicateSigner`) returns before this point, so a
+        // successful call carries exactly one `msiginit` event and a rejected
+        // call carries none.
+        let MultiSigConfig(stored_signers, stored_threshold) = env
+            .storage()
             .instance()
-            .set(&DataKey::MultiSigThreshold, &threshold);
+            .get(&DataKey::MultiSigConfig)
+            .expect("MultiSigConfig was written above");
+
+        env.events().publish(
+            (symbol_short!("msiginit"),),
+            MultisigApprovalInitEvent {
+                admin,
+                signers: stored_signers,
+                threshold: stored_threshold,
+            },
+        );
 
         Ok(())
     }
@@ -5446,12 +5790,59 @@ impl MilestoneEscrow {
     /// 2. `signer` must be one of the registered multisig signers
     ///    (`Unauthorized`).
     /// 3. Contract token balance must be > 0 (`MultiSigEmptyBalance`).
+    /// 4. The signer's index must be representable as a bit position in the
+    ///    `u32` approval bitmap (`ArithmeticOverflow`). This is evaluated with
+    ///    `try_into` / `checked_shl` / `checked_add` and runs **before** the
+    ///    bitmap is written, so an unrepresentable index cannot leave partial
+    ///    state behind (see `multisig_approve_checked_arithmetic_tests`).
+    ///
+    /// # Storage footprint (issue #457)
+    /// Keys this call reads:
+    /// * `DataKey::MultiSigConfig` (instance) — the registered signers
+    ///   (which also provide the membership check and the signer's bit index)
+    ///   and the approval threshold, in one consolidated entry (issue #456).
+    ///   It lives inside the contract's single
+    ///   `contract_instance` ledger entry, together with the `DataKey::Job`
+    ///   metadata read for the token address, so these reads add no extra
+    ///   entry to the invocation.
+    /// * `DataKey::MultiSigApproval(proposal_id)` (temporary) — the approval
+    ///   bitmap: one key of key type `u32` holding one `u32`, one bit per
+    ///   signer index.
+    ///
+    /// Keys this call writes: only `MultiSigApproval(proposal_id)`, and only
+    /// when the signer's bit is not already set.  A duplicate approval cannot
+    /// change the bitmap, so it now writes no contract storage key at all
+    /// instead of re-writing the same `u32`; measured per invocation by
+    /// `multisig_approve_footprint_tests`: the duplicate path went from 2 entry
+    /// writes / 180 write bytes (one of which was the redundant copy of the
+    /// bitmap, 108 bytes) to 1 entry write / 72 bytes, the remaining write
+    /// being the auth nonce entry that every authenticated call consumes.  A
+    /// first approval is unchanged: it writes the bitmap exactly once, which is
+    /// the floor for recording an approval at all.
+    ///
+    /// Merging the bitmap with the signer set/threshold into one entry is
+    /// deliberately *not* done: the signer set is shared by every proposal, so
+    /// folding it into a per-proposal bitmap entry would duplicate the signer
+    /// vec into each proposal and move it out of the auto-evicting temporary
+    /// tier (optimisations 1 and 3 of the section comment above), while storing
+    /// the bitmap in the always-live instance entry would re-write the whole
+    /// instance entry — job metadata included — on every approval.  There is no
+    /// separate per-proposal metadata key to merge with the bitmap.  The
+    /// metadata consolidation that does exist — the former `MultiSigSigners` +
+    /// `MultiSigThreshold` pair into the single `MultiSigConfig` instance entry
+    /// — is issue #456's and is not duplicated here.
     ///
     /// # Errors
     /// * `NotInitialized`       – `multisig_approval_init` has not been called.
     /// * `Unauthorized`         – `signer` did not sign, or is not a
     ///   registered signer.
     /// * `MultiSigEmptyBalance` – Contract token balance is ≤ 0.
+    /// * `ArithmeticOverflow`   – The signer's position does not fit the `u32`
+    ///   bitmap, i.e. the stored signer set holds more than
+    ///   `MAX_MULTISIG_SIGNERS` = 32 entries (which `multisig_approval_init`
+    ///   itself rejects with `MultiSigTooManySigners`, so this needs corrupt or
+    ///   upgraded storage). Reported as a typed error instead of trapping on
+    ///   the release profile's overflow checks.
     pub fn multisig_approve(
         env: Env,
         signer: Address,
@@ -5459,17 +5850,14 @@ impl MilestoneEscrow {
     ) -> Result<MultiSigApprovalState, Error> {
         signer.require_auth();
 
-        let signers: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::MultiSigSigners)
-            .ok_or(Error::NotInitialized)?;
-
-        let threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MultiSigThreshold)
-            .ok_or(Error::NotInitialized)?;
+        // Consolidated multisig config read (issue #456): the signer set and
+        // the threshold live in the same instance entry, so this is one `get`
+        // where the previous two-key layout needed two (legacy entries from
+        // before the change are still read, see `load_multisig_config`).  A
+        // missing configuration still reports `NotInitialized`.
+        let config = Self::load_multisig_config(&env).ok_or(Error::NotInitialized)?;
+        let signers = config.0;
+        let threshold = config.1;
 
         // Reject callers who are not registered signers before touching any
         // job/token ledger entry (find the signer's index, O(n) but n ≤ 32).
@@ -5495,15 +5883,40 @@ impl MilestoneEscrow {
             .get(&DataKey::MultiSigApproval(proposal_id))
             .unwrap_or(0);
 
-        // Set the bit for this signer (idempotent).
-        let idx: u32 = signer_index.try_into().map_err(|_| Error::InvalidAmount)?;
-        let mask = 1u32.checked_shl(idx).ok_or(Error::InvalidAmount)?;
-        bitmap |= mask;
+        // ── Turn the signer's index into its bitmap bit (issue #583) ─────────
+        // This is the only integer computation in the call, and every step of
+        // it is fallible, so no step uses a bare operator:
+        //   * `position` yields a `usize` while the bitmap is a `u32`, so the
+        //     index is narrowed with `try_into` (`as` would truncate silently);
+        //   * the shift is `checked_shl`, which answers `None` for `idx >= 32`
+        //     instead of wrapping onto bit 0 or trapping;
+        //   * the accumulator is advanced with `checked_add` rather than `|=`,
+        //     so a value the `u32` cannot represent is reported instead of
+        //     wrapping.
+        // The release profile enables `overflow-checks` with `panic = "abort"`,
+        // so a bare operator that overflowed would abort the whole transaction
+        // with no value for the caller to inspect; instead each checked step
+        // maps its failure to `Error::ArithmeticOverflow` (code 36). All of it
+        // runs before the `set` below, so a rejected call writes nothing.
+        let idx: u32 = signer_index
+            .try_into()
+            .map_err(|_| Error::ArithmeticOverflow)?;
+        let mask = 1u32.checked_shl(idx).ok_or(Error::ArithmeticOverflow)?;
 
-        // Write the updated bitmap back to temporary storage.
-        env.storage()
-            .temporary()
-            .set(&DataKey::MultiSigApproval(proposal_id), &bitmap);
+        // Set the bit for this signer, and write the bitmap back only when the
+        // bit actually changed (issue #457).  A duplicate approval
+        // (`bitmap & mask != 0`) cannot change the value, so it writes no
+        // contract storage key at all; the first approval from each signer
+        // writes the bitmap exactly once — the floor for recording an approval.
+        // Reaching the add only when the bit is clear also keeps `checked_add`
+        // sound at the top of the range: `bitmap + mask` is then exactly
+        // `bitmap | mask` and provably representable.
+        if bitmap & mask == 0 {
+            bitmap = bitmap.checked_add(mask).ok_or(Error::ArithmeticOverflow)?;
+            env.storage()
+                .temporary()
+                .set(&DataKey::MultiSigApproval(proposal_id), &bitmap);
+        }
 
         let approvals = bitmap.count_ones();
         let approved = approvals >= threshold;
@@ -5531,12 +5944,13 @@ impl MilestoneEscrow {
     /// Query whether a proposal has reached the required approval threshold.
     ///
     /// # Returns
-    /// A `MultiSigApprovalState` built from the instance `MultiSigThreshold`
-    /// and the temporary `MultiSigApproval(proposal_id)` bitmap.  An unknown
-    /// or expired proposal reads as an empty bitmap (`approvals == 0`).
+    /// A `MultiSigApprovalState` built from the instance `MultiSigConfig`
+    /// (its threshold field) and the temporary `MultiSigApproval(proposal_id)`
+    /// bitmap.  An unknown or expired proposal reads as an empty bitmap
+    /// (`approvals == 0`).
     ///
     /// # Guarantees
-    /// * **Read-only.**  Exactly two `get`s (instance threshold, temporary
+    /// * **Read-only.**  Exactly two `get`s (instance config, temporary
     ///   bitmap), via `read_multisig_approval`.  No `set`, `remove`,
     ///   `extend_ttl`, or event publish in instance, persistent, or temporary
     ///   storage — in particular it never re-writes the bitmap or bumps its
@@ -5557,11 +5971,11 @@ impl MilestoneEscrow {
     ///
     /// **This function must contain only read operations.**
     fn read_multisig_approval(env: &Env, proposal_id: u32) -> Result<MultiSigApprovalState, Error> {
-        let threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MultiSigThreshold)
-            .ok_or(Error::NotInitialized)?;
+        // One instance `get` for the consolidated signer-set/threshold entry
+        // (issue #456).  The temporary bitmap below is the only other storage
+        // read; nothing here writes.
+        let config = Self::load_multisig_config(env).ok_or(Error::NotInitialized)?;
+        let threshold = config.1;
 
         let bitmap: u32 = env
             .storage()
@@ -6058,8 +6472,12 @@ impl MilestoneEscrow {
 
         Self::validate_interest_yield_share_config(client_share_bps, freelancer_share_bps)?;
 
-        if env.storage().instance().has(&DataKey::InterestYieldState) {
-            Self::ensure_interest_yield_unlocked(&env)?;
+        // Consolidate storage reads: load state once and check lock status
+        // instead of calling has() followed by load_interest_yield_state().
+        if let Ok(state) = Self::load_interest_yield_state(&env) {
+            if state.locked {
+                return Err(Error::EscrowLocked);
+            }
         }
 
         Self::store_interest_yield_state(
@@ -6097,12 +6515,62 @@ impl MilestoneEscrow {
     /// field-for-field: the two BPS values are the shares the lock froze and
     /// `locked` is `true`.
     ///
+    /// ## Guards (issue #464)
+    ///
+    /// Both guards run before this function performs its single ledger write, in
+    /// this order:
+    ///
+    /// 1. **Authorization** — `require_admin_from_instance` performs
+    ///    `admin.require_auth()` (so a transaction that omits the admin
+    ///    signature is rejected by the host before the contract body executes)
+    ///    and then compares against the stored admin.  Being first, an
+    ///    unauthorized caller learns nothing about the lock: it cannot
+    ///    distinguish “already locked” from “not configured” on an escrow it
+    ///    is not allowed to administer.
+    /// 2. **Illegal source state** — an absent `InterestYieldState` entry is
+    ///    `NotInitialized`, and a configuration that is *already* locked is
+    ///    `InvalidStatus`.  Re-locking is refused rather than silently
+    ///    no-opping, so an operator (or an indexer replaying the call) can never
+    ///    mistake a redundant call for one that took fresh action.  This mirrors
+    ///    the guard `unlock_escrow_interest_yield` applies to unlocking an
+    ///    unlocked configuration, and is why this endpoint cannot reuse
+    ///    `ensure_interest_yield_writable` — that helper deliberately maps an
+    ///    absent state to “writable” so the first configuration write can
+    ///    create it, whereas `lock` has no create path.
+    ///
+    /// Because the guards are exhaustive, the only way to reach the write is with
+    /// an authenticated admin and a configured-but-unlocked configuration; every
+    /// rejection path returns above the write and therefore leaves the ledger
+    /// unchanged.
+    ///
+    /// ## Storage-footprint note
+    ///
+    /// Like `set_escrow_interest_yield`, this function uses
+    /// `require_admin_from_instance` rather than the standard `require_admin`
+    /// helper, so the admin verification read (`DataKey::Admin`, instance) and
+    /// the `InterestYieldState` read/write (instance) touch the **same single**
+    /// ledger entry instead of two (persistent + instance).
+    ///
     /// # Errors
+    /// Listed in evaluation order; a call that violates more than one guard
+    /// fails with the first match.
     /// * `NotInitialized` – Contract admin key or interest/yield state missing.
-    /// * `Unauthorized` – `admin` does not match the stored admin.
+    /// * `Unauthorized`    – `admin` does not match the stored admin.
+    /// * `InvalidStatus`   – The interest/yield configuration is already locked.
     pub fn lock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        // Guard 1 — authorization. `admin.require_auth()` inside the helper makes
+        // the host reject a missing signature before this body runs at all; the
+        // equality check then rejects a validly-signed non-admin.
+        Self::require_admin_from_instance(&env, &admin)?;
+
+        // Guard 2 — illegal source state. One read covers both cases: a missing
+        // entry is `NotInitialized`, and an entry that is already locked is the
+        // illegal source state this endpoint must refuse before writing.
         let mut state = Self::load_interest_yield_state(&env)?;
+        if state.locked {
+            return Err(Error::InvalidStatus);
+        }
+
         state.locked = true;
         Self::store_interest_yield_state(&env, &state);
 
@@ -6314,11 +6782,21 @@ mod cancel_admin_transfer_tests;
 #[cfg(test)]
 mod cancel_escrow_split_refund_guards_tests;
 #[cfg(test)]
+mod get_job_no_mutation_tests;
+#[cfg(test)]
 mod get_pending_admin_transfer_tests;
 #[cfg(test)]
 mod interest_yield_consent_tests;
 #[cfg(test)]
 mod is_emergency_paused_not_initialized_tests;
+#[cfg(test)]
+mod is_escrow_interest_yield_locked_tests;
+#[cfg(test)]
+mod is_multisig_locked_tests;
+#[cfg(test)]
+mod multisig_approve_checked_arithmetic_tests;
+#[cfg(test)]
+mod multisig_legacy_config_tests;
 mod multisig_lock_auth_tests;
 #[cfg(test)]
 mod payment_streaming_consent_arithmetic_tests;
@@ -6328,6 +6806,8 @@ mod set_escrow_interest_yield_event_tests;
 #[cfg(test)]
 mod set_platform_fee_allocation_auth_tests;
 #[cfg(test)]
+mod split_refund_net_distribution_precondition_tests;
+#[cfg(test)]
 mod tax_withholding_split_refund_tests;
 #[cfg(test)]
 mod test;
@@ -6335,6 +6815,8 @@ mod test;
 mod test_emergency_pause;
 #[cfg(test)]
 mod test_payment_streaming_milestones;
+#[cfg(test)]
+mod time_until_auto_release_tests;
 #[cfg(test)]
 mod unlock_escrow_interest_yield_event_tests;
 
@@ -8670,11 +9152,11 @@ impl MilestoneEscrow {
     ///
     /// Returns `true` if the `MultisigLocked` flag is set, meaning normal
     /// multisig operations are blocked until an admin override resolves the
-    /// deadlock.
-    pub fn is_multisig_locked(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::MultisigLocked)
-            .unwrap_or(false)
+    /// deadlock, and `false` for an initialized escrow that was never locked.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The contract has not been initialized.
+    pub fn is_multisig_locked(env: Env) -> Result<bool, Error> {
+        Self::load_multisig_locked(&env)
     }
 }
