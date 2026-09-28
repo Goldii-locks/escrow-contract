@@ -6597,6 +6597,8 @@ mod cancel_admin_transfer_tests;
 #[cfg(test)]
 mod cancel_escrow_split_refund_guards_tests;
 #[cfg(test)]
+mod get_job_no_mutation_tests;
+#[cfg(test)]
 mod get_pending_admin_transfer_tests;
 #[cfg(test)]
 mod interest_yield_consent_tests;

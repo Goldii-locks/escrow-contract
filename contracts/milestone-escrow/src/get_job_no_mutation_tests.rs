@@ -19,118 +19,59 @@
 //! `get_job` (or the shared helpers it calls) will change the snapshot and fail
 //! this test.
 
-use super::*;
-use soroban_sdk::{vec, Address, Env};
+use crate::test::setup_funded_escrow;
+use crate::{Error, MilestoneEscrow, MilestoneEscrowClient};
+use soroban_sdk::{vec, Env};
 
-/// A fully initialized escrow with specified milestone amounts and parties.
-fn initialized_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
-    env.mock_all_auths();
-
-    let admin_addr = Address::generate(env);
-    let client_addr = Address::generate(env);
-    let freelancer_addr = Address::generate(env);
-    let arbiter_addr = Address::generate(env);
-
-    let token_contract_id = env
-        .register_stellar_asset_contract_v2(admin_addr.clone())
-        .address();
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(env, &contract_id);
-
-    let amounts = vec![env, 1_000_i128, 2_000_i128, 3_000_i128];
-    escrow.initialize(
-        &admin_addr,
-        &client_addr,
-        &freelancer_addr,
-        &arbiter_addr,
-        &token_contract_id,
-        &604_800u64,
-        &amounts,
+/// Call `get_job` twice between two whole-ledger snapshots and assert that
+/// nothing changed and no event was published.
+fn assert_get_job_is_read_only(env: &Env, escrow: &MilestoneEscrowClient<'_>) {
+    let before = env.to_ledger_snapshot();
+    escrow.get_job();
+    // The test env only keeps events from the latest invocation, so this is
+    // exactly what `get_job` published.
+    assert_eq!(
+        crate::all_event_tuples(env).len(),
+        0,
+        "get_job publishes no event"
     );
-
-    (escrow, admin_addr)
+    escrow.get_job();
+    let after = env.to_ledger_snapshot();
+    assert_eq!(before, after, "get_job mutated the ledger");
 }
 
-/// Calling `get_job` on a freshly initialized escrow must leave the entire
-/// ledger byte-for-byte unchanged.
 #[test]
 fn get_job_does_not_mutate_ledger() {
     let env = Env::default();
-    let (escrow, _admin_addr) = initialized_escrow(&env);
+    env.mock_all_auths();
+    let (_, _, _, _, _, _, escrow) = setup_funded_escrow(&env, vec![&env, 1_000_i128, 2_000]);
 
-    let before = env.to_ledger_snapshot();
-    let job = escrow.get_job();
-    let after = env.to_ledger_snapshot();
-
-    // Sanity check: we actually read back valid job data, so the
-    // "no mutation" result below isn't vacuously true because the call
-    // failed or short-circuited.
-    assert_eq!(job.milestones.len(), 3);
-    assert_eq!(job.milestones.get(0).unwrap().amount, 1_000i128);
-    assert_eq!(job.milestones.get(1).unwrap().amount, 2_000i128);
-    assert_eq!(job.milestones.get(2).unwrap().amount, 3_000i128);
-
-    assert_eq!(
-        before, after,
-        "get_job must not mutate any ledger entry"
-    );
+    assert_get_job_is_read_only(&env, &escrow);
 }
 
-/// The same guarantee must hold after the escrow has been funded, which
-/// exercises a different contract state through the same read path.
-#[test]
-fn get_job_does_not_mutate_ledger_when_funded() {
-    let env = Env::default();
-    let (escrow, admin_addr) = initialized_escrow(&env);
-
-    let token_addr = escrow.get_job().token;
-    let token_client = token::Client::new(&env, &token_addr);
-
-    // Fund the escrow
-    token_client.mint(&admin_addr, &6_000i128);
-    escrow.fund(&admin_addr, &6_000i128);
-
-    let before = env.to_ledger_snapshot();
-    let job = escrow.get_job();
-    let after = env.to_ledger_snapshot();
-
-    // Sanity check: milestones are unchanged even after funding
-    assert_eq!(job.milestones.len(), 3);
-    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Pending);
-
-    assert_eq!(
-        before, after,
-        "get_job must not mutate any ledger entry even after funding"
-    );
-}
-
-/// The same guarantee must hold after a milestone has been delivered and
-/// approved, exercising further state progression through the same read path.
 #[test]
 fn get_job_does_not_mutate_ledger_after_milestone_progression() {
     let env = Env::default();
-    let (escrow, admin_addr) = initialized_escrow(&env);
+    env.mock_all_auths();
+    let (client, freelancer, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 2_000]);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.approve_milestone(&client, &0);
 
-    let token_addr = escrow.get_job().token;
-    let token_client = token::Client::new(&env, &token_addr);
-    let job = escrow.get_job();
+    assert_get_job_is_read_only(&env, &escrow);
+}
 
-    // Fund and progress a milestone
-    token_client.mint(&admin_addr, &6_000i128);
-    escrow.fund(&admin_addr, &6_000i128);
-    escrow.mark_delivered(&job.freelancer, &0u32);
-    escrow.approve_milestone(&job.client, &0u32);
+#[test]
+fn get_job_on_uninitialized_contract_returns_not_initialized_without_mutation() {
+    let env = Env::default();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
 
     let before = env.to_ledger_snapshot();
-    let job_after = escrow.get_job();
+    assert!(matches!(
+        escrow.try_get_job(),
+        Err(Ok(Error::NotInitialized))
+    ));
     let after = env.to_ledger_snapshot();
-
-    // Sanity check: we can observe the updated milestone state
-    assert_eq!(job_after.milestones.get(0).unwrap().status, MilestoneStatus::Released);
-
-    assert_eq!(
-        before, after,
-        "get_job must not mutate any ledger entry after milestone progression"
-    );
+    assert_eq!(before, after, "a rejected get_job mutated the ledger");
 }
