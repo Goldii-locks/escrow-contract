@@ -4751,17 +4751,22 @@ impl MilestoneEscrow {
     /// * `Error::NotInitialized` – no platform-fee allocation exists (inside the
     ///   execution lock guard).
     pub fn lock_platform_fee_allocation(env: Env, admin: Address) -> Result<(), Error> {
+        // Perform all authorization and precondition checks before any ledger writes
+        // so unauthorized callers and illegal source states are rejected without
+        // mutating any storage entry.
         Self::require_admin(&env, &admin)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
 
+        // Load the current allocation early to validate it exists
+        let mut current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
+
+        // All checks passed; now proceed with mutation under re-entrancy guard
         env.storage()
             .instance()
             .set(&DataKey::PlatformFeeAllocationLock, &true);
 
         let result = (|| {
-            let mut current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
-
             // Emit a structured event so downstream indexers can track
             // lock state changes without polling storage.
             env.events().publish(
@@ -6245,8 +6250,12 @@ impl MilestoneEscrow {
 
         Self::validate_interest_yield_share_config(client_share_bps, freelancer_share_bps)?;
 
-        if env.storage().instance().has(&DataKey::InterestYieldState) {
-            Self::ensure_interest_yield_unlocked(&env)?;
+        // Consolidate storage reads: load state once and check lock status
+        // instead of calling has() followed by load_interest_yield_state().
+        if let Ok(state) = Self::load_interest_yield_state(&env) {
+            if state.locked {
+                return Err(Error::EscrowLocked);
+            }
         }
 
         Self::store_interest_yield_state(
