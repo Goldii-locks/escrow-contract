@@ -111,7 +111,7 @@ fn assert_event_reconciles(
         .expect("initialize stored an admin");
     assert_eq!(ev.admin, stored_admin, "event must name the acting admin");
 
-    let via_getter = client.is_multisig_locked().unwrap();
+    let via_getter = client.is_multisig_locked();
     assert_eq!(ev.locked, via_getter, "accessor must agree with the event");
     assert!(via_getter);
 }
@@ -228,7 +228,7 @@ fn relock_is_rejected_and_publishes_no_event() {
         0,
         "a rejected call publishes no mslock event"
     );
-    assert!(client.is_multisig_locked().unwrap());
+    assert!(client.is_multisig_locked());
 }
 
 /// Clearing the lock is a different transition and must never borrow the lock

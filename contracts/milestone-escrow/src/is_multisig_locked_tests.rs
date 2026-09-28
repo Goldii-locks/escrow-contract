@@ -1,103 +1,59 @@
 #![cfg(test)]
+//! `is_multisig_locked` reports the multisig deadlock flag and distinguishes
+//! an uninitialized contract (`NotInitialized`) from an initialized escrow
+//! that was never locked (`false`).
 
 use crate::test::setup_funded_escrow;
-use soroban_sdk::vec;
+use crate::{Error, MilestoneEscrow, MilestoneEscrowClient};
+use soroban_sdk::{vec, Env};
 
 #[test]
-fn test_is_multisig_locked_returns_not_initialized_on_uninitialized_contract() {
-    let env = soroban_sdk::Env::default();
-    env.mock_all_auths();
+fn uninitialized_contract_returns_not_initialized() {
+    let env = Env::default();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let contract_id = env.register(crate::MilestoneEscrow, ());
-    let client = crate::MilestoneEscrowClient::new(&env, &contract_id);
-
-    let result = client.try_is_multisig_locked();
-    assert_eq!(result, Ok(Err(crate::Error::NotInitialized)));
+    assert_eq!(
+        client.try_is_multisig_locked(),
+        Err(Ok(Error::NotInitialized))
+    );
 }
 
 #[test]
-fn test_is_multisig_locked_performs_no_state_mutation() {
-    let env = soroban_sdk::Env::default();
+fn initialized_escrow_that_was_never_locked_returns_false() {
+    let env = Env::default();
     env.mock_all_auths();
-    let amounts = vec![&env, 101_i128];
-    let (_payee, _payer, _admin, _platform_fee_admin, _contract_id, client) =
-        setup_funded_escrow(&env, amounts);
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    // Take a snapshot of the entire ledger state before calling is_multisig_locked
-    let storage_before = env.as_contract(&client.address, || {
-        let mut state = Vec::<(soroban_sdk::Symbol, Vec<u8>)>::new(&env);
-
-        // Check all data keys in instance storage
-        for key_bytes in [
-            b"admin",
-            b"paused",
-            b"platform_fee_admin",
-            b"platform_fee_allocation",
-            b"milestones",
-            b"whitelisted_tokens",
-            b"multisig_transfer_pending",
-            b"multisig_locked",
-            b"multisig_signers",
-            b"interest_yield_state",
-        ]
-        .iter()
-        {
-            let symbol = soroban_sdk::Symbol::new(&env, std::str::from_utf8(key_bytes).unwrap());
-            if let Some(value) = env.storage().instance().get::<_, Vec<u8>>(&symbol) {
-                state.push_back((symbol, value));
-            }
-        }
-        state
-    });
-
-    // Call is_multisig_locked
-    let result = client.is_multisig_locked();
-    assert!(result.is_ok());
-
-    // Take a snapshot after the call
-    let storage_after = env.as_contract(&client.address, || {
-        let mut state = Vec::<(soroban_sdk::Symbol, Vec<u8>)>::new(&env);
-
-        for key_bytes in [
-            b"admin",
-            b"paused",
-            b"platform_fee_admin",
-            b"platform_fee_allocation",
-            b"milestones",
-            b"whitelisted_tokens",
-            b"multisig_transfer_pending",
-            b"multisig_locked",
-            b"multisig_signers",
-            b"interest_yield_state",
-        ]
-        .iter()
-        {
-            let symbol = soroban_sdk::Symbol::new(&env, std::str::from_utf8(key_bytes).unwrap());
-            if let Some(value) = env.storage().instance().get::<_, Vec<u8>>(&symbol) {
-                state.push_back((symbol, value));
-            }
-        }
-        state
-    });
-
-    // Verify storage is unchanged
-    assert_eq!(storage_before.len(), storage_after.len());
-    for i in 0..storage_before.len() {
-        let before = storage_before.get(i).unwrap();
-        let after = storage_after.get(i).unwrap();
-        assert_eq!(before.0, after.0);
-        assert_eq!(before.1, after.1);
-    }
+    assert_eq!(client.try_is_multisig_locked(), Ok(Ok(false)));
 }
 
 #[test]
-fn test_is_multisig_locked_returns_false_when_not_locked() {
-    let env = soroban_sdk::Env::default();
+fn locked_escrow_returns_true() {
+    let env = Env::default();
     env.mock_all_auths();
-    let amounts = vec![&env, 101_i128];
-    let (_payee, _payer, _admin, _platform_fee_admin, _contract_id, client) =
-        setup_funded_escrow(&env, amounts);
+    let (_, _, _, admin, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    let result = client.is_multisig_locked();
-    assert_eq!(result, Ok(false));
+    client.multisig_lock(&admin);
+    assert_eq!(client.try_is_multisig_locked(), Ok(Ok(true)));
+}
+
+#[test]
+fn read_mutates_no_ledger_entry_and_publishes_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, _, _, admin, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.multisig_lock(&admin);
+
+    let before = env.to_ledger_snapshot();
+    assert!(client.is_multisig_locked());
+    assert_eq!(
+        crate::all_event_tuples(&env).len(),
+        0,
+        "a read publishes no event"
+    );
+    assert!(client.is_multisig_locked());
+    let after = env.to_ledger_snapshot();
+
+    assert_eq!(before, after, "a read mutates no ledger entry");
 }

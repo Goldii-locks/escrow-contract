@@ -1604,11 +1604,18 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Read the multisig deadlock flag. `MultisigLocked` is only written by
+    /// `multisig_lock`, so an initialized escrow that was never locked has no
+    /// entry and reads as `false`; only a contract without an instance `Admin`
+    /// (never initialized) reports `NotInitialized`.
+    ///
+    /// **This function must contain only read operations.**
     fn load_multisig_locked(env: &Env) -> Result<bool, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::MultisigLocked)
-            .ok_or(Error::NotInitialized)
+        let storage = env.storage().instance();
+        if !storage.has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(storage.get(&DataKey::MultisigLocked).unwrap_or(false))
     }
 
     fn store_interest_yield_state(env: &Env, state: &EscrowInterestYieldState) {
@@ -6500,6 +6507,10 @@ mod get_pending_admin_transfer_tests;
 mod interest_yield_consent_tests;
 #[cfg(test)]
 mod is_emergency_paused_not_initialized_tests;
+#[cfg(test)]
+mod is_escrow_interest_yield_locked_tests;
+#[cfg(test)]
+mod is_multisig_locked_tests;
 mod multisig_lock_auth_tests;
 #[cfg(test)]
 mod payment_streaming_consent_arithmetic_tests;
@@ -6522,8 +6533,6 @@ mod test_payment_streaming_milestones;
 mod time_until_auto_release_tests;
 #[cfg(test)]
 mod unlock_escrow_interest_yield_event_tests;
-mod is_multisig_locked_tests;
-mod is_escrow_interest_yield_locked_tests;
 
 // ── escrow_interest_yield: admin emergency override endpoints ─────────────────
 //
@@ -8857,8 +8866,10 @@ impl MilestoneEscrow {
     ///
     /// Returns `true` if the `MultisigLocked` flag is set, meaning normal
     /// multisig operations are blocked until an admin override resolves the
-    /// deadlock. Returns `NotInitialized` if the contract has not been
-    /// initialized.
+    /// deadlock, and `false` for an initialized escrow that was never locked.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The contract has not been initialized.
     pub fn is_multisig_locked(env: Env) -> Result<bool, Error> {
         Self::load_multisig_locked(&env)
     }

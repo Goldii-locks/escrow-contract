@@ -1,78 +1,69 @@
 #![cfg(test)]
+//! `is_escrow_interest_yield_locked` reports whether the interest/yield share
+//! configuration is frozen, returning `NotInitialized` until a configuration
+//! has been written.
 
 use crate::test::setup_funded_escrow;
-use soroban_sdk::vec;
+use crate::{Error, MilestoneEscrow, MilestoneEscrowClient};
+use soroban_sdk::{vec, Env};
 
 #[test]
-fn test_is_escrow_interest_yield_locked_performs_no_state_mutation() {
-    let env = soroban_sdk::Env::default();
+fn uninitialized_contract_returns_not_initialized() {
+    let env = Env::default();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_is_escrow_interest_yield_locked(),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn missing_configuration_returns_not_initialized() {
+    let env = Env::default();
     env.mock_all_auths();
-    let amounts = vec![&env, 101_i128];
-    let (_payee, _payer, _admin, _platform_fee_admin, _contract_id, client) =
-        setup_funded_escrow(&env, amounts);
+    let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    // Take a snapshot of the entire ledger state before calling is_escrow_interest_yield_locked
-    let storage_before = env.as_contract(&client.address, || {
-        let mut state = Vec::<(soroban_sdk::Symbol, Vec<u8>)>::new(&env);
+    assert_eq!(
+        client.try_is_escrow_interest_yield_locked(),
+        Err(Ok(Error::NotInitialized))
+    );
+}
 
-        for key_bytes in [
-            b"admin",
-            b"paused",
-            b"platform_fee_admin",
-            b"platform_fee_allocation",
-            b"milestones",
-            b"whitelisted_tokens",
-            b"multisig_transfer_pending",
-            b"multisig_locked",
-            b"multisig_signers",
-            b"interest_yield_state",
-        ]
-        .iter()
-        {
-            let symbol = soroban_sdk::Symbol::new(&env, std::str::from_utf8(key_bytes).unwrap());
-            if let Some(value) = env.storage().instance().get::<_, Vec<u8>>(&symbol) {
-                state.push_back((symbol, value));
-            }
-        }
-        state
-    });
+#[test]
+fn reports_the_lock_flag_through_lock_and_unlock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, _, _, admin, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    // Call is_escrow_interest_yield_locked
-    let result = client.is_escrow_interest_yield_locked();
-    assert!(result.is_ok());
+    client.set_escrow_interest_yield(&admin, &5_000, &5_000);
+    assert!(!client.is_escrow_interest_yield_locked());
 
-    // Take a snapshot after the call
-    let storage_after = env.as_contract(&client.address, || {
-        let mut state = Vec::<(soroban_sdk::Symbol, Vec<u8>)>::new(&env);
+    client.lock_escrow_interest_yield(&admin);
+    assert!(client.is_escrow_interest_yield_locked());
 
-        for key_bytes in [
-            b"admin",
-            b"paused",
-            b"platform_fee_admin",
-            b"platform_fee_allocation",
-            b"milestones",
-            b"whitelisted_tokens",
-            b"multisig_transfer_pending",
-            b"multisig_locked",
-            b"multisig_signers",
-            b"interest_yield_state",
-        ]
-        .iter()
-        {
-            let symbol = soroban_sdk::Symbol::new(&env, std::str::from_utf8(key_bytes).unwrap());
-            if let Some(value) = env.storage().instance().get::<_, Vec<u8>>(&symbol) {
-                state.push_back((symbol, value));
-            }
-        }
-        state
-    });
+    client.unlock_escrow_interest_yield(&admin);
+    assert!(!client.is_escrow_interest_yield_locked());
+}
 
-    // Verify storage is unchanged
-    assert_eq!(storage_before.len(), storage_after.len());
-    for i in 0..storage_before.len() {
-        let before = storage_before.get(i).unwrap();
-        let after = storage_after.get(i).unwrap();
-        assert_eq!(before.0, after.0);
-        assert_eq!(before.1, after.1);
-    }
+#[test]
+fn read_mutates_no_ledger_entry_and_publishes_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, _, _, admin, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.set_escrow_interest_yield(&admin, &5_000, &5_000);
+    client.lock_escrow_interest_yield(&admin);
+
+    let before = env.to_ledger_snapshot();
+    assert!(client.is_escrow_interest_yield_locked());
+    assert_eq!(
+        crate::all_event_tuples(&env).len(),
+        0,
+        "a read publishes no event"
+    );
+    assert!(client.is_escrow_interest_yield_locked());
+    let after = env.to_ledger_snapshot();
+
+    assert_eq!(before, after, "a read mutates no ledger entry");
 }
