@@ -2777,15 +2777,7 @@ impl MilestoneEscrow {
     /// checked the same way; its size does not otherwise affect the result.
     /// This read-only query requires no authorization.
     pub fn is_token_whitelisted(env: Env, token: Address) -> bool {
-        if let Some(whitelist) = env
-            .storage()
-            .instance()
-            .get::<_, Vec<Address>>(&DataKey::WhitelistedTokens)
-        {
-            whitelist.contains(&token)
-        } else {
-            false
-        }
+        Self::read_whitelist(&env).is_some_and(|whitelist| whitelist.contains(&token))
     }
 
     /// Return the list of whitelisted token addresses.
@@ -2793,6 +2785,9 @@ impl MilestoneEscrow {
     /// Strictly read-only: performs a single `get` on instance storage and no
     /// writes to instance, persistent, or temporary storage. Keep it that way —
     /// the storage handle is only ever used through `Self::read_whitelist`.
+    /// No `has` probe precedes the `get`: the `Option` it returns already
+    /// distinguishes "never written" from "written", so the key is resolved
+    /// exactly once per invocation (#484).
     ///
     /// # Errors
     /// * `NotInitialized` – The whitelist has never been written (the contract
@@ -6258,9 +6253,12 @@ impl MilestoneEscrow {
 
     /// Return the reputation counter for an address.
     ///
-    /// Read-only: performs no storage writes. Each storage key is touched at
-    /// most once per call — one existence check on `DataKey::Admin` and one
-    /// read of `DataKey::Reputation(address)`.
+    /// Read-only: performs no storage writes, TTL extensions or event
+    /// publications. Each storage key is touched at most once per call — one
+    /// existence check on `DataKey::Admin` and one read of
+    /// `DataKey::Reputation(address)`. `reputation_no_mutation_tests` pins this
+    /// with whole-ledger snapshots taken around the call (#479); any `set`,
+    /// `remove` or `extend_ttl` added here fails that suite.
     ///
     /// # Returns
     /// * **Populated** – `Ok(n)` where `n` is the stored counter, i.e. the
@@ -8537,8 +8535,26 @@ impl MilestoneEscrow {
     /// Implement refund distribution pathways for split-refund claims during
     /// an emergency pause.
     ///
+    /// # Guard order (#524)
+    ///
+    /// Every guard runs before the arguments are validated and before any
+    /// arithmetic, and each one only *reads* the instance entry, so a rejected
+    /// call writes no ledger entry and publishes no event:
+    /// 1. `caller.require_auth()`, then the caller must be the stored admin,
+    ///    client or freelancer (`NotInitialized` / `Unauthorized`).
+    /// 2. No pause transition may be half-applied (`EmergencyPauseInProgress`).
+    /// 3. The escrow must actually be emergency-paused (`NotPaused`) — this
+    ///    endpoint describes the refund split *while frozen*, so producing a
+    ///    figure for a running escrow is an illegal source state.
+    ///
+    /// # Conservation (#526)
+    ///
+    /// `client_refund + freelancer_payout == total_amount` for every positive
+    /// `total_amount` up to `i128::MAX` and every ratio summing to
+    /// `BPS_SCALE`.  See [`Self::emergency_split_exact`].
+    ///
     /// # Parameters
-    /// * `env`                  – Soroban environment (used only for event emission).
+    /// * `caller`               – Admin, client or freelancer. Must authorize.
     /// * `total_amount`         – Total amount to split.
     /// * `client_refund_bps`    – Client's refund share in basis points.
     /// * `freelancer_payout_bps`– Freelancer's payout share in basis points.
@@ -8548,40 +8564,36 @@ impl MilestoneEscrow {
     /// ratios that were used.
     ///
     /// # Errors
-    /// * `InvalidRatio` – Ratios do not sum to `BPS_SCALE`.
-    /// * `InvalidAmount`– `total_amount` ≤ 0 or arithmetic overflow.
+    /// * `NotInitialized`           – The escrow has not been initialized.
+    /// * `Unauthorized`             – `caller` is not the admin, client or
+    ///   freelancer.
+    /// * `EmergencyPauseInProgress` – A pause transition is already running.
+    /// * `NotPaused`                – The escrow is not emergency-paused.
+    /// * `InvalidAmount`            – `total_amount` ≤ 0.
+    /// * `InvalidRatio`             – Ratios do not sum to `BPS_SCALE`.
     pub fn emergency_pause_split_refund(
         env: Env,
+        caller: Address,
         total_amount: i128,
         client_refund_bps: u32,
         freelancer_payout_bps: u32,
     ) -> Result<RefundAllocation, Error> {
-        if total_amount <= 0 {
-            return Err(Error::InvalidAmount);
+        // ── authorization: before any other ledger read
+        caller.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        if caller != meta.client && caller != meta.freelancer && admin.as_ref() != Some(&caller) {
+            return Err(Error::Unauthorized);
         }
 
-        let total_bps = client_refund_bps
-            .checked_add(freelancer_payout_bps)
-            .ok_or(Error::InvalidRatio)?;
-        if total_bps != BPS_SCALE {
-            return Err(Error::InvalidRatio);
+        // ── source state: a settled emergency pause, not a transition
+        Self::assert_emergency_pause_not_locked(&env)?;
+        if !Self::read_emergency_paused(&env) {
+            return Err(Error::NotPaused);
         }
 
-        // Use the existing split_round_nearest to compute client refund.
-        let client_split =
-            Self::split_round_nearest(total_amount, client_refund_bps as i128, BPS_SCALE as i128)?;
-
-        // freelancer_payout = total_amount - client_refund
-        let freelancer_payout = total_amount
-            .checked_sub(client_split.first)
-            .ok_or(Error::InvalidAmount)?;
-
-        let allocation = RefundAllocation {
-            client_refund: client_split.first,
-            freelancer_payout,
-            client_refund_bps,
-            freelancer_payout_bps,
-        };
+        let allocation =
+            Self::emergency_split_exact(total_amount, client_refund_bps, freelancer_payout_bps)?;
 
         env.events().publish(
             (symbol_short!("epspltref"),),
@@ -8594,6 +8606,63 @@ impl MilestoneEscrow {
         );
 
         Ok(allocation)
+    }
+
+    /// Conserving two-party split used by `emergency_pause_split_refund`.
+    ///
+    /// The client leg is `round_nearest(total × client_bps / BPS_SCALE)`,
+    /// computed without ever forming the `total × client_bps` product: with
+    /// `total = q × BPS_SCALE + r`,
+    ///
+    /// ```text
+    /// round_nearest(total × bps / S) = q × bps + ⌊(r × bps + S/2) / S⌋
+    /// ```
+    ///
+    /// `q × bps ≤ total` and `r × bps < S²`, so no intermediate can overflow
+    /// for any `total` up to `i128::MAX`; the result is identical to the
+    /// direct formula wherever that one does not overflow.  The second term is
+    /// at most `r`, so `client_refund ≤ total` and the freelancer leg — the
+    /// exact remainder — is never negative.  The sum is re-checked before
+    /// returning so a future edit that breaks conservation fails loudly.
+    fn emergency_split_exact(
+        total_amount: i128,
+        client_refund_bps: u32,
+        freelancer_payout_bps: u32,
+    ) -> Result<RefundAllocation, Error> {
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let total_bps = client_refund_bps
+            .checked_add(freelancer_payout_bps)
+            .ok_or(Error::InvalidRatio)?;
+        if total_bps != BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        let scale = BPS_SCALE as i128;
+        let bps = client_refund_bps as i128;
+        let quotient = total_amount / scale;
+        let remainder = total_amount % scale;
+        let client_refund = quotient
+            .checked_mul(bps)
+            .and_then(|whole| whole.checked_add((remainder * bps + scale / 2) / scale))
+            .ok_or(Error::ArithmeticOverflow)?;
+        let freelancer_payout = total_amount
+            .checked_sub(client_refund)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        if freelancer_payout < 0
+            || client_refund.checked_add(freelancer_payout) != Some(total_amount)
+        {
+            return Err(Error::ArithmeticOverflow);
+        }
+
+        Ok(RefundAllocation {
+            client_refund,
+            freelancer_payout,
+            client_refund_bps,
+            freelancer_payout_bps,
+        })
     }
 
     /// Compute a split-refund allocation for a cancelled escrow.
@@ -8733,10 +8802,8 @@ impl MilestoneEscrow {
     /// The calculator and the claim are deliberately complementary:
     /// `cancel_escrow_split_refund` refuses to answer while a cancellation is
     /// in flight (`EscrowLocked`), and this endpoint refuses to answer unless
-    /// one *is* in flight.  That is the same split of responsibilities
-    /// `emergency_pause_split_refund` / `emergency_pause_claim_refund` already
-    /// use, and it matches `admin_override_cancel_refund`, which also requires
-    /// the cancel lock to be active.
+    /// one *is* in flight.  That matches `admin_override_cancel_refund`, which
+    /// also requires the cancel lock to be active.
     ///
     /// # Checks (in order)
     /// 1. `admin.require_auth()` and the stored admin must match
@@ -8804,9 +8871,10 @@ impl MilestoneEscrow {
     /// Admin-gated split-refund claim that may only run **while the contract
     /// is actually frozen**.
     ///
-    /// `emergency_pause_split_refund` is an unauthenticated calculator that
-    /// answers "what would this split be?" at any time.  This endpoint is the
-    /// operational counterpart: it enforces the business rules that must hold
+    /// `emergency_pause_split_refund` lets any escrow party (admin, client or
+    /// freelancer) ask "what would this split be?" while the escrow is frozen.
+    /// This endpoint is the admin-only operational counterpart: it enforces
+    /// the business rules that must hold
     /// before an emergency refund is settled, rejecting each bad setup with a
     /// distinct error variant before any arithmetic runs.
     ///
