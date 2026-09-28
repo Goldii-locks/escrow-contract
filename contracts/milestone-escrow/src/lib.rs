@@ -4964,7 +4964,7 @@ impl MilestoneEscrow {
     /// recorded on-chain.
     ///
     /// # Signature collection
-    /// [`require_client_and_freelancer_consent`] calls `require_auth()` on the
+    /// `require_client_and_freelancer_consent` calls `require_auth()` on the
     /// client address and then on the freelancer address, both taken from the
     /// stored job metadata rather than from caller-supplied arguments.  If
     /// either signature is missing from the transaction the host-level auth
@@ -4987,12 +4987,12 @@ impl MilestoneEscrow {
     /// surfaces as a typed `Error::InvalidAmount` rather than a panic or a
     /// silent wrap:
     /// * `total_amount × numerator` is probed with `i128::checked_mul` in
-    ///   [`Self::validate_streaming_ratio`] **before** the
+    ///   `validate_streaming_ratio` **before** the
     ///   `PaymentStreamingExecutionLock` is taken, so a rejected invocation
     ///   writes no ledger entry.
     /// * The same product, the `denominator / 2` rounding bias and the
     ///   `total − rounded` remainder are all `checked_mul` / `checked_add` /
-    ///   `checked_sub` inside [`Self::split_round_nearest`].
+    ///   `checked_sub` inside `split_round_nearest`.
     ///
     /// # Errors
     /// * `NotInitialized` – Job metadata missing, so no signers are known.
@@ -5000,9 +5000,6 @@ impl MilestoneEscrow {
     ///   overflows `i128`.
     /// * `InvalidRatio`   – `denominator` ≤ 0, or `numerator` outside
     ///   `0..=denominator`.
-    ///
-    /// [`Self::validate_streaming_ratio`]: Self::validate_streaming_ratio
-    /// [`Self::split_round_nearest`]: Self::split_round_nearest
     pub fn payment_streaming_consent(
         env: Env,
         total_amount: i128,
@@ -5264,6 +5261,87 @@ impl MilestoneEscrow {
         result
     }
 
+    /// Split `total_amount` into per-party shares for a multi-party admin
+    /// transfer and return those shares.
+    ///
+    /// This is a **pure allocation helper**: it authorises `admin`, computes
+    /// the split with the largest-remainder (Hare quota) method, and publishes
+    /// one `msigtrx` event.  It never moves a single token and never writes to
+    /// instance, persistent, or temporary storage, so callers can compute the
+    /// whole distribution before deciding how to execute it — the transfers
+    /// themselves are performed by the caller from the returned vector.
+    ///
+    /// # Authorization
+    /// `admin.require_auth()` runs before anything else, so a transaction
+    /// missing `admin`'s signature is rejected by the host and never enters
+    /// the body.  That host-level auth failure is **not** one of the `Error`
+    /// variants below.  With the signature present, `admin` must still equal
+    /// the stored admin.
+    ///
+    /// # Parameters
+    /// * `admin`        – Caller.  Must be the address written by
+    ///                    `initialize`.
+    /// * `total_amount` – Amount to split.  Must be > 0.
+    /// * `ratios`       – Per-party weights, index-aligned with the returned
+    ///                    vector.  Only their relative sizes matter, so they
+    ///                    need not be normalised.  Must be non-empty, at most
+    ///                    `MAX_MULTISIG_RATIO_COUNT` (255) entries long, with
+    ///                    no negative entry, and must sum to > 0 without
+    ///                    overflowing `i128`.
+    ///
+    /// # Returns
+    /// `Ok(allocations)` — a `Vec<i128>` with **exactly `ratios.len()`
+    /// entries, index-aligned with `ratios`**, where `allocations[i]` is party
+    /// `i`'s share of `total_amount`:
+    ///
+    /// * **Conservation** – `Σ allocations == total_amount` exactly, for every
+    ///   valid input.  No value is lost and none is created.
+    /// * **Non-negative** – every entry is ≥ 0.  A party weighted `0` receives
+    ///   exactly `0`.
+    /// * **Bounded error** – entry `i` is either
+    ///   `floor(total_amount × ratios[i] / Σratios)` or that floor `+ 1`, so a
+    ///   party is never rounded below its floor share.  The indivisible
+    ///   residue units (at most `ratios.len() − 1` of them) go to the parties
+    ///   with the largest fractional remainders.
+    /// * **Determinism** – remainder ties are broken by lowest index, so
+    ///   identical inputs always produce the identical vector.
+    ///
+    /// A successful call publishes exactly one `msigtrx` event whose
+    /// `MultiSigTransferAdminEvent` payload carries `total_amount`,
+    /// `num_parties == ratios.len()`, and an `allocations` vector equal to the
+    /// return value.  Every `Err` path below returns before that publish, so a
+    /// rejected call emits no event at all.
+    ///
+    /// # Validation order
+    /// Guards run in the order below and a call violating more than one fails
+    /// with the first match:
+    ///
+    /// 1. `admin.require_auth()`             → missing signature: host-level
+    ///    auth failure (not an `Error` variant)
+    /// 2. stored-admin lookup / comparison  → `NotInitialized` /
+    ///    `Unauthorized`
+    /// 3. `total_amount` ≤ 0                → `InvalidAmount`
+    /// 4. `ratios` empty                    → `InvalidRatio`
+    /// 5. `ratios.len()` > 255              → `InvalidAmount`
+    /// 6. negative entry, overflowing sum, or `Σratios` ≤ 0 → `InvalidRatio`
+    /// 7. allocation arithmetic overflow    → `InvalidAmount`
+    ///
+    /// # Errors
+    /// * `NotInitialized` – The contract has not been initialised: no stored
+    ///   admin exists.  Reachable only after `admin.require_auth()` has
+    ///   succeeded.
+    /// * `Unauthorized`   – `admin` signed but is not the stored admin, e.g. a
+    ///   client, freelancer, arbiter, or arbitrary third-party address.
+    /// * `InvalidAmount`  – `total_amount` ≤ 0; `ratios` longer than
+    ///   `MAX_MULTISIG_RATIO_COUNT`; or an `i128` checked operation inside the
+    ///   allocation maths (weighted product, running base sum, residue
+    ///   subtraction, per-entry increment) is unrepresentable.
+    /// * `InvalidRatio`   – `ratios` is empty; any entry is negative; `Σratios`
+    ///   overflows `i128`; or `Σratios` ≤ 0 (every entry zero).
+    ///
+    /// Arithmetic overflow maps to `InvalidAmount` / `InvalidRatio` rather
+    /// than `ArithmeticOverflow`, preserving this endpoint's original error
+    /// codes for existing callers and indexers.
     pub fn multisig_transfer_admin(
         env: Env,
         admin: Address,
