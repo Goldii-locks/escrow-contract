@@ -1642,30 +1642,11 @@ impl MilestoneEscrow {
     /// * `Paused`        – Contract is currently paused.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic underflow.
     /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps != 10_000`.
-    /// Split a refund across client and freelancer shares, with platform fees.
     ///
-    /// This is a pure calculation function that computes the net distribution of a refund
-    /// amount, apportioning it across client refund, freelancer payout, and platform fees
-    /// using basis-point ratios.
-    ///
-    /// Preconditions are validated before any storage is accessed, ensuring that
-    /// unauthorized callers or illegal source states are rejected without mutations.
-    ///
-    /// # Parameters
-    /// * `total_amount` – The gross refund amount (must be > 0).
-    /// * `client_refund_bps` – Basis points for client refund allocation (0–10_000).
-    /// * `freelancer_payout_bps` – Basis points for freelancer payout allocation (0–10_000).
-    /// * `fee_allocation` – Allocation of freelancer payout to client fees, treasury, etc.
-    ///
-    /// # Preconditions (validated before storage access)
-    /// * `total_amount > 0` – Refund must be a positive amount.
-    /// * `client_refund_bps + freelancer_payout_bps == 10_000` – Ratios must sum to basis-point scale.
-    /// * Fee allocation ratios must be valid and sum to 10_000.
-    ///
-    /// # Returns
-    /// * [`SplitRefundFeeDistribution`] with client_net_refund, client_fee_share,
-    ///   freelancer_net_payout, and treasury_fee_share.
-    /// * Error if preconditions fail or if contract is paused.
+    /// # Validation order
+    /// `total_amount` and the BPS ratio are validated before any storage read,
+    /// so an invalid argument is rejected without touching the ledger; the
+    /// admin and emergency pause checks run afterwards.
     pub fn split_refund_net_distribution(
         env: Env,
         total_amount: i128,
@@ -3114,11 +3095,14 @@ impl MilestoneEscrow {
     ///   - The deadline calculation overflows (deadline too far in future).
     ///   - The timestamp conversion to i64 fails.
     ///   - The subtraction overflows (current > deadline, rare in i64).
-    ///   - The milestone or job metadata does not exist.
+    ///
+    /// A missing milestone or missing job metadata is not reported as a typed
+    /// `Error`: the call traps, and the host surfaces that to the caller as a
+    /// failed invocation.
     ///
     /// # Behavior in Edge Cases
     ///
-    /// - Empty state (no milestone): Returns error (milestone not found).
+    /// - Empty state (no milestone): the call traps (see above).
     /// - Boundary state (large extensions/timestamps): Returns error on overflow.
     /// - Expired milestone: Returns 0 or negative value (seconds past deadline).
     /// - Just-delivered (delivered_at = current): Returns approximately `auto_release_seconds + extension_seconds`.
@@ -6469,8 +6453,6 @@ mod set_escrow_interest_yield_event_tests;
 mod set_platform_fee_allocation_auth_tests;
 #[cfg(test)]
 mod split_refund_net_distribution_precondition_tests;
-#[cfg(test)]
-mod split_refund_net_distribution_tests;
 #[cfg(test)]
 mod tax_withholding_split_refund_tests;
 #[cfg(test)]

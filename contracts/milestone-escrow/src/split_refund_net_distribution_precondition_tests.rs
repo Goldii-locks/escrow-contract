@@ -4,7 +4,7 @@
 //! Verifies that unauthorized callers and illegal source states are rejected
 //! before any storage is read or written.
 
-use crate::{Error, PlatformFeeAllocation, MilestoneEscrow, MilestoneEscrowClient};
+use crate::{Error, MilestoneEscrow, MilestoneEscrowClient, PlatformFeeAllocation};
 use soroban_sdk::Env;
 
 #[test]
@@ -116,7 +116,17 @@ fn test_split_refund_net_distribution_valid_inputs_pass_preconditions() {
     // Valid inputs should pass precondition checks
     let result = client.split_refund_net_distribution(&100, &5000, &5000, &fee_allocation);
 
-    // Should succeed
+    // Should succeed: a 50/50 split of 100, then the 50% client fee
+    // allocation takes half of the freelancer's gross payout of 50.
     assert_eq!(result.client_net_refund, 50);
-    assert_eq!(result.freelancer_net_payout, 50);
+    assert_eq!(result.client_fee_share, 25);
+    assert_eq!(result.freelancer_net_payout, 25);
+    assert_eq!(result.treasury_fee_share, 0);
+    assert_eq!(
+        result.client_net_refund
+            + result.client_fee_share
+            + result.freelancer_net_payout
+            + result.treasury_fee_share,
+        100
+    );
 }
