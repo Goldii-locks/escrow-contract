@@ -3,7 +3,7 @@
 //!
 //! `multisig_approval_init` is the one-time registration of the multisig signer
 //! set and approval threshold: it is the *only* write path for
-//! `DataKey::MultiSigSigners` / `DataKey::MultiSigThreshold`, and every later
+//! `DataKey::MultiSigConfig` (issue #456), and every later
 //! endpoint (`multisig_approve`, `execute_admin_transfer`,
 //! `multisig_split_refund`, ...) is gated on the values it stores.  A
 //! registration that leaves no ledger trace is only reconstructible by
@@ -12,11 +12,11 @@
 //!
 //! Every success-path test asserts that the emitted
 //! `MultisigApprovalInitEvent` fields reconcile exactly with the state the call
-//! persisted under `DataKey::MultiSigSigners` / `DataKey::MultiSigThreshold` —
+//! persisted under `DataKey::MultiSigConfig` —
 //! read straight out of instance storage, bypassing the public accessor, so the
 //! assertion cannot pass on a getter that disagrees with the ledger.  Every
 //! failure-path test asserts that no `msiginit` event is published and that
-//! neither storage key was written.
+//! the configuration entry was not written.
 //!
 //! The event buffer exposed by the test `Env` reflects the most recent
 //! top-level invocation only, so each test tallies events immediately after the
@@ -24,7 +24,7 @@
 //! call would otherwise clear the buffer).
 
 use super::*;
-use crate::{DataKey, Error, MultisigApprovalInitEvent};
+use crate::{DataKey, Error, MultiSigConfig, MultisigApprovalInitEvent};
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
 
 const MSIGINIT_TOPIC: &str = "msiginit";
@@ -56,15 +56,19 @@ fn last_msiginit_event(env: &Env) -> MultisigApprovalInitEvent {
 /// Direct read of the instance-storage entry the call wrote, bypassing the
 /// public accessor so the reconciliation assertion is against the ledger.
 fn stored_signers(env: &Env, contract_id: &Address) -> Option<Vec<Address>> {
-    env.as_contract(contract_id, || {
-        env.storage().instance().get(&DataKey::MultiSigSigners)
-    })
+    stored_config(env, contract_id).map(|config| config.0)
 }
 
 /// Direct read of the persisted approval threshold.
 fn stored_threshold(env: &Env, contract_id: &Address) -> Option<u32> {
+    stored_config(env, contract_id).map(|config| config.1)
+}
+
+/// The consolidated `DataKey::MultiSigConfig` entry (issue #456) that
+/// `multisig_approval_init` writes: signer set and threshold together.
+fn stored_config(env: &Env, contract_id: &Address) -> Option<MultiSigConfig> {
     env.as_contract(contract_id, || {
-        env.storage().instance().get(&DataKey::MultiSigThreshold)
+        env.storage().instance().get(&DataKey::MultiSigConfig)
     })
 }
 

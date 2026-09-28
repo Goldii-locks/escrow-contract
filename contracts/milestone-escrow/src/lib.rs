@@ -293,12 +293,21 @@ pub enum DataKey {
     /// the locked condition is resolved.
     TaxWithholdingLock(u32),
     // ── multisig approval compact storage keys ─────────────────────────────
-    /// The full list of registered multisig signers (instance storage, written
-    /// once by `multisig_approval_init`).  Stored as a single `Vec<Address>`
-    /// rather than N individual keys to minimise read overhead and total bytes.
+    /// **Superseded (issue #456).**  Previously held the registered multisig
+    /// signer set on its own.  `multisig_approval_init` now persists the signer
+    /// set *and* the approval threshold together in the single consolidated
+    /// `DataKey::MultiSigConfig` entry, so this key is no longer written.  It
+    /// is still read as a fallback by `load_multisig_config` (and probed by the
+    /// `multisig_approval_init` already-initialised guard) so a contract
+    /// initialised before the change and then upgraded keeps its multisig
+    /// regime.  The variant is kept, and no variant is reordered, so existing
+    /// variant discriminants stay stable — serialization compatibility for
+    /// already-written ledger entries.
     MultiSigSigners,
-    /// The minimum number of approvals required for a multisig decision.
-    /// Written once during initialisation, read on every approval check.
+    /// **Superseded (issue #456).**  See `MultiSigSigners` above: the approval
+    /// threshold now lives inside the consolidated `DataKey::MultiSigConfig`
+    /// entry instead of occupying its own storage key; read only as the legacy
+    /// fallback in `load_multisig_config`.
     MultiSigThreshold,
     /// Transient approval-bitmap for a given proposal index.  Uses **temporary**
     /// storage so the ledger footprint does not persist beyond the proposal
@@ -362,6 +371,20 @@ pub enum DataKey {
     /// Instance: held while `payment_streaming_milestones` (or its consent
     /// counterpart) executes.
     PaymentStreamingExecutionLock,
+    /// Instance: the **consolidated multisig configuration** — the registered
+    /// signer set and the approval threshold — held as a single `MultiSigConfig`
+    /// value under this one key (issue #456).  Written once by
+    /// `multisig_approval_init`; read by `multisig_approve` and by
+    /// `read_multisig_approval` behind `is_multisig_approved`.  One invocation
+    /// therefore touches one distinct multisig storage key instead of the two
+    /// separate `MultiSigSigners` / `MultiSigThreshold` entries it replaced,
+    /// and the contract-instance entry needs 28 bytes less for a three-signer
+    /// set (the removed key/value pair costs more than the tuple wrapper the
+    /// consolidated value adds).
+    ///
+    /// Appended at the end of `DataKey` so existing variant discriminants stay
+    /// stable (serialization compatibility for already-written ledger entries).
+    MultiSigConfig,
 }
 
 #[contracttype]
@@ -1022,6 +1045,21 @@ pub struct MultiSigApprovalState {
     pub bitmap: u32,
 }
 
+/// Consolidated multisig configuration (issue #456): the registered signer set
+/// and the approval threshold, persisted together in the single instance entry
+/// `DataKey::MultiSigConfig`.
+///
+/// The fields are positional on purpose: field `0` is the signer set, field `1`
+/// the threshold.  `#[contracttype]` encodes a tuple struct as a compact
+/// `ScVec`, whereas a named-field struct would be encoded as a symbol-keyed
+/// `ScMap` whose field symbols alone (`signers`, `threshold`) cost 36 bytes —
+/// more than the 28-byte saving this consolidation achieves — while still using
+/// one key.  Positional fields keep the entry smaller than the legacy two-key
+/// layout, for the same signer set.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiSigConfig(pub Vec<Address>, pub u32);
+
 /// Emitted by `multisig_approve` on every successful call so downstream
 /// indexers can track approval progress without polling contract storage.
 #[contracttype]
@@ -1185,13 +1223,12 @@ pub struct EmergencyPauseAllocationEvent {
 /// approval threshold are successfully registered (issue #455).
 ///
 /// The initialisation is a one-time state transition: it is the *only* write
-/// path for `DataKey::MultiSigSigners` / `DataKey::MultiSigThreshold`, so
+/// path for the multisig configuration (`DataKey::MultiSigConfig`), so
 /// without an event the original configuration could only be recovered by
 /// replaying the ledger.  Both payload fields therefore reconcile exactly with
-/// what the call persisted — `signers` is the vector written under
-/// `DataKey::MultiSigSigners` and `threshold` the value written under
-/// `DataKey::MultiSigThreshold` (read back from instance storage after the
-/// writes).  Emitted only on the success path: every rejection
+/// what the call persisted — `signers` and `threshold` are the two fields of
+/// the `MultiSigConfig` written under `DataKey::MultiSigConfig` (read back from
+/// instance storage after the write).  Emitted only on the success path: every rejection
 /// (`NotInitialized` / `Unauthorized` / `AlreadyInitialized` /
 /// `MultiSigNoSigners` / `MultiSigTooManySigners` /
 /// `MultiSigInvalidThreshold` / `MultiSigDuplicateSigner`) returns before the
@@ -1202,9 +1239,9 @@ pub struct MultisigApprovalInitEvent {
     /// Admin that authorised and applied the initialisation (the acting
     /// address, verified by `require_admin` against `DataKey::Admin`).
     pub admin: Address,
-    /// Full signer set persisted under `DataKey::MultiSigSigners`.
+    /// Full signer set persisted in `DataKey::MultiSigConfig`.
     pub signers: Vec<Address>,
-    /// Approval threshold persisted under `DataKey::MultiSigThreshold`.
+    /// Approval threshold persisted in `DataKey::MultiSigConfig`.
     pub threshold: u32,
 }
 
@@ -5580,9 +5617,10 @@ impl MilestoneEscrow {
     //
     // This implementation uses three optimisations to minimise bytes stored:
     //
-    // 1. **Signer list is stored once** (instance storage) under a single
-    //    `MultiSigSigners` key rather than storing individual key-value pairs
-    //    per signer.
+    // 1. **Signer set and threshold are stored once** (instance storage) in a
+    //    single consolidated `MultiSigConfig` entry — rather than one key per
+    //    signer, and rather than the two separate `MultiSigSigners` /
+    //    `MultiSigThreshold` keys used before issue #456.
     //
     // 2. **Approval tracking uses a compact u32 bitmap** in temporary storage
     //    under `MultiSigApproval(proposal_id)`.  Each bit represents one signer
@@ -5626,6 +5664,27 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Load the multisig signer set and threshold.
+    ///
+    /// Reads the consolidated `DataKey::MultiSigConfig` entry (issue #456).
+    /// A contract initialised before that change and then upgraded still holds
+    /// the two halves under the legacy `MultiSigSigners` / `MultiSigThreshold`
+    /// keys, so those are read as a fallback; without it such a contract would
+    /// report `NotInitialized` for an existing multisig regime.  Both layouts
+    /// live in the same contract-instance entry, so the fallback adds no
+    /// ledger entry to the footprint.
+    ///
+    /// **This function must contain only read operations.**
+    fn load_multisig_config(env: &Env) -> Option<MultiSigConfig> {
+        let instance = env.storage().instance();
+        if let Some(config) = instance.get(&DataKey::MultiSigConfig) {
+            return Some(config);
+        }
+        let signers: Vec<Address> = instance.get(&DataKey::MultiSigSigners)?;
+        let threshold: u32 = instance.get(&DataKey::MultiSigThreshold)?;
+        Some(MultiSigConfig(signers, threshold))
+    }
+
     /// Initialise a multisig approval regime with a fixed set of signers and
     /// the required approval threshold.  Must be called exactly once.
     ///
@@ -5633,26 +5692,52 @@ impl MilestoneEscrow {
     /// `msiginit` topic carrying the acting admin and the values that were
     /// actually persisted.  A rejected call (`NotInitialized` /
     /// `Unauthorized` / `AlreadyInitialized` / `MultiSig*`) publishes nothing.
+    ///
+    /// # Storage footprint (issue #456)
+    /// Two reductions, both measured by
+    /// `multisig_approval_init_footprint_tests`:
+    ///
+    /// 1. The signer set and the threshold are persisted as **one**
+    ///    `DataKey::MultiSigConfig` entry, so the call writes a single distinct
+    ///    multisig storage key instead of the two separate `MultiSigSigners` /
+    ///    `MultiSigThreshold` entries used before, and the contract-instance
+    ///    ledger entry ends up 28 bytes smaller for a three-signer set.  The
+    ///    already-initialised guard probes that same consolidated key — it is
+    ///    the only key this call writes, so it *is* the initialisation
+    ///    condition.
+    /// 2. Authorization uses `require_admin_from_instance` rather than
+    ///    `require_admin`, so the admin verification read lands on the same
+    ///    instance entry as every other access of this call instead of adding
+    ///    the persistent `Admin` entry to the invocation footprint — the same
+    ///    consolidation already landed for `multisig_lock` (#460),
+    ///    `set_escrow_interest_yield` (#463), `set_platform_fee_allocation`
+    ///    (#472) and `admin_resume_escrow` (#449).  `initialize` writes both
+    ///    `Admin` copies atomically and every admin-transfer path keeps them in
+    ///    sync, so the check is logically identical; a contract whose only
+    ///    `Admin` copy is the instance one is accepted, exactly like those
+    ///    endpoints.
     pub fn multisig_approval_init(
         env: Env,
         admin: Address,
         signers: Vec<Address>,
         threshold: u32,
     ) -> Result<(), Error> {
-        Self::require_admin(&env, &admin)?;
+        Self::require_admin_from_instance(&env, &admin)?;
 
-        if env.storage().instance().has(&DataKey::MultiSigSigners) {
+        // Either layout means the regime already exists: a contract upgraded
+        // from before issue #456 still holds its signer set under the legacy
+        // `MultiSigSigners` key, and must not be re-initialisable.
+        let instance = env.storage().instance();
+        if instance.has(&DataKey::MultiSigConfig) || instance.has(&DataKey::MultiSigSigners) {
             return Err(Error::AlreadyInitialized);
         }
 
         Self::validate_multisig_setup(&signers, threshold)?;
 
+        let config = MultiSigConfig(signers, threshold);
         env.storage()
             .instance()
-            .set(&DataKey::MultiSigSigners, &signers);
-        env.storage()
-            .instance()
-            .set(&DataKey::MultiSigThreshold, &threshold);
+            .set(&DataKey::MultiSigConfig, &config);
 
         // Structured event for indexers / auditors (issue #455).  The two
         // payload fields are read back from instance storage right after the
@@ -5664,16 +5749,11 @@ impl MilestoneEscrow {
         // `MultiSigDuplicateSigner`) returns before this point, so a
         // successful call carries exactly one `msiginit` event and a rejected
         // call carries none.
-        let stored_signers: Vec<Address> = env
+        let MultiSigConfig(stored_signers, stored_threshold) = env
             .storage()
             .instance()
-            .get(&DataKey::MultiSigSigners)
-            .expect("MultiSigSigners was written above");
-        let stored_threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MultiSigThreshold)
-            .expect("MultiSigThreshold was written above");
+            .get(&DataKey::MultiSigConfig)
+            .expect("MultiSigConfig was written above");
 
         env.events().publish(
             (symbol_short!("msiginit"),),
@@ -5724,17 +5804,14 @@ impl MilestoneEscrow {
     ) -> Result<MultiSigApprovalState, Error> {
         signer.require_auth();
 
-        let signers: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::MultiSigSigners)
-            .ok_or(Error::NotInitialized)?;
-
-        let threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MultiSigThreshold)
-            .ok_or(Error::NotInitialized)?;
+        // Consolidated multisig config read (issue #456): the signer set and
+        // the threshold live in the same instance entry, so this is one `get`
+        // where the previous two-key layout needed two (legacy entries from
+        // before the change are still read, see `load_multisig_config`).  A
+        // missing configuration still reports `NotInitialized`.
+        let config = Self::load_multisig_config(&env).ok_or(Error::NotInitialized)?;
+        let signers = config.0;
+        let threshold = config.1;
 
         // Reject callers who are not registered signers before touching any
         // job/token ledger entry (find the signer's index, O(n) but n ≤ 32).
@@ -5822,12 +5899,13 @@ impl MilestoneEscrow {
     /// Query whether a proposal has reached the required approval threshold.
     ///
     /// # Returns
-    /// A `MultiSigApprovalState` built from the instance `MultiSigThreshold`
-    /// and the temporary `MultiSigApproval(proposal_id)` bitmap.  An unknown
-    /// or expired proposal reads as an empty bitmap (`approvals == 0`).
+    /// A `MultiSigApprovalState` built from the instance `MultiSigConfig`
+    /// (its threshold field) and the temporary `MultiSigApproval(proposal_id)`
+    /// bitmap.  An unknown or expired proposal reads as an empty bitmap
+    /// (`approvals == 0`).
     ///
     /// # Guarantees
-    /// * **Read-only.**  Exactly two `get`s (instance threshold, temporary
+    /// * **Read-only.**  Exactly two `get`s (instance config, temporary
     ///   bitmap), via `read_multisig_approval`.  No `set`, `remove`,
     ///   `extend_ttl`, or event publish in instance, persistent, or temporary
     ///   storage — in particular it never re-writes the bitmap or bumps its
@@ -5848,11 +5926,11 @@ impl MilestoneEscrow {
     ///
     /// **This function must contain only read operations.**
     fn read_multisig_approval(env: &Env, proposal_id: u32) -> Result<MultiSigApprovalState, Error> {
-        let threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MultiSigThreshold)
-            .ok_or(Error::NotInitialized)?;
+        // One instance `get` for the consolidated signer-set/threshold entry
+        // (issue #456).  The temporary bitmap below is the only other storage
+        // read; nothing here writes.
+        let config = Self::load_multisig_config(env).ok_or(Error::NotInitialized)?;
+        let threshold = config.1;
 
         let bitmap: u32 = env
             .storage()
@@ -6672,6 +6750,8 @@ mod is_escrow_interest_yield_locked_tests;
 mod is_multisig_locked_tests;
 #[cfg(test)]
 mod multisig_approve_checked_arithmetic_tests;
+#[cfg(test)]
+mod multisig_legacy_config_tests;
 mod multisig_lock_auth_tests;
 #[cfg(test)]
 mod payment_streaming_consent_arithmetic_tests;

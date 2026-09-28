@@ -39,6 +39,8 @@ mod milestone_time_extensions_tests;
 mod multisig_admin_override_refund_tests;
 #[path = "multisig_approval_init_event_tests.rs"]
 mod multisig_approval_init_event_tests;
+#[path = "multisig_approval_init_footprint_tests.rs"]
+mod multisig_approval_init_footprint_tests;
 #[path = "multisig_lock_event_tests.rs"]
 mod multisig_lock_event_tests;
 #[path = "multisig_split_refund_tests.rs"]
