@@ -261,8 +261,8 @@ fn test_payment_streaming_consent_rejected_inputs_write_no_ledger_entry() {
 // ── the gate still never changes the arithmetic ──────────────────────────────
 
 /// The pre-flight overflow probe must not perturb the result: for every input
-/// the gated endpoint accepts, it agrees exactly with the unauthenticated
-/// calculator, including at the `i128::MAX` boundary.
+/// the gated endpoint accepts, it agrees exactly with its counterpart
+/// `payment_streaming_milestones`, including at the `i128::MAX` boundary.
 #[test]
 fn test_payment_streaming_consent_matches_calculator_across_boundary_inputs() {
     let env = test_env();
