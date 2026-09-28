@@ -5630,6 +5630,16 @@ impl MilestoneEscrow {
     // 3. **Temporary storage tier** is used for the bitmap so that the ledger
     //    footprint is automatically evicted once the proposal lifecycle ends,
     //    rather than persisting indefinitely.
+    //
+    // Issue #457 audited the *write* path of `multisig_approve` against this
+    // design and found the layout itself already minimal: the bitmap is one key
+    // of key type `u32` holding one `u32`, there is no separate per-proposal
+    // metadata key, and the signer set/threshold metadata is read from the
+    // instance entry the call needs anyway (for `DataKey::Job`).  The one
+    // remaining redundant storage access was the unconditional bitmap write,
+    // which re-wrote an unchanged `u32` on every duplicate approval; it is now
+    // skipped whenever the signer's bit is already set, so a duplicate approval
+    // writes no contract storage key at all.  See `multisig_approve`.
 
     const MAX_MULTISIG_SIGNERS: u32 = 32;
 
@@ -5786,6 +5796,42 @@ impl MilestoneEscrow {
     ///    bitmap is written, so an unrepresentable index cannot leave partial
     ///    state behind (see `multisig_approve_checked_arithmetic_tests`).
     ///
+    /// # Storage footprint (issue #457)
+    /// Keys this call reads:
+    /// * `DataKey::MultiSigConfig` (instance) — the registered signers
+    ///   (which also provide the membership check and the signer's bit index)
+    ///   and the approval threshold, in one consolidated entry (issue #456).
+    ///   It lives inside the contract's single
+    ///   `contract_instance` ledger entry, together with the `DataKey::Job`
+    ///   metadata read for the token address, so these reads add no extra
+    ///   entry to the invocation.
+    /// * `DataKey::MultiSigApproval(proposal_id)` (temporary) — the approval
+    ///   bitmap: one key of key type `u32` holding one `u32`, one bit per
+    ///   signer index.
+    ///
+    /// Keys this call writes: only `MultiSigApproval(proposal_id)`, and only
+    /// when the signer's bit is not already set.  A duplicate approval cannot
+    /// change the bitmap, so it now writes no contract storage key at all
+    /// instead of re-writing the same `u32`; measured per invocation by
+    /// `multisig_approve_footprint_tests`: the duplicate path went from 2 entry
+    /// writes / 180 write bytes (one of which was the redundant copy of the
+    /// bitmap, 108 bytes) to 1 entry write / 72 bytes, the remaining write
+    /// being the auth nonce entry that every authenticated call consumes.  A
+    /// first approval is unchanged: it writes the bitmap exactly once, which is
+    /// the floor for recording an approval at all.
+    ///
+    /// Merging the bitmap with the signer set/threshold into one entry is
+    /// deliberately *not* done: the signer set is shared by every proposal, so
+    /// folding it into a per-proposal bitmap entry would duplicate the signer
+    /// vec into each proposal and move it out of the auto-evicting temporary
+    /// tier (optimisations 1 and 3 of the section comment above), while storing
+    /// the bitmap in the always-live instance entry would re-write the whole
+    /// instance entry — job metadata included — on every approval.  There is no
+    /// separate per-proposal metadata key to merge with the bitmap.  The
+    /// metadata consolidation that does exist — the former `MultiSigSigners` +
+    /// `MultiSigThreshold` pair into the single `MultiSigConfig` instance entry
+    /// — is issue #456's and is not duplicated here.
+    ///
     /// # Errors
     /// * `NotInitialized`       – `multisig_approval_init` has not been called.
     /// * `Unauthorized`         – `signer` did not sign, or is not a
@@ -5857,21 +5903,20 @@ impl MilestoneEscrow {
             .map_err(|_| Error::ArithmeticOverflow)?;
         let mask = 1u32.checked_shl(idx).ok_or(Error::ArithmeticOverflow)?;
 
-        // Set the bit for this signer. Approving twice from the same signer is
-        // a no-op, which is not only the documented behaviour but also what
-        // keeps `checked_add` sound at the top of the range: with the bit
-        // already set the sum would be `u32::MAX + mask`, and that overflows
-        // once all 32 bits are set. Reaching the add only when the bit is clear
-        // makes `bitmap + mask` exactly equal to `bitmap | mask` and provably
-        // representable.
+        // Set the bit for this signer, and write the bitmap back only when the
+        // bit actually changed (issue #457).  A duplicate approval
+        // (`bitmap & mask != 0`) cannot change the value, so it writes no
+        // contract storage key at all; the first approval from each signer
+        // writes the bitmap exactly once — the floor for recording an approval.
+        // Reaching the add only when the bit is clear also keeps `checked_add`
+        // sound at the top of the range: `bitmap + mask` is then exactly
+        // `bitmap | mask` and provably representable.
         if bitmap & mask == 0 {
             bitmap = bitmap.checked_add(mask).ok_or(Error::ArithmeticOverflow)?;
+            env.storage()
+                .temporary()
+                .set(&DataKey::MultiSigApproval(proposal_id), &bitmap);
         }
-
-        // Write the updated bitmap back to temporary storage.
-        env.storage()
-            .temporary()
-            .set(&DataKey::MultiSigApproval(proposal_id), &bitmap);
 
         let approvals = bitmap.count_ones();
         let approved = approvals >= threshold;

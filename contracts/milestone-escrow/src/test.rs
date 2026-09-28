@@ -41,6 +41,8 @@ mod multisig_admin_override_refund_tests;
 mod multisig_approval_init_event_tests;
 #[path = "multisig_approval_init_footprint_tests.rs"]
 mod multisig_approval_init_footprint_tests;
+#[path = "multisig_approve_footprint_tests.rs"]
+mod multisig_approve_footprint_tests;
 #[path = "multisig_lock_event_tests.rs"]
 mod multisig_lock_event_tests;
 #[path = "multisig_split_refund_tests.rs"]
