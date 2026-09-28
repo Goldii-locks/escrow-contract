@@ -6799,6 +6799,8 @@ mod multisig_lock_auth_tests;
 #[cfg(test)]
 mod payment_streaming_consent_arithmetic_tests;
 #[cfg(test)]
+mod platform_fee_split_no_mutation_tests;
+#[cfg(test)]
 mod reputation_tests;
 mod set_escrow_interest_yield_event_tests;
 #[cfg(test)]
