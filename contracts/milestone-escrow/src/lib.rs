@@ -2685,6 +2685,12 @@ impl MilestoneEscrow {
         }
     }
 
+    /// Returns whether `token` is present in the stored whitelist.
+    ///
+    /// Returns `false` if the whitelist has not been stored, is empty, or does
+    /// not contain `token`. Returns `true` when it does. A full whitelist is
+    /// checked the same way; its size does not otherwise affect the result.
+    /// This read-only query requires no authorization.
     pub fn is_token_whitelisted(env: Env, token: Address) -> bool {
         if let Some(whitelist) = env
             .storage()
