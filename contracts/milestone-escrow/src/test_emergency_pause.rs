@@ -65,6 +65,20 @@ fn initialised_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address, Address
     (escrow, admin_addr, client_addr, freelancer_addr)
 }
 
+/// A funded escrow frozen by the emergency pause, plus an authorized caller
+/// for the pause-gated allocation endpoint.
+///
+/// `emergency_pause_allocation` now authorizes the caller and requires a
+/// settled pause, so the allocation-math tests can no longer use
+/// `bare_contract`.  This fixture supplies the smallest legal setup for the
+/// happy path: an initialised, funded, paused escrow and the client address,
+/// which is one of the three authorized callers.
+fn paused_escrow(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
+    let (escrow, _admin, client_addr, freelancer_addr) = initialised_escrow(env);
+    escrow.emergency_pause(&client_addr, &freelancer_addr);
+    (escrow, client_addr)
+}
+
 // ============================================================================
 // emergency_pause — business rules
 // ============================================================================
@@ -451,10 +465,10 @@ fn test_claim_refund_rejects_an_empty_contract_balance() {
 fn test_allocation_splits_an_even_total_exactly() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let weights = vec![&env, 1_i128, 1_i128];
-    let out = escrow.emergency_pause_allocation(&100_i128, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &100_i128, &weights);
 
     assert_eq!(out.get(0).unwrap(), 50);
     assert_eq!(out.get(1).unwrap(), 50);
@@ -464,12 +478,12 @@ fn test_allocation_splits_an_even_total_exactly() {
 fn test_allocation_does_not_lose_a_stroop_to_truncation() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // 10 / 3 = 3.33… each. Plain floor division would hand out 3+3+3 = 9 and
     // strand the tenth stroop in the contract.
     let weights = vec![&env, 1_i128, 1_i128, 1_i128];
-    let out = escrow.emergency_pause_allocation(&10_i128, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &10_i128, &weights);
 
     let sum: i128 = out.iter().sum();
     assert_eq!(sum, 10, "the residue stroop must be allocated, not lost");
@@ -484,7 +498,7 @@ fn test_allocation_does_not_lose_a_stroop_to_truncation() {
 fn test_allocation_conserves_the_total_across_a_wide_matrix() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // Awkward totals against awkward weights: the sum must land exactly on
     // the total every single time.
@@ -496,7 +510,7 @@ fn test_allocation_conserves_the_total_across_a_wide_matrix() {
             vec![&env, 1_i128, 1_i128, 1_i128, 1_i128, 1_i128, 1_i128, 1_i128],
             vec![&env, 9_999_i128, 1_i128],
         ] {
-            let out = escrow.emergency_pause_allocation(&total, &weights);
+            let out = escrow.emergency_pause_allocation(&caller, &total, &weights);
             let sum: i128 = out.iter().sum();
             assert_eq!(sum, total, "total {total} was not conserved");
             assert_eq!(out.len(), weights.len());
@@ -508,13 +522,13 @@ fn test_allocation_conserves_the_total_across_a_wide_matrix() {
 fn test_allocation_never_rounds_a_party_more_than_one_unit_down() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let total = 1_000_i128;
     let weights = vec![&env, 1_i128, 2_i128, 3_i128, 4_i128, 5_i128];
     let weight_sum: i128 = weights.iter().sum();
 
-    let out = escrow.emergency_pause_allocation(&total, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &total, &weights);
 
     for (idx, weight) in weights.iter().enumerate() {
         let allocated = out.get(idx as u32).unwrap();
@@ -536,10 +550,10 @@ fn test_allocation_never_rounds_a_party_more_than_one_unit_down() {
 fn test_allocation_respects_weight_proportions() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let weights = vec![&env, 1_i128, 3_i128];
-    let out = escrow.emergency_pause_allocation(&400_i128, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &400_i128, &weights);
 
     assert_eq!(out.get(0).unwrap(), 100);
     assert_eq!(out.get(1).unwrap(), 300);
@@ -549,12 +563,16 @@ fn test_allocation_respects_weight_proportions() {
 fn test_allocation_is_scale_invariant() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // Only the ratios matter, so scaling every weight changes nothing.
-    let small = escrow.emergency_pause_allocation(&997_i128, &vec![&env, 1_i128, 2_i128, 3_i128]);
-    let large = escrow
-        .emergency_pause_allocation(&997_i128, &vec![&env, 1_000_i128, 2_000_i128, 3_000_i128]);
+    let small =
+        escrow.emergency_pause_allocation(&caller, &997_i128, &vec![&env, 1_i128, 2_i128, 3_i128]);
+    let large = escrow.emergency_pause_allocation(
+        &caller,
+        &997_i128,
+        &vec![&env, 1_000_i128, 2_000_i128, 3_000_i128],
+    );
 
     for idx in 0..3u32 {
         assert_eq!(small.get(idx).unwrap(), large.get(idx).unwrap());
@@ -565,12 +583,12 @@ fn test_allocation_is_scale_invariant() {
 fn test_allocation_gives_a_zero_weighted_party_nothing() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // A zero weight also means a zero remainder, so this party can never win
     // a residue unit ahead of someone with a real fractional claim.
     let weights = vec![&env, 0_i128, 1_i128, 1_i128];
-    let out = escrow.emergency_pause_allocation(&11_i128, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &11_i128, &weights);
 
     assert_eq!(out.get(0).unwrap(), 0);
     assert_eq!(out.get(1).unwrap() + out.get(2).unwrap(), 11);
@@ -580,9 +598,9 @@ fn test_allocation_gives_a_zero_weighted_party_nothing() {
 fn test_allocation_handles_a_single_party() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
-    let out = escrow.emergency_pause_allocation(&12_345_i128, &vec![&env, 5_i128]);
+    let out = escrow.emergency_pause_allocation(&caller, &12_345_i128, &vec![&env, 5_i128]);
     assert_eq!(out.len(), 1);
     assert_eq!(out.get(0).unwrap(), 12_345);
 }
@@ -591,12 +609,12 @@ fn test_allocation_handles_a_single_party() {
 fn test_allocation_handles_a_total_smaller_than_the_party_count() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // Two stroops, five equal parties: three parties must get nothing, and
     // the two units must still be handed out rather than stranded.
     let weights = vec![&env, 1_i128, 1_i128, 1_i128, 1_i128, 1_i128];
-    let out = escrow.emergency_pause_allocation(&2_i128, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &2_i128, &weights);
 
     let sum: i128 = out.iter().sum();
     assert_eq!(sum, 2);
@@ -608,12 +626,12 @@ fn test_allocation_handles_a_total_smaller_than_the_party_count() {
 fn test_allocation_breaks_ties_by_lowest_index_deterministically() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // All three remainders tie; the residue unit goes to index 0 every time.
     let weights = vec![&env, 1_i128, 1_i128, 1_i128];
-    let first = escrow.emergency_pause_allocation(&10_i128, &weights);
-    let second = escrow.emergency_pause_allocation(&10_i128, &weights);
+    let first = escrow.emergency_pause_allocation(&caller, &10_i128, &weights);
+    let second = escrow.emergency_pause_allocation(&caller, &10_i128, &weights);
 
     for idx in 0..3u32 {
         assert_eq!(first.get(idx).unwrap(), second.get(idx).unwrap());
@@ -625,7 +643,7 @@ fn test_allocation_breaks_ties_by_lowest_index_deterministically() {
 fn test_allocation_favours_the_largest_discarded_fraction() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // total 10, weights 1:1:4 over a sum of 6:
     //   party 0 → 10/6  = 1 rem 4
@@ -633,7 +651,8 @@ fn test_allocation_favours_the_largest_discarded_fraction() {
     //   party 2 → 40/6  = 6 rem 4
     // floors sum to 8, so two units are handed to the two lowest indices
     // among the tied remainders.
-    let out = escrow.emergency_pause_allocation(&10_i128, &vec![&env, 1_i128, 1_i128, 4_i128]);
+    let out =
+        escrow.emergency_pause_allocation(&caller, &10_i128, &vec![&env, 1_i128, 1_i128, 4_i128]);
 
     let sum: i128 = out.iter().sum();
     assert_eq!(sum, 10);
@@ -645,16 +664,16 @@ fn test_allocation_favours_the_largest_discarded_fraction() {
 fn test_allocation_rejects_non_positive_totals() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let weights = vec![&env, 1_i128, 1_i128];
 
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&0_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &0_i128, &weights),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&-5_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &-5_i128, &weights),
         Err(Ok(Error::InvalidAmount))
     );
 }
@@ -663,11 +682,11 @@ fn test_allocation_rejects_non_positive_totals() {
 fn test_allocation_rejects_an_empty_weight_vector() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let empty: Vec<i128> = Vec::new(&env);
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &empty),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &empty),
         Err(Ok(Error::InvalidAllocationWeights))
     );
 }
@@ -676,11 +695,11 @@ fn test_allocation_rejects_an_empty_weight_vector() {
 fn test_allocation_rejects_negative_weights() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let weights = vec![&env, 3_i128, -1_i128];
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &weights),
         Err(Ok(Error::InvalidAllocationWeights))
     );
 }
@@ -689,13 +708,13 @@ fn test_allocation_rejects_negative_weights() {
 fn test_allocation_rejects_weights_summing_to_zero() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // All-zero weights describe no distribution at all — dividing by the sum
     // would be a division by zero.
     let weights = vec![&env, 0_i128, 0_i128, 0_i128];
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &weights),
         Err(Ok(Error::InvalidAllocationWeights))
     );
 }
@@ -735,7 +754,7 @@ fn epalloc_event_count(env: &Env) -> usize {
 fn test_allocation_rejects_every_all_zero_weight_vector() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let all_zero = [
         vec![&env, 0_i128],
@@ -746,7 +765,7 @@ fn test_allocation_rejects_every_all_zero_weight_vector() {
 
     for weights in all_zero.iter() {
         assert_eq!(
-            escrow.try_emergency_pause_allocation(&100_i128, weights),
+            escrow.try_emergency_pause_allocation(&caller, &100_i128, weights),
             Err(Ok(Error::InvalidAllocationWeights)),
             "an all-zero weight vector must be rejected, never divided through"
         );
@@ -760,14 +779,14 @@ fn test_allocation_rejects_every_all_zero_weight_vector() {
 fn test_allocation_rejects_a_zero_weight_sum_before_dividing() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // total 100 across zero weights is `100 × 0 / 0` — a division by zero on
     // every iteration, and a residue loop over undefined remainders after it.
     let weights = vec![&env, 0_i128, 0_i128, 0_i128];
 
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &weights),
         Err(Ok(Error::InvalidAllocationWeights))
     );
     assert_eq!(
@@ -785,13 +804,13 @@ fn test_allocation_rejects_a_zero_weight_sum_before_dividing() {
 fn test_allocation_rejects_a_negative_weight_even_when_the_sum_stays_positive() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // 5 + (-1) + 6 = 10 > 0 — a positive sum cannot launder a negative entry.
     let weights = vec![&env, 5_i128, -1_i128, 6_i128];
 
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &weights),
         Err(Ok(Error::InvalidAllocationWeights))
     );
     assert_eq!(epalloc_event_count(&env), 0);
@@ -804,7 +823,7 @@ fn test_allocation_rejects_a_negative_weight_even_when_the_sum_stays_positive() 
 fn test_allocation_rejects_a_negative_weight_at_any_position() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let with_negative = [
         vec![&env, -1_i128, 10_i128],        // head
@@ -817,7 +836,7 @@ fn test_allocation_rejects_a_negative_weight_at_any_position() {
 
     for weights in with_negative.iter() {
         assert_eq!(
-            escrow.try_emergency_pause_allocation(&100_i128, weights),
+            escrow.try_emergency_pause_allocation(&caller, &100_i128, weights),
             Err(Ok(Error::InvalidAllocationWeights)),
             "a negative weight at any index must be rejected"
         );
@@ -832,11 +851,11 @@ fn test_allocation_rejects_a_negative_weight_at_any_position() {
 fn test_allocation_rejects_the_most_negative_weight() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let weights = vec![&env, i128::MIN, 7_i128];
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &weights),
         Err(Ok(Error::InvalidAllocationWeights))
     );
 }
@@ -849,13 +868,13 @@ fn test_allocation_rejects_the_most_negative_weight() {
 fn test_allocation_rejects_an_empty_vector_before_any_allocation_work() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let empty: Vec<i128> = Vec::new(&env);
     assert!(empty.is_empty());
 
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &empty),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &empty),
         Err(Ok(Error::InvalidAllocationWeights))
     );
     assert_eq!(
@@ -873,7 +892,7 @@ fn test_allocation_rejects_an_empty_vector_before_any_allocation_work() {
 fn test_allocation_rejects_every_malformed_weight_shape_with_one_typed_error() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let empty: Vec<i128> = Vec::new(&env);
     let malformed = [
@@ -900,7 +919,7 @@ fn test_allocation_rejects_every_malformed_weight_shape_with_one_typed_error() {
 
     for weights in malformed.iter() {
         assert_eq!(
-            escrow.try_emergency_pause_allocation(&100_i128, weights),
+            escrow.try_emergency_pause_allocation(&caller, &100_i128, weights),
             Err(Ok(Error::InvalidAllocationWeights)),
             "weights {weights:?} must map onto the single typed error"
         );
@@ -914,17 +933,15 @@ fn test_allocation_rejects_every_malformed_weight_shape_with_one_typed_error() {
 #[test]
 fn test_allocation_rejects_malformed_weights_without_touching_the_ledger() {
     let env = test_env();
-    env.mock_all_auths();
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let (escrow, caller) = paused_escrow(&env);
 
     let empty: Vec<i128> = Vec::new(&env);
 
     let before = env.to_ledger_snapshot();
     let rejected = [
-        escrow.try_emergency_pause_allocation(&100_i128, &empty),
-        escrow.try_emergency_pause_allocation(&100_i128, &vec![&env, 0_i128, 0_i128]),
-        escrow.try_emergency_pause_allocation(&100_i128, &vec![&env, 3_i128, -1_i128]),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &empty),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &vec![&env, 0_i128, 0_i128]),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &vec![&env, 3_i128, -1_i128]),
     ];
     let after = env.to_ledger_snapshot();
 
@@ -945,20 +962,21 @@ fn test_allocation_rejects_malformed_weights_without_touching_the_ledger() {
 fn test_allocation_still_allocates_after_every_rejection() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let empty: Vec<i128> = Vec::new(&env);
     assert!(escrow
-        .try_emergency_pause_allocation(&100_i128, &empty)
+        .try_emergency_pause_allocation(&caller, &100_i128, &empty)
         .is_err());
     assert!(escrow
-        .try_emergency_pause_allocation(&100_i128, &vec![&env, 0_i128])
+        .try_emergency_pause_allocation(&caller, &100_i128, &vec![&env, 0_i128])
         .is_err());
     assert!(escrow
-        .try_emergency_pause_allocation(&100_i128, &vec![&env, 1_i128, -2_i128])
+        .try_emergency_pause_allocation(&caller, &100_i128, &vec![&env, 1_i128, -2_i128])
         .is_err());
 
-    let out = escrow.emergency_pause_allocation(&100_i128, &vec![&env, 1_i128, 1_i128, 2_i128]);
+    let out =
+        escrow.emergency_pause_allocation(&caller, &100_i128, &vec![&env, 1_i128, 1_i128, 2_i128]);
     let sum: i128 = out.iter().sum();
 
     assert_eq!(out.len(), 3);
@@ -973,20 +991,20 @@ fn test_allocation_still_allocates_after_every_rejection() {
 fn test_allocation_validates_the_total_before_the_weight_vector() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let empty: Vec<i128> = Vec::new(&env);
 
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&0_i128, &empty),
+        escrow.try_emergency_pause_allocation(&caller, &0_i128, &empty),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&-1_i128, &vec![&env, 0_i128, 0_i128]),
+        escrow.try_emergency_pause_allocation(&caller, &-1_i128, &vec![&env, 0_i128, 0_i128]),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&-1_i128, &vec![&env, 1_i128, -1_i128]),
+        escrow.try_emergency_pause_allocation(&caller, &-1_i128, &vec![&env, 1_i128, -1_i128]),
         Err(Ok(Error::InvalidAmount))
     );
     assert_eq!(epalloc_event_count(&env), 0);
@@ -1000,10 +1018,10 @@ fn test_allocation_validates_the_total_before_the_weight_vector() {
 fn test_allocation_accepts_the_boundary_weight_vectors() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // Smallest non-empty vector.
-    let single = escrow.emergency_pause_allocation(&7_i128, &vec![&env, 1_i128]);
+    let single = escrow.emergency_pause_allocation(&caller, &7_i128, &vec![&env, 1_i128]);
     assert_eq!(single.get(0).unwrap(), 7);
 
     // Largest legal vector: exactly the cap.
@@ -1011,7 +1029,7 @@ fn test_allocation_accepts_the_boundary_weight_vectors() {
     for _ in 0..MAX_EMERGENCY_ALLOCATION_PARTIES {
         at_cap.push_back(1_i128);
     }
-    let wide = escrow.emergency_pause_allocation(&1_000_000_i128, &at_cap);
+    let wide = escrow.emergency_pause_allocation(&caller, &1_000_000_i128, &at_cap);
     let sum: i128 = wide.iter().sum();
     assert_eq!(wide.len(), MAX_EMERGENCY_ALLOCATION_PARTIES);
     assert_eq!(sum, 1_000_000);
@@ -1021,7 +1039,7 @@ fn test_allocation_accepts_the_boundary_weight_vectors() {
 fn test_allocation_rejects_more_parties_than_the_cap() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let mut weights: Vec<i128> = Vec::new(&env);
     for _ in 0..(MAX_EMERGENCY_ALLOCATION_PARTIES + 1) {
@@ -1029,7 +1047,7 @@ fn test_allocation_rejects_more_parties_than_the_cap() {
     }
 
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &weights),
         Err(Ok(Error::InvalidAllocationWeights))
     );
 }
@@ -1038,7 +1056,7 @@ fn test_allocation_rejects_more_parties_than_the_cap() {
 fn test_allocation_accepts_exactly_the_cap() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let mut weights: Vec<i128> = Vec::new(&env);
     for _ in 0..MAX_EMERGENCY_ALLOCATION_PARTIES {
@@ -1046,7 +1064,7 @@ fn test_allocation_accepts_exactly_the_cap() {
     }
 
     let total = 100_000_i128;
-    let out = escrow.emergency_pause_allocation(&total, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &total, &weights);
     let sum: i128 = out.iter().sum();
 
     assert_eq!(out.len(), MAX_EMERGENCY_ALLOCATION_PARTIES);
@@ -1057,13 +1075,13 @@ fn test_allocation_accepts_exactly_the_cap() {
 fn test_allocation_rejects_overflow_instead_of_wrapping() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // Weights sum cleanly to 3, but total × 2 overflows i128 — the weighted
     // product must error rather than wrap to a nonsensical allocation.
     let weights = vec![&env, 2_i128, 1_i128];
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&i128::MAX, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &i128::MAX, &weights),
         Err(Ok(Error::InvalidAmount))
     );
 }
@@ -1072,13 +1090,13 @@ fn test_allocation_rejects_overflow_instead_of_wrapping() {
 fn test_allocation_rejects_a_weight_sum_that_overflows() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     // Summing the weights themselves overflows, which is a malformed weight
     // vector rather than an amount problem.
     let weights = vec![&env, i128::MAX, 1_i128];
     assert_eq!(
-        escrow.try_emergency_pause_allocation(&100_i128, &weights),
+        escrow.try_emergency_pause_allocation(&caller, &100_i128, &weights),
         Err(Ok(Error::InvalidAllocationWeights))
     );
 }
@@ -1087,10 +1105,10 @@ fn test_allocation_rejects_a_weight_sum_that_overflows() {
 fn test_allocation_emits_an_event_matching_the_returned_vector() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
     let weights = vec![&env, 1_i128, 2_i128, 3_i128];
-    let out = escrow.emergency_pause_allocation(&600_i128, &weights);
+    let out = escrow.emergency_pause_allocation(&caller, &600_i128, &weights);
 
     let topic: Val = symbol_short!("epalloc").into_val(&env);
     let mut found = false;
@@ -1117,9 +1135,9 @@ fn test_allocation_emits_an_event_matching_the_returned_vector() {
 fn test_allocation_emits_no_event_when_rejected() {
     let env = test_env();
     env.mock_all_auths();
-    let escrow = bare_contract(&env);
+    let (escrow, caller) = paused_escrow(&env);
 
-    let _ = escrow.try_emergency_pause_allocation(&0_i128, &vec![&env, 1_i128]);
+    let _ = escrow.try_emergency_pause_allocation(&caller, &0_i128, &vec![&env, 1_i128]);
 
     let topic: Val = symbol_short!("epalloc").into_val(&env);
     for e in crate::all_event_tuples(&env).iter() {
@@ -1140,7 +1158,8 @@ fn test_allocation_agrees_with_the_two_party_split_refund() {
     // about how the same money is divided.
     let total = 1_000_i128;
     let allocation = escrow.emergency_pause_claim_refund(&admin, &total, &6_000_u32, &4_000_u32);
-    let precise = escrow.emergency_pause_allocation(&total, &vec![&env, 6_000_i128, 4_000_i128]);
+    let precise =
+        escrow.emergency_pause_allocation(&client, &total, &vec![&env, 6_000_i128, 4_000_i128]);
 
     assert_eq!(precise.get(0).unwrap(), allocation.client_refund);
     assert_eq!(precise.get(1).unwrap(), allocation.freelancer_payout);
