@@ -6780,6 +6780,8 @@ mod cancel_admin_transfer_tests;
 #[cfg(test)]
 mod cancel_escrow_split_refund_guards_tests;
 #[cfg(test)]
+mod emergency_pause_allocation_guards_tests;
+#[cfg(test)]
 mod get_job_no_mutation_tests;
 #[cfg(test)]
 mod get_pending_admin_transfer_tests;
@@ -9033,6 +9035,26 @@ impl MilestoneEscrow {
     ///   remainder is also `0`, so it never wins a residue unit ahead of a
     ///   party with a real fractional claim.
     ///
+    /// # Guard order (#536)
+    ///
+    /// Every guard runs *before* the weight vector is looked at and before any
+    /// arithmetic, and each one only reads instance storage, so a rejected
+    /// call writes no ledger entry and publishes no event:
+    ///
+    /// 1. `caller.require_auth()`.
+    /// 2. The caller must be the stored admin, the job's client or the job's
+    ///    freelancer — otherwise `NotInitialized` (no job recorded) or
+    ///    `Unauthorized`. The allocation describes how a frozen balance is
+    ///    shared, so it is a participant-only figure; an arbitrary address may
+    ///    not have the contract compute it.
+    /// 3. No pause transition may be half-applied (`EmergencyPauseInProgress`).
+    /// 4. The escrow must actually be emergency-paused (`NotPaused`) — this
+    ///    endpoint describes the split *while frozen*, so producing a figure
+    ///    for a running escrow is an illegal source state.
+    ///
+    /// Authorization deliberately precedes the source-state guards so an
+    /// unauthorized caller learns nothing about the escrow's pause status.
+    ///
     /// # Validation order
     /// The total and the weight vector are fully validated *before* the first
     /// division by `Σweights` is attempted, so a malformed vector can never
@@ -9049,6 +9071,7 @@ impl MilestoneEscrow {
     /// ever being a division by zero.
     ///
     /// # Parameters
+    /// * `caller`        – Admin, client or freelancer. Must authorize.
     /// * `total_amount` – Amount to divide; must be > 0.
     /// * `weights`      – Per-party weights.  Need not sum to any particular
     ///   scale; only their ratios matter.  Must be non-empty, at most
@@ -9058,14 +9081,34 @@ impl MilestoneEscrow {
     /// A `Vec<i128>` of per-party amounts, index-aligned with `weights`.
     ///
     /// # Errors
+    /// * `NotInitialized`           – No job has been recorded.
+    /// * `Unauthorized`             – `caller` is not the admin, client or
+    ///   freelancer.
+    /// * `EmergencyPauseInProgress` – A pause transition is already running.
+    /// * `NotPaused`                – The escrow is not emergency-paused.
     /// * `InvalidAmount`             – `total_amount` ≤ 0, or arithmetic overflow.
     /// * `InvalidAllocationWeights`  – `weights` empty, over the cap, negative,
     ///   or summing to zero.
     pub fn emergency_pause_allocation(
         env: Env,
+        caller: Address,
         total_amount: i128,
         weights: Vec<i128>,
     ) -> Result<Vec<i128>, Error> {
+        // ── authorization: before any other ledger read
+        caller.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        if caller != meta.client && caller != meta.freelancer && admin.as_ref() != Some(&caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        // ── source state: a settled emergency pause, not a transition
+        Self::assert_emergency_pause_not_locked(&env)?;
+        if !Self::read_emergency_paused(&env) {
+            return Err(Error::NotPaused);
+        }
+
         if total_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
