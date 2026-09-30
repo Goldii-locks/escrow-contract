@@ -6794,6 +6794,8 @@ mod is_escrow_interest_yield_locked_tests;
 #[cfg(test)]
 mod is_multisig_locked_tests;
 #[cfg(test)]
+mod is_token_whitelisted_no_mutation_tests;
+#[cfg(test)]
 mod multisig_approve_checked_arithmetic_tests;
 #[cfg(test)]
 mod multisig_legacy_config_tests;
