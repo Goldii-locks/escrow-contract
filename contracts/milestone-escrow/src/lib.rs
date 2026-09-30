@@ -342,6 +342,11 @@ pub enum DataKey {
     /// Instance: held while `payment_streaming_milestones` (or its consent
     /// counterpart) executes.
     PaymentStreamingExecutionLock,
+    /// Instance: collateral configuration written by `set_collateral_config`
+    /// and read by `get_collateral_config`.  Stored under instance storage
+    /// because it is shared across all milestones in the same escrow and
+    /// does not need persistent (epoch-scoped) ledger lifetime.
+    CollateralConfig,
 }
 
 #[contracttype]
@@ -506,6 +511,28 @@ pub struct PlatformFeeDistribution {
     pub client_amount: i128,
     pub freelancer_amount: i128,
     pub treasury_amount: i128,
+}
+
+/// Per-escrow collateral configuration set by the admin and viewable by any caller.
+///
+/// # Invariants
+/// * `ltv_bps` must be in `[1, 10_000]` (0.01 %–100 %).  A value of 0 is
+///   rejected because a zero LTV means no collateral can ever be released,
+///   which is a degenerate configuration.
+/// * `liquidation_threshold_bps` must be in `[ltv_bps, 10_000]`, i.e. it
+///   must be ≥ the LTV ratio.  Requiring liquidation above the LTV prevents
+///   the contract from entering a perpetually under-collateralised state.
+/// * `penalty_bps` must be in `[0, 10_000]`.  A penalty of 0 is valid
+///   (grace-mode), but it may not exceed 100 %.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralConfig {
+    /// Loan-to-Value ratio in basis points (1 bp = 0.01 %).  Range: 1–10 000.
+    pub ltv_bps: u32,
+    /// Liquidation threshold in basis points.  Must be ≥ `ltv_bps`.
+    pub liquidation_threshold_bps: u32,
+    /// Liquidation penalty in basis points.  Range: 0–10 000.
+    pub penalty_bps: u32,
 }
 
 /// Emitted by `pf_alloc_admin_override` when the admin replaces a *locked*
@@ -4052,6 +4079,80 @@ impl MilestoneEscrow {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Set or replace the collateral configuration for this escrow.
+    ///
+    /// Only the stored admin may call this endpoint.  The configuration is
+    /// written atomically under `DataKey::CollateralConfig` in instance
+    /// storage so all subsequent reads within the same ledger see the new
+    /// value.
+    ///
+    /// # Parameters
+    /// * `admin`                      – Must match `DataKey::Admin`.
+    /// * `ltv_bps`                    – Loan-to-Value ratio in basis points. Range: 1–10 000.
+    /// * `liquidation_threshold_bps`  – Liquidation threshold in basis points.
+    ///                                  Must be in `[ltv_bps, 10_000]`.
+    /// * `penalty_bps`                – Liquidation penalty in basis points. Range: 0–10 000.
+    ///
+    /// # Errors
+    /// * `NotInitialized`  – Contract has not been initialised.
+    /// * `Unauthorized`    – `admin` does not match `DataKey::Admin`.
+    /// * `InvalidRatio`    – Any field violates its constraint:
+    ///   - `ltv_bps == 0` or `ltv_bps > 10_000`
+    ///   - `liquidation_threshold_bps < ltv_bps` or `liquidation_threshold_bps > 10_000`
+    ///   - `penalty_bps > 10_000`
+    pub fn set_collateral_config(
+        env: Env,
+        admin: Address,
+        ltv_bps: u32,
+        liquidation_threshold_bps: u32,
+        penalty_bps: u32,
+    ) -> Result<(), Error> {
+        // Precondition: contract must be initialized before configuring collateral.
+        Self::require_admin(&env, &admin)?;
+
+        // Validate LTV: must be non-zero and within BPS scale.
+        if ltv_bps == 0 || ltv_bps > BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        // Validate liquidation threshold: must be in [ltv_bps, BPS_SCALE].
+        if liquidation_threshold_bps < ltv_bps || liquidation_threshold_bps > BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        // Validate penalty: must not exceed 100 %.
+        if penalty_bps > BPS_SCALE {
+            return Err(Error::InvalidRatio);
+        }
+
+        env.storage().instance().set(
+            &DataKey::CollateralConfig,
+            &CollateralConfig {
+                ltv_bps,
+                liquidation_threshold_bps,
+                penalty_bps,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Return the current collateral configuration for this escrow.
+    ///
+    /// This is a pure view (read-only, no auth required) so it may be called
+    /// by any party — clients, investors, indexers — to inspect the current
+    /// collateral parameters without altering any state.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – No collateral configuration has been set yet
+    ///   (i.e. `set_collateral_config` was never called successfully).
+    pub fn get_collateral_config(env: Env) -> Result<CollateralConfig, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::CollateralConfig)
+            .ok_or(Error::NotInitialized)
+    }
+
     /// Split an amount according to the configured platform-fee ratios.
     ///
     /// Each component is calculated with checked integer arithmetic. Any
@@ -5154,6 +5255,8 @@ mod admin_override_streaming_release_tests;
 mod admin_set_yield_rate_tests;
 #[cfg(test)]
 mod cancel_admin_transfer_tests;
+#[cfg(test)]
+mod collateral_config_view_tests;
 #[cfg(test)]
 mod interest_yield_consent_tests;
 #[cfg(test)]
