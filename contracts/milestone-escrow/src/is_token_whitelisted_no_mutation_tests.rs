@@ -26,6 +26,7 @@
 //! that "helpfully" bumps the whitelist entry's TTL on read is caught here too.
 
 use crate::{MilestoneEscrow, MilestoneEscrowClient};
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Env};
 
 /// Capacity cap enforced by `add_whitelisted_token`.
