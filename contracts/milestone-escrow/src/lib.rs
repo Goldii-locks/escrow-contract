@@ -6171,9 +6171,14 @@ impl MilestoneEscrow {
     /// This function **must never write to any storage tier** (instance,
     /// persistent, or temporary).  It is a pure read: the only operations
     /// permitted on `env.storage()` are:
-    /// * one `.persistent().get(…)` on `DataKey::Admin` (initialization
-    ///   guard), and
-    /// * one `.persistent().get(…)` on `DataKey::PendingAdminTransfer`.
+    /// * one `.persistent().get(…)` on `DataKey::PendingAdminTransfer` — the
+    ///   payload, resolved exactly once per invocation; and
+    /// * at most one `.persistent().has(…)` presence probe on `DataKey::Admin`
+    ///   — the initialization guard, and only on the no-proposal path.
+    ///
+    /// A call that finds a pending proposal therefore touches a single ledger
+    /// entry; the `Admin` entry is consulted only to tell "initialized, nothing
+    /// pending" apart from "never initialized" (#496).
     ///
     /// Any future edit that introduces a `.set(…)`, `.remove(…)`,
     /// `.bump(…)`, or equivalent mutating call breaks this invariant and
@@ -6197,15 +6202,29 @@ impl MilestoneEscrow {
     ///
     /// **This function must contain only read operations.**
     fn read_pending_admin_transfer(env: &Env) -> Result<Option<PendingAdminTransfer>, Error> {
-        // Guard: reject calls on an uninitialized contract.  We check for the
-        // admin key because it is the canonical "has initialize() been called?"
-        // signal used by every other guarded endpoint (load_admin,
-        // load_job_meta, cancel_admin_transfer_proposal, etc.).
-        Self::load_admin(env)?;
-        Ok(env
-            .storage()
-            .persistent()
-            .get(&DataKey::PendingAdminTransfer))
+        let storage = env.storage().persistent();
+
+        // Resolve the payload key exactly once per invocation.  A stored
+        // proposal is proof enough that `initialize` ran, so the
+        // initialization guard below is skipped entirely on this path and the
+        // call touches a single storage entry (#496).
+        let pending: Option<PendingAdminTransfer> = storage.get(&DataKey::PendingAdminTransfer);
+        if pending.is_some() {
+            return Ok(pending);
+        }
+
+        // No proposal: distinguish "initialized, nothing pending" from "never
+        // initialized".  `DataKey::Admin` is the canonical "has initialize()
+        // been called?" signal used by every other guarded endpoint
+        // (load_admin, load_job_meta, cancel_admin_transfer_proposal, etc.).
+        // We only test for its presence — `has` touches the entry once but,
+        // unlike `load_admin`, does not deserialize the admin address that is
+        // never used here.
+        if storage.has(&DataKey::Admin) {
+            Ok(None)
+        } else {
+            Err(Error::NotInitialized)
+        }
     }
 
     /// Return the contract's code version.
@@ -6783,6 +6802,8 @@ mod cancel_escrow_split_refund_guards_tests;
 mod emergency_pause_allocation_guards_tests;
 #[cfg(test)]
 mod get_job_no_mutation_tests;
+#[cfg(test)]
+mod get_pending_admin_transfer_read_count_tests;
 #[cfg(test)]
 mod get_pending_admin_transfer_tests;
 #[cfg(test)]
