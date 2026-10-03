@@ -1647,6 +1647,23 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Single source of truth for reading the interest/yield share
+    /// configuration out of instance storage.
+    ///
+    /// Every caller — the public read paths `get_escrow_interest_yield` and
+    /// `is_escrow_interest_yield_locked`, and the write-path precondition
+    /// guards that only need to know whether the configuration is locked —
+    /// delegates here, so `DataKey::InterestYieldState` is named in exactly one
+    /// place and each invocation issues exactly one ledger read.
+    ///
+    /// **This function must contain only read operations.** It performs a
+    /// single instance-storage `get` and must never `set`, `remove`, or
+    /// `extend_ttl` any instance, persistent, or temporary entry, and must
+    /// never publish an event: a read path that wrote state could silently
+    /// rewrite the ledger or shorten the TTL of the entry it inspects.
+    /// `get_escrow_interest_yield_no_mutation_tests` pins that guarantee by
+    /// comparing whole-ledger snapshots (`Env::to_ledger_snapshot`) taken
+    /// around the public read paths that call this helper.
     fn load_interest_yield_state(env: &Env) -> Result<EscrowInterestYieldState, Error> {
         env.storage()
             .instance()
@@ -6702,6 +6719,31 @@ impl MilestoneEscrow {
 
     /// Return the stored interest/yield share configuration.
     ///
+    /// # Read-only
+    /// This is a pure query over instance storage: it delegates to
+    /// `Self::load_interest_yield_state`, which performs exactly one `get` of
+    /// `DataKey::InterestYieldState`. It must never `set`, `remove`, or
+    /// `extend_ttl` any instance, persistent, or temporary entry, and must
+    /// never publish an event — a read that wrote state could silently rewrite
+    /// the ledger or shorten the TTL of the entry it inspects. It requires no
+    /// authorization and is safe to call while the escrow is paused.
+    ///
+    /// INVARIANT: `get_escrow_interest_yield_no_mutation_tests` takes a full
+    /// `Env::to_ledger_snapshot` immediately before and after the call — plus a
+    /// per-tier fingerprint of instance, persistent, and temporary storage —
+    /// and asserts the ledger is byte-identical, so any future edit that adds
+    /// `.set(`, `.remove(`, `.extend_ttl(`, or `env.events().publish(` here or
+    /// in the shared `load_interest_yield_state` helper fails CI. Do not add
+    /// storage-writing calls to either function.
+    ///
+    /// # Returns
+    /// * `Ok(EscrowInterestYieldState)` – the configuration last written by
+    ///   `set_escrow_interest_yield` / `set_interest_yield_consent`, with
+    ///   `locked` as last set by `lock_escrow_interest_yield` /
+    ///   `unlock_escrow_interest_yield`. The two share fields satisfy
+    ///   `client_share_bps + freelancer_share_bps == BPS_SCALE` (10_000),
+    ///   because both writers validate that before storing.
+    ///
     /// # Errors
     /// * `NotInitialized` – Configuration has never been set.
     pub fn get_escrow_interest_yield(env: Env) -> Result<EscrowInterestYieldState, Error> {
@@ -6781,6 +6823,8 @@ mod cancel_admin_transfer_tests;
 mod cancel_escrow_split_refund_guards_tests;
 #[cfg(test)]
 mod emergency_pause_allocation_guards_tests;
+#[cfg(test)]
+mod get_escrow_interest_yield_no_mutation_tests;
 #[cfg(test)]
 mod get_job_no_mutation_tests;
 #[cfg(test)]
