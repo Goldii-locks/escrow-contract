@@ -6830,6 +6830,8 @@ mod get_job_no_mutation_tests;
 #[cfg(test)]
 mod get_pending_admin_transfer_tests;
 #[cfg(test)]
+mod get_yield_info_no_mutation_tests;
+#[cfg(test)]
 mod interest_yield_consent_tests;
 #[cfg(test)]
 mod is_emergency_paused_not_initialized_tests;
@@ -8081,9 +8083,20 @@ impl MilestoneEscrow {
 
     // ── read-only query ───────────────────────────────────────────────────────
 
-    /// Return a snapshot of the current yield and pause state.    ///
+    /// Return a snapshot of the current yield and pause state.
+    ///
     /// All fields are safe to call even before any admin has set a yield rate
     /// (defaults to zero) or paused the contract (defaults to `false`).
+    ///
+    /// # Read-only
+    /// This is a pure query: it only *reads* the persistent `DataKey::YieldConfig`
+    /// and `DataKey::YieldAccrued` entries and the instance `DataKey::Paused`
+    /// entry. It must never `set`, `remove`, or `extend_ttl` any instance,
+    /// persistent, or temporary entry, and must never publish an event — a
+    /// read that wrote state could silently rewrite the ledger or shorten the
+    /// TTL of the entries it inspects. `get_yield_info_no_mutation_tests` pins
+    /// that guarantee by taking a full `Env::to_ledger_snapshot` immediately
+    /// before and after the call and asserting the two are byte-identical.
     ///
     /// # Returns `(rate_bps, total_accrued, is_paused)`
     ///
