@@ -4973,6 +4973,16 @@ impl MilestoneEscrow {
     /// storage write here will fail CI. Do not add `.set(`, `.remove(`,
     /// `.extend_ttl(`, or `env.events().publish(` calls to this function or
     /// to `Self::load_platform_fee_allocation`.
+    ///
+    /// The `Err(Error::NotInitialized)` row of the table above is pinned by
+    /// `get_platform_fee_allocation_not_initialized_tests`: that suite asserts a
+    /// freshly registered contract — `initialize` never called — receives this
+    /// *typed* contract error (code 2) from `get_platform_fee_allocation`, from
+    /// `calculate_platform_fee_split`, and from the `set` / `lock` / override
+    /// writers. It distinguishes the typed error from a host trap and from a
+    /// defaulted allocation, so a future edit that replaced the storage miss
+    /// with an `unwrap()`/`unwrap_or_default()` would fail CI rather than
+    /// silently hand callers a fee split the admin never configured.
     pub fn get_platform_fee_allocation(env: Env) -> Result<PlatformFeeAllocation, Error> {
         Self::load_platform_fee_allocation(&env)
     }
@@ -6850,6 +6860,8 @@ mod get_job_no_mutation_tests;
 mod get_pending_admin_transfer_read_count_tests;
 #[cfg(test)]
 mod get_pending_admin_transfer_tests;
+#[cfg(test)]
+mod get_platform_fee_allocation_not_initialized_tests;
 #[cfg(test)]
 mod get_yield_info_no_mutation_tests;
 #[cfg(test)]
