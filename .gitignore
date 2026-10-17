@@ -1,3 +1,7 @@
 target/
 .env
 *.wasm
+
+.agents/
+skills-lock.json
+issue.md

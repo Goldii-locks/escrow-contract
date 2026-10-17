@@ -14,9 +14,18 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned to match rust-toolchain.toml. stellar-cli rejects 1.81, 1.82,
+        # 1.83 and 1.91.0 outright, so this cannot float on @stable.
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
+          components: clippy, rustfmt
+
+      - name: Install stellar-cli
+        # soroban-sdk 28 refuses to build under a bare `cargo build` and
+        # requires stellar-cli v25.2.0+. The action installs a prebuilt binary;
+        # the version comes from the ref, so bump the tag to change it.
+        uses: stellar/stellar-cli@v28.0.0
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -27,8 +36,17 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Check for orphaned test snapshots
+        run: python3 scripts/check-orphan-snapshots.py
+
+      - name: Format check
+        run: cargo fmt --manifest-path contracts/milestone-escrow/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path contracts/milestone-escrow/Cargo.toml --all-targets -- -D warnings
+
       - name: Run tests
         run: cargo test --manifest-path contracts/milestone-escrow/Cargo.toml
 
       - name: Build WASM
-        run: cargo build --release --target wasm32-unknown-unknown --manifest-path contracts/milestone-escrow/Cargo.toml
+        run: stellar contract build --manifest-path contracts/milestone-escrow/Cargo.toml
