@@ -5856,6 +5856,10 @@ impl MilestoneEscrow {
         Self::require_admin_from_instance(&env, &admin)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
+        let meta = Self::load_job_meta(&env)?;
+        if meta.funded {
+            return Err(Error::AlreadyFunded);
+        }
         // Precondition: validate illegal source state (locked allocation) before any ledger write
         // Ensures InvalidStatus is returned with no storage mutation when allocation is locked
         if let Ok(current) = Self::load_platform_fee_allocation(&env) {
@@ -9942,6 +9946,14 @@ impl MilestoneEscrow {
         let allocation =
             Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
 
+        let token_client = token::Client::new(&env, &meta.token);
+        if allocation.client_refund > 0 {
+            Self::pay_or_credit(&env, &token_client, &meta.client, &allocation.client_refund)?;
+        }
+        if allocation.freelancer_payout > 0 {
+            Self::pay_or_credit(&env, &token_client, &meta.freelancer, &allocation.freelancer_payout)?;
+        }
+
         env.events().publish(
             (symbol_short!("cxlspref"),),
             CancelSplitRefundCalculatedEvent {
@@ -10050,6 +10062,14 @@ impl MilestoneEscrow {
 
         let allocation =
             Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
+
+        let token_client = token::Client::new(&env, &meta.token);
+        if allocation.client_refund > 0 {
+            Self::pay_or_credit(&env, &token_client, &meta.client, &allocation.client_refund)?;
+        }
+        if allocation.freelancer_payout > 0 {
+            Self::pay_or_credit(&env, &token_client, &meta.freelancer, &allocation.freelancer_payout)?;
+        }
 
         env.events().publish(
             (symbol_short!("cxlspref"),),
@@ -10170,6 +10190,13 @@ impl MilestoneEscrow {
             .ok_or(Error::ArithmeticOverflow)?;
         if remaining_balance < 0 {
             return Err(Error::InsufficientBalance);
+        }
+
+        if client_refund > 0 {
+            Self::pay_or_credit(&env, &token_client, &meta.client, &client_refund)?;
+        }
+        if freelancer_payout > 0 {
+            Self::pay_or_credit(&env, &token_client, &meta.freelancer, &freelancer_payout)?;
         }
 
         // ── success-only event (#534)
