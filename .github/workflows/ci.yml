@@ -17,7 +17,7 @@ jobs:
       - name: Install Rust
         # Pinned to match rust-toolchain.toml. stellar-cli rejects 1.81, 1.82,
         # 1.83 and 1.91.0 outright, so this cannot float on @stable.
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: wasm32v1-none
           components: clippy, rustfmt
@@ -150,7 +150,7 @@ jobs:
 
       - name: Install Rust
         # Pinned to match rust-toolchain.toml; see the note in the test job.
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: wasm32v1-none
 
