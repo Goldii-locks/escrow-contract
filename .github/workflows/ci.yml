@@ -26,7 +26,7 @@ jobs:
         # soroban-sdk 28 refuses to build under a bare `cargo build` and
         # requires stellar-cli v25.2.0+. The action installs a prebuilt binary;
         # the version comes from the ref, so bump the tag to change it.
-        uses: stellar/stellar-cli@v28.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -142,7 +142,7 @@ jobs:
           targets: wasm32v1-none
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@v28.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Cache cargo
         uses: actions/cache@v4
