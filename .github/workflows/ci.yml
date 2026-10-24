@@ -88,7 +88,7 @@ jobs:
           fi
 
       - name: Upload optimized wasm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: milestone_escrow-optimized-${{ github.sha }}
           path: dist/optimized/milestone_escrow.wasm
@@ -185,7 +185,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload bindings
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: |
@@ -242,7 +242,7 @@ jobs:
           cat dist/build-info.json
 
       - name: Upload wasm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: milestone_escrow-wasm-${{ github.sha }}
           path: dist/
