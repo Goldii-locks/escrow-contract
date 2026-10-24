@@ -215,7 +215,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: bindings/ts
