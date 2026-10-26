@@ -48,16 +48,19 @@ struct Cost {
 /// which includes the contract instance ledger entry alongside
 /// initialization. Instructions re-baselined after the TTL extension (#669):
 /// storing a milestone now extends its entry's and the instance's TTL, which
-/// costs instructions but no extra ledger write.
+/// costs instructions but no extra ledger write. Write bytes raised by 60 for
+/// every flow that stores a milestone once milestones carry their 32-byte
+/// `deliverable` hash (a 20-byte `deliverable` key plus a 40-byte value); no
+/// flow gained a ledger write.
 const BUDGETS: [(&str, i64, u32, u32); 8] = [
-    ("initialize", 235_000, 7, 1_850),
-    ("fund", 362_000, 4, 1_470),
-    ("mark_delivered", 224_000, 3, 590),
-    ("approve_milestone", 490_000, 7, 1_380),
-    ("claim_auto_release", 517_000, 6, 1_255),
-    ("raise_dispute", 316_000, 5, 890),
+    ("initialize", 235_000, 7, 1_910),
+    ("fund", 362_000, 4, 1_530),
+    ("mark_delivered", 224_000, 3, 650),
+    ("approve_milestone", 490_000, 7, 1_440),
+    ("claim_auto_release", 517_000, 6, 1_315),
+    ("raise_dispute", 316_000, 5, 950),
     ("submit_evidence", 201_000, 2, 580),
-    ("resolve_dispute", 558_000, 7, 1_255),
+    ("resolve_dispute", 558_000, 7, 1_315),
 ];
 
 fn fixture(env: &Env) -> Fixture<'_> {

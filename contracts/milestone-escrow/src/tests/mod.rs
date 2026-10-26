@@ -37,6 +37,7 @@ mod cold_config_storage_tests;
 mod conservation_proptests;
 mod constructor_tests;
 mod cost_tests;
+mod deliverable_hash_tests;
 mod dispute_evidence_tests;
 mod dispute_resolution_branch_tests;
 mod dispute_timeout_tests;
@@ -955,6 +956,7 @@ fn test_mark_delivered_invalid_amount_fails() {
         delivered_at: 0,
         funded: true,
         spec_hash: BytesN::from_array(&env, &[0; 32]),
+        deliverable: BytesN::from_array(&env, &[0; 32]),
     };
     env.as_contract(&contract_id, || {
         env.storage()
@@ -3989,6 +3991,7 @@ fn test_multisig_admin_override_release_amount_overflow_returns_invalid_amount()
                 delivered_at: 0,
                 funded: true,
                 spec_hash: BytesN::from_array(&env, &[0; 32]),
+                deliverable: BytesN::from_array(&env, &[0; 32]),
             },
         );
     });
@@ -4017,6 +4020,7 @@ fn test_multisig_admin_override_release_min_amount_returns_invalid_amount() {
                 delivered_at: 0,
                 funded: true,
                 spec_hash: BytesN::from_array(&env, &[0; 32]),
+                deliverable: BytesN::from_array(&env, &[0; 32]),
             },
         );
     });

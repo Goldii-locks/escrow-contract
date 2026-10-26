@@ -169,6 +169,7 @@ fn unlocked_milestone(env: &Env, amount: i128, released_amount: i128) -> Milesto
         delivered_at: 0,
         funded: true,
         spec_hash: BytesN::from_array(env, &[0; 32]),
+        deliverable: BytesN::from_array(env, &[0; 32]),
     }
 }
 

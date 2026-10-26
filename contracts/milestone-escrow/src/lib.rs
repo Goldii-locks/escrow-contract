@@ -280,7 +280,9 @@ const BPS_DENOMINATOR: i128 = 10_000;
 ///   `DataKey::SchemaVersion` are read as this version.
 /// * `2` – `Milestone::spec_hash` (#767); that configuration in persistent
 ///   storage (#772).
-pub const SCHEMA_VERSION: u32 = 2;
+/// * `3` – `Milestone::deliverable`, the hash recorded by
+///   `mark_delivered_with_hash`.
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -306,6 +308,10 @@ pub struct Milestone {
     /// committed at `initialize` (#767). Kept on the milestone itself so
     /// committing it costs no extra ledger write per milestone.
     pub spec_hash: BytesN<32>,
+    /// Hash of the artifact recorded by the most recent delivery (e.g. the
+    /// SHA-256 of the artifact or an IPFS CID digest). All zeroes until the
+    /// milestone is delivered with a hash.
+    pub deliverable: BytesN<32>,
 }
 
 /// `Milestone` as stored by schema version 1, before `spec_hash` (#767).
@@ -318,6 +324,19 @@ struct MilestoneV1 {
     status: MilestoneStatus,
     delivered_at: u64,
     funded: bool,
+}
+
+/// `Milestone` as stored by schema version 2, before `deliverable`.
+/// Only `migrate` reads it.
+#[contracttype]
+#[derive(Clone, Debug)]
+struct MilestoneV2 {
+    amount: i128,
+    released_amount: i128,
+    status: MilestoneStatus,
+    delivered_at: u64,
+    funded: bool,
+    spec_hash: BytesN<32>,
 }
 
 /// Evidence attached to a dispute by one of the parties (#712).
@@ -844,6 +863,7 @@ pub struct DeliveredEvent {
     pub delivered_at: u64,
     pub status: MilestoneStatus,
     pub amount: i128,
+    pub deliverable: BytesN<32>,
 }
 
 #[contracttype]
@@ -3583,6 +3603,7 @@ impl MilestoneEscrow {
                     delivered_at: 0,
                     funded: false,
                     spec_hash,
+                    deliverable: BytesN::from_array(&env, &[0u8; 32]),
                 },
             );
         }
@@ -4260,6 +4281,7 @@ impl MilestoneEscrow {
                 delivered_at: 0,
                 funded: true,
                 spec_hash: BytesN::from_array(&env, &[0u8; 32]),
+                deliverable: BytesN::from_array(&env, &[0u8; 32]),
             },
         );
         // Persist amended state BEFORE the token transfer so a reentrant call
@@ -4671,10 +4693,30 @@ impl MilestoneEscrow {
     /// * `InvalidStatus`    – The milestone is not currently `Pending`.
     /// * `NotAccepted`      – The freelancer or arbiter has not accepted the
     ///                        job.
+    ///
+    /// Legacy path kept for migration: records an all-zero `deliverable`
+    /// hash. Prefer `mark_delivered_with_hash`.
     pub fn mark_delivered(
         env: Env,
         freelancer: Address,
         milestone_index: u32,
+    ) -> Result<(), Error> {
+        let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+        Self::mark_delivered_with_hash(env, freelancer, milestone_index, zero_hash)
+    }
+
+    /// Mark a milestone as delivered and record a hash of the deliverable
+    /// (e.g. the SHA-256 of the artifact or an IPFS CID digest) so an arbiter
+    /// can tie the delivery claim to a concrete artifact.
+    ///
+    /// Same parameters, behaviour and errors as `mark_delivered`, plus:
+    /// * `deliverable` – 32-byte hash of the delivered artifact. Stored on the
+    ///                   milestone and emitted in `DeliveredEvent`.
+    pub fn mark_delivered_with_hash(
+        env: Env,
+        freelancer: Address,
+        milestone_index: u32,
+        deliverable: BytesN<32>,
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
@@ -4722,6 +4764,7 @@ impl MilestoneEscrow {
         let delivered_at = env.ledger().timestamp();
         milestone.status = MilestoneStatus::Delivered;
         milestone.delivered_at = delivered_at;
+        milestone.deliverable = deliverable.clone();
         Self::store_milestone(&env, milestone_index, &milestone);
         // Write the delivery timestamp to temporary storage so that
         // claim_auto_release and time_until_auto_release can read it from the
@@ -4737,6 +4780,7 @@ impl MilestoneEscrow {
                 delivered_at,
                 status: MilestoneStatus::Delivered,
                 amount: milestone.amount,
+                deliverable,
             },
         );
 
@@ -6821,6 +6865,8 @@ impl MilestoneEscrow {
     ///   `migrate_cold_config`).  Milestones that already carry a `spec_hash`
     ///   (deployments created after #767 but before the schema marker) are
     ///   left as they are.
+    /// * `2 → 3`: every `Milestone` stored without `deliverable` gains a zero
+    ///   `deliverable`.
     ///
     /// Returns the new schema version and emits `("migrate",)` with a
     /// `MigratedEvent`.
@@ -6836,8 +6882,10 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyMigrated);
         }
 
+        if from_version < 3 {
+            Self::migrate_milestones_to_v3(&env)?;
+        }
         if from_version < 2 {
-            Self::migrate_milestones_to_v2(&env)?;
             Self::move_cold_config(&env);
         }
 
@@ -6855,32 +6903,46 @@ impl MilestoneEscrow {
         Ok(SCHEMA_VERSION)
     }
 
-    /// Schema 1 → 2 for milestones: add a zero `spec_hash` to every entry
-    /// stored without one.
-    fn migrate_milestones_to_v2(env: &Env) -> Result<(), Error> {
+    /// Schema 1/2 → 3 for milestones: add a zero `spec_hash` (#767) and a
+    /// zero `deliverable` to every entry stored without them.
+    fn migrate_milestones_to_v3(env: &Env) -> Result<(), Error> {
         let meta = Self::load_job_meta(env)?;
         let persistent = env.storage().persistent();
         let spec_hash_field = Symbol::new(env, "spec_hash");
+        let deliverable_field = Symbol::new(env, "deliverable");
+        let zero = BytesN::from_array(env, &[0u8; 32]);
         for index in 0..meta.milestone_count {
             let key = DataKey::Milestone(index);
-            // Decode the field map first: an entry that already has
-            // `spec_hash` would not decode as `MilestoneV1`.
+            // Decode the field map first: each older shape only decodes as
+            // its own struct.
             let fields: Map<Symbol, Val> = persistent.get(&key).ok_or(Error::InvalidMilestone)?;
-            if fields.contains_key(spec_hash_field.clone()) {
+            if fields.contains_key(deliverable_field.clone()) {
                 continue;
             }
-            let old: MilestoneV1 = persistent.get(&key).ok_or(Error::InvalidMilestone)?;
-            persistent.set(
-                &key,
-                &Milestone {
+            let migrated = if fields.contains_key(spec_hash_field.clone()) {
+                let old: MilestoneV2 = persistent.get(&key).ok_or(Error::InvalidMilestone)?;
+                Milestone {
                     amount: old.amount,
                     released_amount: old.released_amount,
                     status: old.status,
                     delivered_at: old.delivered_at,
                     funded: old.funded,
-                    spec_hash: BytesN::from_array(env, &[0u8; 32]),
-                },
-            );
+                    spec_hash: old.spec_hash,
+                    deliverable: zero.clone(),
+                }
+            } else {
+                let old: MilestoneV1 = persistent.get(&key).ok_or(Error::InvalidMilestone)?;
+                Milestone {
+                    amount: old.amount,
+                    released_amount: old.released_amount,
+                    status: old.status,
+                    delivered_at: old.delivered_at,
+                    funded: old.funded,
+                    spec_hash: zero.clone(),
+                    deliverable: zero.clone(),
+                }
+            };
+            persistent.set(&key, &migrated);
         }
         Ok(())
     }
