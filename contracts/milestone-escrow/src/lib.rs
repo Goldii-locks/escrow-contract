@@ -255,6 +255,10 @@ const MAX_MILESTONES: u32 = 50;
 /// the job. Once it has passed without both acceptances, the client can
 /// reclaim the escrow with `withdraw_unaccepted`.
 const ACCEPTANCE_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
+/// Seconds after a milestone's `due_at` before the client may reclaim it with
+/// `reclaim_overdue`, so a delivery landing just after the deadline still
+/// counts.
+pub const OVERDUE_GRACE_SECONDS: u64 = 24 * 60 * 60;
 
 const BPS_SCALE: u32 = 10_000;
 // Keep active escrow state available for roughly one year of ledger time.
@@ -764,6 +768,9 @@ pub enum DataKey {
     /// Instance: the address holding an `AdminRole`. Missing means the root
     /// admin holds it.
     AdminRole(AdminRole),
+    /// Persistent: delivery deadline (ledger timestamp) of milestone `u32`,
+    /// set by `set_milestone_due_dates`.  Absent or `0` means no deadline.
+    DueAt(u32),
 }
 
 #[contracttype]
@@ -1152,6 +1159,17 @@ pub struct FreelancerRotatedEvent {
 pub struct UnacceptedWithdrawnEvent {
     pub client: Address,
     pub token: Address,
+    pub amount: i128,
+}
+
+/// Emitted by `reclaim_overdue` when the client takes back a `Pending`
+/// milestone whose delivery deadline (plus grace) has passed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OverdueReclaimedEvent {
+    pub client: Address,
+    pub milestone_index: u32,
+    pub due_at: u64,
     pub amount: i128,
 }
 
@@ -4664,6 +4682,142 @@ impl MilestoneEscrow {
                 client: meta.client,
                 token: meta.token,
                 amount: total_refunded,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Set a delivery deadline per milestone, index-aligned with the job's
+    /// milestones.  `0` means no deadline.  Only allowed before any funding
+    /// and before the freelancer accepts, so the deadlines are part of the
+    /// terms the freelancer accepts.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Contract has not been initialized.
+    /// * `Unauthorized`   – `client` does not match the job's client.
+    /// * `AlreadyFunded`  – The escrow (or any milestone) is already funded.
+    /// * `InvalidStatus`  – The freelancer has already accepted the job.
+    /// * `InvalidAmount`  – `due_dates.len()` differs from the milestone count.
+    pub fn set_milestone_due_dates(
+        env: Env,
+        client: Address,
+        due_dates: Vec<u64>,
+    ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        client.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        if meta.client != client {
+            return Err(Error::Unauthorized);
+        }
+        if Self::require_escrow_has_funding(&env, &meta).is_ok() {
+            return Err(Error::AlreadyFunded);
+        }
+        if Self::load_acceptance(&env) & 1 != 0 {
+            return Err(Error::InvalidStatus);
+        }
+        if due_dates.len() != meta.milestone_count {
+            return Err(Error::InvalidAmount);
+        }
+        for (index, due_at) in due_dates.iter().enumerate() {
+            let key = DataKey::DueAt(index as u32);
+            if due_at == 0 {
+                env.storage().persistent().remove(&key);
+            } else {
+                env.storage().persistent().set(&key, &due_at);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+            }
+        }
+        Ok(())
+    }
+
+    /// Delivery deadline of milestone `index`; `0` when it has none.
+    ///
+    /// # Errors
+    /// * `NotInitialized`   – Contract has not been initialized.
+    /// * `InvalidMilestone` – `index` is out of range.
+    pub fn get_milestone_due_at(env: Env, index: u32) -> Result<u64, Error> {
+        let meta = Self::load_job_meta(&env)?;
+        if index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+        Ok(Self::load_due_at(&env, index))
+    }
+
+    fn load_due_at(env: &Env, index: u32) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DueAt(index))
+            .unwrap_or(0)
+    }
+
+    /// Refund a `Pending` milestone to the client once its delivery deadline
+    /// plus `OVERDUE_GRACE_SECONDS` has passed without delivery.  The
+    /// milestone becomes `Refunded`.  A late `mark_delivered` stays possible
+    /// until this is called.
+    ///
+    /// # Errors
+    /// * `Paused` / `EscrowLocked` – The contract is emergency-paused or
+    ///                               cancel-locked.
+    /// * `NotInitialized`    – Contract has not been initialized.
+    /// * `Unauthorized`      – `client` does not match the job's client.
+    /// * `InvalidMilestone`  – `milestone_index` is out of range.
+    /// * `InvalidStatus`     – The milestone is not `Pending`.
+    /// * `NotFunded`         – The milestone has not been funded.
+    /// * `DeadlineNotPassed` – The milestone has no deadline, or deadline plus
+    ///                         grace has not passed.
+    /// * `InvalidAmount`     – Nothing remains to refund.
+    pub fn reclaim_overdue(env: Env, client: Address, milestone_index: u32) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::ensure_not_paused(&env)?;
+        client.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        if meta.client != client {
+            return Err(Error::Unauthorized);
+        }
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        if milestone.status != MilestoneStatus::Pending {
+            return Err(Error::InvalidStatus);
+        }
+        Self::require_milestone_is_funded(&env, &meta, &milestone)?;
+
+        let due_at = Self::load_due_at(&env, milestone_index);
+        if due_at == 0 {
+            return Err(Error::DeadlineNotPassed);
+        }
+        let deadline = due_at
+            .checked_add(OVERDUE_GRACE_SECONDS)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if env.ledger().timestamp() <= deadline {
+            return Err(Error::DeadlineNotPassed);
+        }
+
+        let remaining = milestone
+            .amount
+            .checked_sub(milestone.released_amount)
+            .ok_or(Error::InvalidAmount)?;
+        if remaining <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        milestone.status = MilestoneStatus::Refunded;
+        Self::store_milestone(&env, milestone_index, &milestone);
+
+        let token_client = token::Client::new(&env, &meta.token);
+        Self::pay_or_credit(&env, &token_client, &meta.client, &remaining)?;
+
+        env.events().publish(
+            (symbol_short!("overdue"),),
+            OverdueReclaimedEvent {
+                client: meta.client,
+                milestone_index,
+                due_at,
+                amount: remaining,
             },
         );
 

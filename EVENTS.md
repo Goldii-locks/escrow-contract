@@ -30,6 +30,7 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `acceptjob`| `JobAcceptedEvent`               | state change      |
 | `acceptarb`| `JobAcceptedEvent`               | state change      |
 | `unaccref` | `UnacceptedWithdrawnEvent`       | state change      |
+| `overdue`  | `OverdueReclaimedEvent`          | state change      |
 | `withdraw` | `WithdrawnEvent`                 | state change      |
 | `freerot`  | `FreelancerRotatedEvent`         | state change      |
 | `arbchg`   | `ArbiterReplacedEvent`           | state change      |
