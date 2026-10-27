@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 milestone-escrow = { path = "../.." }
-soroban-sdk = "28.0.0"
+soroban-sdk = "29.0.1"
 
 [profile.release]
 opt-level = "z"
