@@ -392,3 +392,35 @@ Milesto/
     └── src/
 ```
 
+
+## October 15–27, 2026
+### ✅ Stellar Wave campaign: audit-based issue batch
+- Audited `main` of all three repos (backend ac5c192, contract 1884c5c, frontend ae62f6e) by running lint, type-check, tests and coverage, and filed **375 issues (125 per repo)**. Each one cites file:line, proposes a fix and lists acceptance criteria.
+- Uploaded October 15 with `milesto-roadmap/sync_campaign_2026_10.js`. The drafts are in `milesto-roadmap/campaign_2026_10/`.
+  - Backend #597–#722, contract #664–#788, frontend #569–#693.
+  - Every issue carries a `p1`/`p2`/`p3` priority and the `Stellar Wave` label.
+
+### 📈 Progress by October 27
+| Repo | Campaign issues closed | PRs merged since Oct 15 | Contributors |
+|---|---|---|---|
+| escrow-backend | 111 / 125 (+11 fixed but not auto-closed) | 93 | 39 |
+| escrow-contract | 107 / 125 | 110 | 38 |
+| escrow-frontend | 101 / 125 | 68 | 37 |
+
+### ⏭️ p1 issues still open
+- **Contract:**
+  - #674: the fee is never applied on release and there's no treasury address.
+  - #672: a PartiallyReleased milestone can't be auto-released.
+  - #690: the cancel and emergency refund functions don't transfer funds.
+  - #684: the admin streaming override needs the parties' signatures.
+  - #676: calculation functions emit spoofable events.
+- **Frontend:**
+  - #572: there's only one job per contract (needs a factory).
+  - #573: the client becomes the escrow admin.
+  - #570: success is shown before on-chain confirmation.
+  - #584: CSP is report-only for now.
+- **Backend:** #604–#606 and #675–#682 are fixed on `main`, but they still need a maintainer to close them. Their PRs merged into a feature branch, or reached main through a follow-up PR without the closing keyword.
+
+### 🔎 Known gaps
+- The frontend sends CSP reports to `/api/csp-report`, but the backend has no handler for it, so reports get a 404 in production (frontend #685).
+- The frontend's batched deadline call needs a backend `GET /api/jobs/:id/deadlines` route. Until it exists, the frontend falls back to one request per milestone (frontend #671).
