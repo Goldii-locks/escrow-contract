@@ -377,6 +377,29 @@ admin and emits `created` with the new escrow's address.
 
 ## Deploy (Testnet)
 
+### Escrow factory (what the app uses)
+
+The app creates one escrow contract per job through `escrow-factory`'s
+`create_escrow`. `scripts/deploy-factory-testnet.sh` builds the reproducible
+escrow wasm and uploads it, deploys the factory with the platform admin and
+that wasm hash, allows each token for new escrows, and appends the deployment
+to `deployments/testnet-factory.json`:
+
+```bash
+export SOURCE_ACCOUNT=testnet-deployer    # pays for the deployment
+export ADMIN_ADDRESS=G...                 # platform admin; admin of every escrow
+export ADMIN_SOURCE=platform-admin        # stellar-cli key for ADMIN_ADDRESS
+export ALLOWED_TOKENS=C...,C...           # token contracts new escrows may use
+scripts/deploy-factory-testnet.sh
+```
+
+Then set the factory ID as the `FACTORY_CONTRACT_ID` repository variable in
+escrow-frontend and as `FACTORY_CONTRACT_ID` in escrow-backend's
+`backend.env`, and redeploy both. The script stops before uploading if the
+escrow wasm is over the network's 131,072-byte contract size limit.
+
+### A single escrow
+
 `scripts/deploy-testnet.sh` builds the reproducible wasm, uploads it, deploys
 with constructor arguments from environment variables, and appends
 `{date, network, wasm_hash, contract_id, admin}` to `deployments/testnet.json`
