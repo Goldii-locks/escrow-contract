@@ -498,13 +498,13 @@ MIT
 
 | Network | Contract ID |
 |---|---|
-| Testnet | `CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH` |
+| Testnet | `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA` |
 
 Deployment records, including the installed wasm hash, are in
 [`deployments/`](deployments/). The current testnet deployment predates
 reproducible builds, so its source commit is unknown.
 
-Explorer: `https://stellar.expert/explorer/testnet/contract/CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH`
+Explorer: `https://stellar.expert/explorer/testnet/contract/CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA`
  
 ## Companion Repositories
 

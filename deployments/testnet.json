@@ -1,6 +1,6 @@
 {
   "network": "testnet",
-  "contract_id": "CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH",
+  "contract_id": "CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA",
   "wasm_sha256": "67d0eb543aaa9ca99c1b23ba18a3f4713c899eba574bbef96540f2540b8b2f0e",
   "source_commit": null,
   "build": null,
