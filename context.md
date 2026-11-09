@@ -424,3 +424,39 @@ Milesto/
 ### 🔎 Known gaps
 - The frontend sends CSP reports to `/api/csp-report`, but the backend has no handler for it, so reports get a 404 in production (frontend #685).
 - The frontend's batched deadline call needs a backend `GET /api/jobs/:id/deadlines` route. Until it exists, the frontend falls back to one request per milestone (frontend #671).
+
+## June 22 – November 9, 2026 (Catch-up)
+Covers work not recorded above. The audit-based issue batch is in the October 15–27 entry and isn't repeated here.
+
+### ✅ On-chain Event Indexer (Backend)
+- SQLite-backed indexer in `escrow-backend` is live and indexes all contract events by ledger sequence. First added June 22, 2026 (`3709347`).
+
+### ✅ HTTPS (September 19, 2026)
+- Production at milestonepay.app runs HTTPS with a valid certificate, and ports 80 and 443 are both bound.
+- HTTP redirects to HTTPS (frontend `9a6f36b`). Port 443 and the certs are published through compose (backend `5928e82`, PR #414).
+
+### ✅ Drips Wave Campaign (September 21 – October 3, 2026)
+- Uploaded ~348 issues across `escrow-contract`, `escrow-backend` and `escrow-frontend`.
+- ~650 PRs merged, with 100–125 contributors per repo. Each repo reached ~750–800 commits.
+- 1,092 of 1,101 issues closed by the end of the campaign, leaving 9 open, including failover-recovery wiring (backend #531), unused frontend components (frontend #520) and signature checks (backend #202–#204).
+- Since then, backend #531 and #202–#204 have closed. Frontend #520 is still open (checked November 9).
+
+### ✅ CORS Fix (October 19, 2026)
+- Global backend CORS is restricted to the `ALLOWED_ORIGINS` allowlist (`a493e30`), which allows the milestonepay.app origin. Production returns `access-control-allow-origin: https://milestonepay.app`.
+
+### ✅ Protocol 30 SDK Migration (November 6–9, 2026)
+- Protocol 30 "Bell" reached testnet on November 3 and changed the ledger header format (CAP-88). The indexer then failed every poll with `XDR Read Error: unknown StellarValueType member for value 3`.
+- Upgraded `@stellar/stellar-sdk` in `escrow-backend` from `^15.1.0` to `^16.4.1` (PR #844, merge `2a6bdc8`).
+- Fixed six tests in three files (`contract-id-rate-limit`, `contract-id-security`, `whitelist-validation`) that made real testnet requests and hit Jest's 5s timeout. They now stub the simulation calls.
+- Bumped `follow-redirects` to 1.16.3 for a high-severity advisory (GHSA-mrwp-f3q8-3g9p).
+- All 2,936 backend tests pass.
+
+### ✅ Deploy Pipeline Fix (November 9, 2026)
+- The rollout of the SDK fix failed because the EC2 disk was 97% full: 8 GB disk, 48 accumulated Docker images, only 270 MB free.
+- Ran `docker image prune -af` via AWS SSM, which freed ~2.9 GB.
+- Re-triggered the deploy with `gh workflow run deploy.yml --ref main`, and it succeeded (run ID 42647387051).
+- `escrow-backend:2a6bdc860910-104` and `escrow-frontend:0eaf2cf3d8d0-83` are running healthy in production, with the Protocol 30 SDK fix live.
+
+### 📌 Current Deployed Contract (Testnet)
+- Contract ID: `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA`, confirmed from production `/health` and the frontend repo's `CONTRACT_ID` variable.
+- `README.md`, `deployments/testnet.json` and `escrow-backend/.env.example` still list the older `CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH`.
