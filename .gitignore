@@ -1,5 +1,4 @@
 target/
-.env
 *.wasm
 
 .agents/
@@ -8,3 +7,5 @@ issue.md
 dist/
 bindings/
 contracts/milestone-escrow/test_snapshots/
+config.bat
+node_modules

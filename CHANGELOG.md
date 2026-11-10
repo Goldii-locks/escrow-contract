@@ -22,6 +22,11 @@ hash for every commit in the `reproducible-wasm` job summary.
   sign. `unlock_escrow_interest_yield` now requires the admin, the client and
   the freelancer, so the admin cannot undo its own lock (#776).
 
+### Fixed
+
+- `approve_milestone` and `claim_auto_release` now accept `PartiallyReleased` milestones in addition to `Delivered`, enabling clients to approve remaining milestone balances in one call and ensuring freelancers can auto-release funds if clients go silent after a partial payment (#672, #673).
+- `time_until_auto_release` now bounds-checks milestone indices with `InvalidMilestone` and enforces `Delivered` or `PartiallyReleased` status with `InvalidStatus`, preventing misleading overdue reports on uncompleted milestones (#678).
+
 ### Changed
 
 - `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and

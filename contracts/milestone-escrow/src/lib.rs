@@ -5199,11 +5199,13 @@ impl MilestoneEscrow {
         let mut milestone = Self::load_milestone(env, milestone_index)?;
         Self::require_milestone_is_funded(env, meta, &milestone)?;
 
-        // CHECK 2: Milestone must be in the Delivered state.  Any other status —
-        // including Released (double-claim), Disputed, Refunded, Pending, or
-        // PartiallyReleased — is rejected here, making the guard the sole
-        // gatekeeper against double-execution and out-of-sequence calls.
-        if milestone.status != MilestoneStatus::Delivered {
+        // CHECK 2: Milestone must be in Delivered or PartiallyReleased state (#672).
+        // Any other status — including Released (double-claim), Disputed, Refunded,
+        // or Pending — is rejected here, making the guard the sole gatekeeper against
+        // double-execution and out-of-sequence calls.
+        if milestone.status != MilestoneStatus::Delivered
+            && milestone.status != MilestoneStatus::PartiallyReleased
+        {
             return Err(Error::InvalidStatus);
         }
 
@@ -5296,7 +5298,15 @@ impl MilestoneEscrow {
     /// - Just-delivered (delivered_at = current): Returns approximately `auto_release_seconds + extension_seconds`.
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> Result<i64, Error> {
         let meta = Self::load_job_meta(&env)?;
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
         let milestone = Self::load_milestone(&env, milestone_index)?;
+        if milestone.status != MilestoneStatus::Delivered
+            && milestone.status != MilestoneStatus::PartiallyReleased
+        {
+            return Err(Error::InvalidStatus);
+        }
         // Read delivery timestamp from temporary storage (optimised path) and
         // fall back to the persistent Milestone field for pre-migration entries.
         let delivered_at =
@@ -5490,7 +5500,9 @@ impl MilestoneEscrow {
 
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
         Self::require_milestone_is_funded(&env, &meta, &milestone)?;
-        if milestone.status != MilestoneStatus::Delivered {
+        if milestone.status != MilestoneStatus::Delivered
+            && milestone.status != MilestoneStatus::PartiallyReleased
+        {
             return Err(Error::InvalidStatus);
         }
 
@@ -9316,9 +9328,11 @@ impl MilestoneEscrow {
         for (index, milestone) in job.milestones.iter().enumerate() {
             let index = index as u32;
             let extension_seconds = Self::load_time_extension(&env, index);
-            // Auto-release only applies to Delivered milestones
+            // Auto-release applies to Delivered and PartiallyReleased milestones
             // (claim_auto_release), so only they have a deadline.
-            let deadline = if milestone.status == MilestoneStatus::Delivered {
+            let deadline = if milestone.status == MilestoneStatus::Delivered
+                || milestone.status == MilestoneStatus::PartiallyReleased
+            {
                 let delivered_at =
                     Self::load_delivered_at(&env, index).unwrap_or(milestone.delivered_at);
                 Some(Self::auto_release_deadline(
