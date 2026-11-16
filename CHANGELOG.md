@@ -12,6 +12,16 @@ See "Verifying the deployed contract" in the README.
 WASM: build with `scripts/build-reproducible.sh <commit>`; CI publishes the
 hash for every commit in the `reproducible-wasm` job summary.
 
+
+### Documentation
+
+- Moved detailed behavioural notes previously in README Project Status into this changelog and SPEC.md (see issue #1006).
+- `initialize` rejects empty milestone lists, zero/negative amounts, zero addresses, zero auto-release windows, and party collisions with explicit errors.
+- `raise_dispute` performs zero-address, auth, and identity checks before writing the re-entrancy lock (#566).
+- Disputes may only be raised on delivered or partially released milestones; escalate after dispute timeout restores prior status with fresh auto-release window.
+- `cancel_escrow` single-party approval expires after CANCEL_APPROVAL_TTL_SECONDS (7 days, #713); event carries approved_at.
+- `lock_escrow_interest_yield` rejects unauthorized callers and illegal states before ledger access (#464).
+
 ### Security
 
 - `propose_admin_transfer` and `transfer_admin` reject the contract's own
