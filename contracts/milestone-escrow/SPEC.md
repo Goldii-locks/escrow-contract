@@ -169,6 +169,15 @@ Either party can append up to `MAX_DISPUTE_EVIDENCE_ENTRIES` (10) hashes with
 admin-overriding a dispute deletes the record, so the evidence trail never
 outlives the dispute it belongs to.
 
+Both closing entry points — `resolve_dispute` and
+`apply_dispute_arbitration_split` — additionally take a 32-byte
+`decision_hash`: a commitment to the arbiter's written decision (#1015). The
+document itself stays off-chain (escrow-backend storage, keyed by the hash);
+the contract accepts any 32 bytes without validation, exactly like
+`reason_hash`, and echoes the value verbatim in the `resolve` event (and, for
+a split, in `arbsplit` too). Because resolution deletes the `DisputeInfo`
+record, the emitted event — not storage — is where the commitment survives.
+
 ### Cancellation
 
 | Entry point | Signer(s) | Guards | Source status | Target status | Token movement | Event |

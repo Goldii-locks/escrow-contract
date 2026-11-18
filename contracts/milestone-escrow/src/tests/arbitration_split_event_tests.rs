@@ -80,8 +80,12 @@ fn event_reconciles_with_persisted_state_on_partial_split() {
     let token = token::Client::new(&env, &client.get_job().token);
 
     // 70% to the client, 30% to the freelancer.
-    let alloc: RefundAllocation =
-        client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &7_000u32);
+    let alloc: RefundAllocation = client.apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &7_000u32,
+        &decision_hash(&env),
+    );
 
     // Exactly one structured event.
     assert_eq!(arbsplit_event_count(&env), 1);
@@ -110,6 +114,9 @@ fn event_reconciles_with_persisted_state_on_partial_split() {
         Some(ev.client_refund_bps)
     );
 
+    // The arbiter's decision commitment (#1015) is echoed verbatim.
+    assert_eq!(ev.decision_hash, decision_hash(&env));
+
     // Milestone state reconciles with the persisted milestone.
     let ms = client.get_job().milestones.get(0).unwrap();
     assert_eq!(ev.released_amount, ms.released_amount);
@@ -131,7 +138,7 @@ fn event_reports_refunded_status_on_full_client_refund() {
         disputed_escrow(&env, amounts);
     let token = token::Client::new(&env, &client.get_job().token);
 
-    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &10_000u32);
+    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &10_000u32, &decision_hash(&env));
 
     assert_eq!(arbsplit_event_count(&env), 1);
     let ev = last_arbsplit_event(&env);
@@ -161,7 +168,7 @@ fn event_reports_released_status_on_full_freelancer_award() {
         disputed_escrow(&env, amounts);
     let token = token::Client::new(&env, &client.get_job().token);
 
-    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &0u32);
+    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &0u32, &decision_hash(&env));
 
     assert_eq!(arbsplit_event_count(&env), 1);
     let ev = last_arbsplit_event(&env);
@@ -190,7 +197,7 @@ fn event_amounts_sum_to_disputed_balance_with_odd_rounding() {
     let (contract_id, arbiter_addr, client_addr, freelancer_addr, client) =
         disputed_escrow(&env, amounts);
 
-    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &5_000u32);
+    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &5_000u32, &decision_hash(&env));
 
     let ev = last_arbsplit_event(&env);
     assert_eq!(arbsplit_event_count(&env), 1);
@@ -216,7 +223,12 @@ fn no_event_when_caller_is_not_the_arbiter() {
         disputed_escrow(&env, amounts);
 
     let stranger = Address::generate(&env);
-    let result = client.try_apply_dispute_arbitration_split(&stranger, &0u32, &5_000u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &stranger,
+        &0u32,
+        &5_000u32,
+        &decision_hash(&env),
+    );
 
     assert!(result.is_err());
     assert_eq!(arbsplit_event_count(&env), 0);
@@ -231,7 +243,12 @@ fn no_event_when_milestone_is_not_disputed() {
     let (_client, _freelancer, arbiter_addr, _admin, _token, _contract_id, client) =
         setup_funded_escrow(&env, vec![&env, 10_000_i128]);
 
-    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &5_000u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &5_000u32,
+        &decision_hash(&env),
+    );
 
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     assert_eq!(arbsplit_event_count(&env), 0);
@@ -246,7 +263,12 @@ fn no_event_when_bps_exceeds_scale() {
     let (contract_id, arbiter_addr, _client_addr, _freelancer_addr, client) =
         disputed_escrow(&env, amounts);
 
-    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &10_001u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &10_001u32,
+        &decision_hash(&env),
+    );
 
     assert_eq!(result, Err(Ok(Error::InvalidRatio)));
     assert_eq!(arbsplit_event_count(&env), 0);
@@ -264,7 +286,7 @@ fn no_event_on_double_execution_failure() {
         disputed_escrow(&env, amounts);
 
     // First application succeeds and emits exactly one structured event.
-    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &3_000u32);
+    client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &3_000u32, &decision_hash(&env));
     assert_eq!(arbsplit_event_count(&env), 1);
     let stored = stored_split_bps(&env, &contract_id, 0);
     assert_eq!(stored, Some(3_000));
@@ -272,7 +294,12 @@ fn no_event_on_double_execution_failure() {
     // Milestone is now terminal; a repeat call reverts with InvalidStatus.
     // A reverted invocation rolls back its events, so the failure path
     // contributes no `arbsplit` event of its own.
-    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &3_000u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &3_000u32,
+        &decision_hash(&env),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     assert_eq!(arbsplit_event_count(&env), 0);
 

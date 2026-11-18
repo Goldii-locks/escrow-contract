@@ -123,6 +123,11 @@ Notes:
   - `resolve_dispute(release_to_freelancer = false)` → `Refunded`
   - `apply_dispute_arbitration_split(client_refund_bps)` → `Split` (full
     refund becomes `Refunded`, full freelancer award becomes `Released`).
+  Both closing calls also take a 32-byte `decision_hash`, a commitment to the
+  arbiter's written decision that stays off-chain in escrow-backend storage,
+  keyed by that hash. The hash is echoed in the `resolve` event (and `arbsplit`
+  for a split); it changes neither the outcome nor the fund distribution
+  (#1015).
 - While a milestone is `Disputed`, either party may anchor evidence with
   `submit_evidence(caller, milestone_index, evidence_hash)`. Each hash is
   appended to the dispute record (at most `MAX_DISPUTE_EVIDENCE_ENTRIES` = 10,

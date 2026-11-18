@@ -114,6 +114,12 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 - **Kind** distinguishes events that record a durable state change from those
   that report a derived calculation (fee/tax/split math). Indexers should treat
   calculation events as advisory and reconcile against persisted state.
+- **`resolve` and `arbsplit` carry the arbiter's decision commitment (#1015).**
+  `DisputeResolvedEvent.decision_hash`, echoed in `ArbitrationSplitAppliedEvent`
+  by `apply_dispute_arbitration_split`, is the 32-byte hash of the written
+  decision the arbiter relied on. The document itself stays off-chain in
+  escrow-backend storage, keyed by that hash; because resolution deletes the
+  `DisputeInfo` record, the event is the only on-chain anchor for it.
 - Several split-refund paths share the `SplitRefundCalculatedEvent` struct but
   use distinct topics (`arbsplit`, `epspltref`, `iyspltref`, `splitref`) so
   consumers can tell the originating workflow apart.
