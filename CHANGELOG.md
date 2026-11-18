@@ -9,6 +9,15 @@ See "Verifying the deployed contract" in the README.
 
 ## [Unreleased]
 
+### Documentation
+
+- README "Project Status" condensed to a short status summary linking
+  `MAINNET.md` and this changelog. The behavioural notes it held moved to
+  `SPEC.md` (initialize validation, the `raise_dispute` guard order (#566),
+  the `cancel_escrow` approval TTL (#713), and the
+  `lock_escrow_interest_yield` guard order (#464)), and the golden-snapshot
+  testing note moved to the README "Test" section (#1006).
+
 WASM: build with `scripts/build-reproducible.sh <commit>`; CI publishes the
 hash for every commit in the `reproducible-wasm` job summary.
 

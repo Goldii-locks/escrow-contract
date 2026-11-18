@@ -19,6 +19,13 @@ Each milestone carries a `MilestoneStatus`:
 | `Disputed`          | Frozen for arbitration.                                              |
 | `Split`             | Settled by an arbiter-directed split. Terminal.                      |
 
+## Initialization validation
+
+`initialize` rejects, with explicit contract errors: empty milestone lists,
+zero or negative amounts, zero addresses, and zero auto-release windows. It
+also rejects **party collisions** — `admin == client`, `admin == freelancer`,
+`arbiter == client`, `arbiter == freelancer`, and `client == freelancer`.
+
 ## Funding modes
 
 The escrow supports two funding modes.
@@ -93,6 +100,23 @@ are not required to settle the escrow.
 - Pause state is per contract instance; unpausing one escrow does not affect
   another.
 
+## Cancellation
+
+`cancel_escrow` is a two-party handshake, and a single-party approval expires
+after `CANCEL_APPROVAL_TTL_SECONDS` (7 days, #713): an approval older than
+that is treated as absent, so the counter-party's call records a fresh first
+approval instead of locking the escrow. `CancelApprovalRecordedEvent`
+(`cxlappr`) carries `approved_at` so indexers can track the same window.
+
+## Interest yield lock
+
+`lock_escrow_interest_yield` rejects unauthorized callers with `Unauthorized`
+and an illegal source state with `InvalidStatus` **before** it reads or
+writes the ledger entry (#464). Authorization runs first via
+`require_admin_from_instance`, so a non-admin cannot probe whether an escrow
+is locked, and an already-locked configuration is refused rather than
+silently re-locked.
+
 ## Dispute semantics
 
 A dispute is raised with `raise_dispute(caller, milestone_index, reason_hash)`.
@@ -114,6 +138,11 @@ Raise-able statuses and their intended meaning:
 
 Notes:
 
+- `raise_dispute` performs its zero-address check, `require_auth`, and
+  identity validation **before** writing the re-entrancy lock (#566),
+  matching the authorization pattern used by `fund`, `approve_milestone`,
+  and `resolve_dispute`; it includes the five precondition guard assertions
+  present in all other mutating functions.
 - Raising a dispute moves the milestone to `Disputed` and freezes it. While
   `Disputed`, `mark_delivered` is refused (`mark_delivered` only accepts
   `Pending`), so the way forward is the arbiter, or escalation after the
@@ -130,6 +159,8 @@ Notes:
   event. `get_dispute_info` returns the reason hash, `disputed_at`, the
   pre-dispute status and every evidence entry; the record is deleted when the
   dispute closes, so evidence never outlives the dispute it belongs to (#712).
+- The dispute timeout is set by the constructor's
+  `settings.dispute_timeout_seconds` (non-zero; 30 days is the usual value).
 - If the arbiter has not acted within the escrow's dispute timeout (30 days
   by default, set with `initialize_with_dispute_timeout`), either party may
   call `escalate_dispute` to return the milestone to its pre-dispute status;
