@@ -1,0 +1,80 @@
+name: Verify deployed testnet WASM
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Stellar CLI
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | bash -s -- --version 22.0.1
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Verify deployments
+        id: verify
+        run: |
+          set -euo pipefail
+          failures=""
+          for record in deployments/*.json; do
+            name=$(basename "$record" .json)
+            contract_id=$(jq -r '.contract_id // empty' "$record")
+            expected=$(jq -r '.wasm_sha256 // empty' "$record")
+            if [ -z "$contract_id" ] || [ -z "$expected" ]; then
+              echo "::warning file=$record::missing contract_id or wasm_sha256"
+              continue
+            fi
+            echo "Checking $name ($contract_id)"
+            if ! stellar contract fetch --id "$contract_id" --network testnet --out-file "/tmp/$name.wasm"; then
+              failures="${failures}- \`$name\`: contract \`$contract_id\` could not be fetched (missing or reset).\n"
+              continue
+            fi
+            actual=$(sha256sum "/tmp/$name.wasm" | awk '{print $1}')
+            if [ "$actual" != "$expected" ]; then
+              failures="${failures}- \`$name\`: wasm_sha256 mismatch (expected \`$expected\`, got \`$actual\`).\n"
+            fi
+          done
+
+          # Factory must point at the escrow record's wasm hash.
+          factory_record=$(ls deployments/*factory*.json 2>/dev/null | head -n1 || true)
+          escrow_record=$(ls deployments/*escrow*.json 2>/dev/null | head -n1 || true)
+          if [ -n "$factory_record" ] && [ -n "$escrow_record" ]; then
+            factory_id=$(jq -r '.contract_id // empty' "$factory_record")
+            escrow_hash=$(jq -r '.wasm_sha256 // empty' "$escrow_record")
+            if [ -n "$factory_id" ] && [ -n "$escrow_hash" ]; then
+              onchain_hash=$(stellar contract invoke --id "$factory_id" --network testnet -- get_wasm_hash 2>/dev/null | tr -d '"\n' || true)
+              if [ "$onchain_hash" != "$escrow_hash" ]; then
+                failures="${failures}- factory \`$factory_id\`: get_wasm_hash() returned \`$onchain_hash\`, expected escrow wasm_sha256 \`$escrow_hash\`.\n"
+              fi
+            fi
+          fi
+
+          if [ -n "$failures" ]; then
+            echo "has_failures=true" >> "$GITHUB_OUTPUT"
+            printf '%b' "$failures" > /tmp/failures.md
+            cat /tmp/failures.md
+            exit 1
+          fi
+          echo "has_failures=false" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue on mismatch
+        if: failure() && steps.verify.outputs.has_failures == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body=$(printf 'The scheduled deployment check found drift between `deployments/*.json` and the deployed testnet contracts.\n\n%b\n\nRun: %s/%s/actions/runs/%s\n' "$(cat /tmp/failures.md)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          existing=$(gh issue list --label deployment-drift --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Deployed testnet WASM does not match deployments/*.json" --label deployment-drift --body "$body"
+          fi
