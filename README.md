@@ -350,18 +350,13 @@ From the repository root:
 cargo test -p milestone-escrow
 ```
 
+Contract tests live under `contracts/milestone-escrow/src/tests`. Soroban's per-test `test_snapshots/` are gitignored; three golden end-to-end snapshots (fund → deliver → approve, dispute → resolve, cancel → override) are committed in `contracts/milestone-escrow/golden_snapshots` and CI fails when a run changes them. After an intended change, rerun `cargo test golden_snapshot_tests` and commit the updated files.
+
 ## Project Status
 
-- Mainnet release gates are tracked in the [mainnet readiness checklist](MAINNET.md)
-- The admin authorization direction and migration decision are recorded in [ADMIN_MULTISIG_DECISION.md](ADMIN_MULTISIG_DECISION.md)
-- Contract implementation completed in `contracts/milestone-escrow`
-- Includes milestone delivery, approval, dispute, and arbitration flows
-- Initialize now rejects empty milestone lists, zero/negative amounts, zero addresses, zero auto-release windows, and **party collisions** (`admin == client`, `admin == freelancer`, `arbiter == client`, `arbiter == freelancer`, `client == freelancer`) with explicit contract errors
-- `raise_dispute` now performs zero-address check, `require_auth`, and identity validation **before** writing the re-entrancy lock (issue #566), matching the authorization pattern used by `fund`, `approve_milestone`, and `resolve_dispute`; includes the five precondition guard assertions present in all other mutating functions
-- Disputes may only be raised on delivered or partially released milestones. The dispute timeout is set by the constructor's `settings.dispute_timeout_seconds` (non-zero; 30 days is the usual value). If neither party gets an arbitration decision by that deadline, either party may call `escalate_dispute` to return the milestone to its pre-dispute status; a restored delivered milestone gets a fresh auto-release window
-- `cancel_escrow` is a two-party handshake and a single-party approval now expires after `CANCEL_APPROVAL_TTL_SECONDS` (7 days, issue #713): an approval older than that is treated as absent, so the counter-party's call records a fresh first approval instead of locking the escrow. `CancelApprovalRecordedEvent` (`cxlappr`) carries `approved_at` so indexers can track the same window
-- `lock_escrow_interest_yield` now rejects unauthorized callers with `Unauthorized` and an illegal source state with `InvalidStatus` **before** it reads or writes the ledger entry (issue #464); authorization runs first via `require_admin_from_instance`, so a non-admin cannot probe whether an escrow is locked, and an already-locked configuration is refused rather than silently re-locked
-- Contract tests live under `contracts/milestone-escrow/src/tests`. Soroban's per-test `test_snapshots/` are gitignored; three golden end-to-end snapshots (fund → deliver → approve, dispute → resolve, cancel → override) are committed in `contracts/milestone-escrow/golden_snapshots` and CI fails when a run changes them. After an intended change, rerun `cargo test golden_snapshot_tests` and commit the updated files.
+The milestone escrow contract is implemented in `contracts/milestone-escrow` and covers milestone delivery, approval, dispute, and arbitration flows. The admin authorization direction and migration decision are recorded in [ADMIN_MULTISIG_DECISION.md](ADMIN_MULTISIG_DECISION.md).
+Mainnet release gates are tracked in the [mainnet readiness checklist](MAINNET.md).
+Behavioural details are specified in [SPEC.md](SPEC.md), and changes are recorded in the [changelog](CHANGELOG.md).
 
 ## Escrow factory
 
