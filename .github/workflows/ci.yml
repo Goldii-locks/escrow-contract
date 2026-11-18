@@ -28,6 +28,9 @@ jobs:
         # the version comes from the ref, so bump the tag to change it.
         uses: stellar/stellar-cli@v28.0.0
 
+      - name: Install just
+        uses: extractions/setup-just@v2
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -44,29 +47,30 @@ jobs:
         run: python3 scripts/check-orphan-test-modules.py
 
       - name: Format check
-        run: cargo fmt --manifest-path contracts/milestone-escrow/Cargo.toml --check
+        run: just fmt
 
       - name: Clippy
-        run: cargo clippy --manifest-path contracts/milestone-escrow/Cargo.toml --all-targets -- -D warnings
+        run: just clippy
 
       - name: Main entry-point resource costs
-        run: cargo test --manifest-path contracts/milestone-escrow/Cargo.toml cost_tests::main_entrypoint_cost_baselines -- --nocapture
+        run: just costs
 
       - name: Run tests
-        run: cargo test --manifest-path contracts/milestone-escrow/Cargo.toml
+        run: just test
 
       - name: Golden snapshots unchanged
         # golden_snapshot_tests rewrites contracts/milestone-escrow/golden_snapshots/
         # on every run. A diff means a flow now stores or emits something
-        # different: if that is intended, rerun the tests locally and commit
+        # different: if that is intended, rerun `just golden` locally and commit
         # the updated files with the change.
         run: |
           git add -N contracts/milestone-escrow/golden_snapshots
           git diff --exit-code --stat -- contracts/milestone-escrow/golden_snapshots
+
       - name: Build and optimize WASM
         # `--optimize` runs wasm-opt on the release build; that is the wasm
         # which gets deployed, so it is the one measured below.
-        run: stellar contract build --manifest-path contracts/milestone-escrow/Cargo.toml --optimize --out-dir dist/optimized
+        run: just wasm
 
       - name: WASM size budget
         # Fails when the optimized wasm outgrows WASM_BUDGET_BYTES, so size
@@ -107,14 +111,8 @@ jobs:
           path: dist/optimized/milestone_escrow.wasm
 
       # The factory's tests deploy the escrow wasm built just above.
-      - name: Format check (factory)
-        run: cargo fmt --manifest-path contracts/escrow-factory/Cargo.toml --check
-
-      - name: Clippy (factory)
-        run: cargo clippy --manifest-path contracts/escrow-factory/Cargo.toml --all-targets -- -D warnings
-
       - name: Run factory tests
-        run: cargo test --manifest-path contracts/escrow-factory/Cargo.toml
+        run: just test-factory
 
       - name: Build factory WASM
         run: stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml
@@ -202,60 +200,4 @@ jobs:
         with:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: |
-            bindings/ts/
-            !bindings/ts/node_modules/
-
-  publish-bindings:
-    # On a v* tag, publish the bindings built above as a versioned package in
-    # GitHub Packages so client repos can depend on it (issue #744).
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    needs: typescript-bindings
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: milestone-escrow-bindings-ts-${{ github.sha }}
-          path: bindings/ts
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://npm.pkg.github.com
-          scope: '@goldii-locks'
-
-      - name: Publish
-        working-directory: bindings/ts
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  reproducible-wasm:
-    # Builds the release wasm in the pinned container (issue #773) and publishes
-    # it with its SHA-256 for every commit, so a deployed contract's wasm hash
-    # can be traced back to the commit that produced it.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Reproducible build
-        run: bash scripts/build-reproducible.sh "$GITHUB_SHA"
-
-      - name: Publish hash
-        run: |
-          {
-            echo "### milestone_escrow.wasm"
-            echo
-            echo "| commit | sha256 |"
-            echo "|---|---|"
-            echo "| \`$GITHUB_SHA\` | \`$(cut -d' ' -f1 dist/milestone_escrow.wasm.sha256)\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          cat dist/build-info.json
-
-      - name: Upload wasm
-        uses: actions/upload-artifact@v4
-        with:
-          name: milestone_escrow-wasm-${{ github.sha }}
-          path: dist/
+            bindings/ts
