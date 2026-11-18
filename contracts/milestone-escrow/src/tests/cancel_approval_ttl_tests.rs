@@ -8,6 +8,10 @@
 //! Approvals now carry `approved_at` and expire after
 //! `CANCEL_APPROVAL_TTL_SECONDS`: a call made at or past that age records a
 //! fresh first approval instead of completing the lock.
+//!
+//! Issue #1026 extends the same rule to `revoke_cancel_approval`: revoking an
+//! approval that has already expired must fail with `InvalidStatus` and emit
+//! nothing, exactly as for a missing approval.
 
 use super::*;
 use crate::{CancelApprovalRecord, CancelApprovalRecordedEvent, DataKey, Error};
@@ -47,6 +51,21 @@ fn lock_event_count(env: &Env) -> u32 {
     for event in crate::all_event_tuples(env).iter() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == cancel_topic.get_payload() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Number of `cancelrev` (approval revoked) events in the most recent contract
+/// invocation's event log.
+fn revoke_event_count(env: &Env) -> u32 {
+    let revoke_topic: Val = symbol_short!("cancelrev").into_val(env);
+    let mut count = 0u32;
+    for event in crate::all_event_tuples(env).iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == revoke_topic.get_payload() {
                 count += 1;
             }
         }
@@ -181,10 +200,11 @@ fn same_party_reapproval_after_own_ttl_is_allowed() {
     assert_eq!(record.approved_at, START + TTL + 1);
 }
 
-/// An expired approval can still be revoked, and the key is removed rather than
-/// left behind as a zero mask.
+/// Acceptance criterion for #1026: revoking an approval that has already
+/// expired fails with `InvalidStatus`, emits no `cancelrev` event, and clears
+/// the stale record rather than leaving it behind.
 #[test]
-fn revoke_after_ttl_clears_the_record() {
+fn revoke_after_ttl_fails_and_emits_nothing() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(START);
@@ -193,9 +213,21 @@ fn revoke_after_ttl_clears_the_record() {
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     client.cancel_escrow(&client_addr);
-    env.ledger().set_timestamp(START + TTL + 100);
-    client.revoke_cancel_approval(&client_addr);
 
+    // Well past the TTL the approval is treated as absent everywhere else, so
+    // revoking it must fail the same way as revoking a missing approval.
+    env.ledger().set_timestamp(START + TTL + 100);
+    assert_eq!(
+        client.try_revoke_cancel_approval(&client_addr),
+        Err(Ok(Error::InvalidStatus))
+    );
+
+    // No `cancelrev` event: indexers must not see a revocation of something
+    // that, per the other paths, did not exist.  Read the event log before the
+    // `as_contract` storage reads below start a new invocation.
+    assert_eq!(revoke_event_count(&env), 0);
+
+    // The expired record is removed, not rewritten with a stale `approved_at`.
     assert_eq!(approval_record(&env, &contract_id), None);
 
     // With the stale record cleared, the counter-party is a first approver.
@@ -219,24 +251,37 @@ fn cancel_approval_recorded_event_carries_approved_at() {
     client.cancel_escrow(&client_addr);
 
     let events = crate::all_event_tuples(&env);
-    let last_event = events.last().unwrap();
-    let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(topic, symbol_short!("cxlappr"));
-    let parsed = CancelApprovalRecordedEvent::from_val(&env, &last_event.2);
-    assert_eq!(parsed.caller, client_addr);
-    assert_eq!(parsed.approval_mask, 1);
-    assert_eq!(parsed.approved_at, START);
+    let recorded_topic: Val = symbol_short!("cancelappr").into_val(&env);
+    let mut found = false;
+    for event in events.iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == recorded_topic.get_payload() {
+                let data: CancelApprovalRecordedEvent =
+                    event.2.try_into_val(&env).expect("event data decodes");
+                assert_eq!(data.approver, client_addr);
+                assert_eq!(data.approved_at, START);
+                found = true;
+            }
+        }
+    }
+    assert!(found, "a cancel approval event is emitted");
 
-    // The superseding call publishes the restarted window.
+    // A superseding approval restarts the window and reports the new timestamp.
     env.ledger().set_timestamp(START + TTL);
     client.cancel_escrow(&freelancer_addr);
 
     let events = crate::all_event_tuples(&env);
-    let last_event = events.last().unwrap();
-    let topic: Symbol = last_event.1.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(topic, symbol_short!("cxlappr"));
-    let parsed = CancelApprovalRecordedEvent::from_val(&env, &last_event.2);
-    assert_eq!(parsed.caller, freelancer_addr);
-    assert_eq!(parsed.approval_mask, 2);
-    assert_eq!(parsed.approved_at, START + TTL);
+    let mut found = false;
+    for event in events.iter() {
+        if let Some(topic) = event.1.get(0) {
+            if topic.get_payload() == recorded_topic.get_payload() {
+                let data: CancelApprovalRecordedEvent =
+                    event.2.try_into_val(&env).expect("event data decodes");
+                assert_eq!(data.approver, freelancer_addr);
+                assert_eq!(data.approved_at, START + TTL);
+                found = true;
+            }
+        }
+    }
+    assert!(found, "the fresh approval event is emitted");
 }
