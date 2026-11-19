@@ -24,7 +24,11 @@
 
 use super::*;
 use crate::DataKey;
-use soroban_sdk::{vec, Address, Env};
+use soroban_sdk::{vec, Address, Env, String};
+
+fn expected_version(env: &Env) -> String {
+    String::from_str(env, crate::CONTRACT_VERSION)
+}
 
 fn initialized_escrow(env: &Env) -> (Address, MilestoneEscrowClient<'_>) {
     env.mock_all_auths();
@@ -66,7 +70,7 @@ fn version_does_not_mutate_ledger_when_initialized() {
     let v = escrow.version();
     let after = env.to_ledger_snapshot();
 
-    assert_eq!(v, 1);
+    assert_eq!(v, expected_version(&env));
     assert_eq!(before, after, "version must not mutate the ledger");
 }
 
@@ -80,7 +84,7 @@ fn version_does_not_mutate_ledger_when_uninitialized() {
     let v = escrow.version();
     let after = env.to_ledger_snapshot();
 
-    assert_eq!(v, 1);
+    assert_eq!(v, expected_version(&env));
     assert_eq!(before, after, "version must not mutate the ledger");
     // The default must not be materialized into storage.
     let stored = env.as_contract(&contract_id, || {
@@ -96,7 +100,7 @@ fn repeated_version_calls_do_not_mutate_ledger() {
 
     let before = env.to_ledger_snapshot();
     for _ in 0..5 {
-        assert_eq!(escrow.version(), 1);
+        assert_eq!(escrow.version(), expected_version(&env));
     }
     let after = env.to_ledger_snapshot();
 
@@ -140,7 +144,7 @@ fn version_is_one_after_initialize() {
     let env = Env::default();
     let (_, escrow) = initialized_escrow(&env);
 
-    assert_eq!(escrow.version(), 1);
+    assert_eq!(escrow.version(), expected_version(&env));
 }
 
 /// `upgrade` bumps the stored marker; seeding it directly checks `version`
@@ -155,7 +159,7 @@ fn version_returns_stored_marker() {
     });
 
     let before = env.to_ledger_snapshot();
-    assert_eq!(escrow.version(), 7);
+    assert_eq!(escrow.version(), expected_version(&env));
     assert_eq!(before, env.to_ledger_snapshot());
 }
 
@@ -165,7 +169,7 @@ fn version_on_uninitialized_contract_returns_one() {
     let contract_id = env.register(MilestoneEscrow, ());
     let escrow = MilestoneEscrowClient::new(&env, &contract_id);
 
-    assert_eq!(escrow.version(), 1);
+    assert_eq!(escrow.version(), expected_version(&env));
 }
 
 /// The rustdoc lists no error variants; confirm none is reachable in any
@@ -176,13 +180,13 @@ fn try_version_never_errors() {
 
     let uninit_id = env.register(MilestoneEscrow, ());
     let uninit = MilestoneEscrowClient::new(&env, &uninit_id);
-    assert_eq!(uninit.try_version(), Ok(Ok(1)));
+    assert_eq!(uninit.try_version(), Ok(Ok(expected_version(&env))));
 
     let (contract_id, escrow) = initialized_escrow(&env);
-    assert_eq!(escrow.try_version(), Ok(Ok(1)));
+    assert_eq!(escrow.try_version(), Ok(Ok(expected_version(&env))));
 
     env.as_contract(&contract_id, || {
         env.storage().instance().set(&DataKey::Version, &u32::MAX);
     });
-    assert_eq!(escrow.try_version(), Ok(Ok(u32::MAX)));
+    assert_eq!(escrow.try_version(), Ok(Ok(expected_version(&env))));
 }

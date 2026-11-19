@@ -91,7 +91,10 @@ fn deploy_with_constructor_args_succeeds_and_asserts_stored_state() {
     assert_eq!(job.milestones.get(1).unwrap().amount, 600_i128);
     assert!(!job.funded);
 
-    assert_eq!(escrow.version(), 1u32);
+    assert_eq!(
+        escrow.version(),
+        soroban_sdk::String::from_str(&env, crate::CONTRACT_VERSION)
+    );
     assert_eq!(escrow.get_funding_mode(), FundingMode::Upfront);
     assert_eq!(escrow.get_arbiter_fee_bps(), 0);
     assert!(escrow.get_whitelisted_tokens().contains(&p.token));

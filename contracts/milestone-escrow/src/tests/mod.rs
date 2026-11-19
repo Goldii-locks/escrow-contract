@@ -6515,7 +6515,10 @@ fn test_upgrade_version_is_one_after_initialize() {
 
     let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    assert_eq!(client.version(), 1u32);
+    assert_eq!(
+        client.version(),
+        String::from_str(&env, crate::CONTRACT_VERSION)
+    );
 }
 
 /// When the version counter is at u32::MAX the call must not return
@@ -6907,7 +6910,10 @@ fn test_version_returns_one_after_initialize() {
 
     let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    assert_eq!(client.version(), 1u32);
+    assert_eq!(
+        client.version(),
+        String::from_str(&env, crate::CONTRACT_VERSION)
+    );
 }
 
 fn upgrade_event_count(env: &Env) -> u32 {

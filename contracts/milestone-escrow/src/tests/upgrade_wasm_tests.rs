@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::{DataKey, Error, MilestoneStatus};
-use soroban_sdk::{Address, BytesN, Env, Symbol, Val};
+use soroban_sdk::{Address, BytesN, Env, String, Symbol, Val};
 
 const ESCROW_V2_WASM: &[u8] = include_bytes!("../../testdata/escrow_v2.wasm");
 
@@ -52,7 +52,7 @@ fn upgrade_to_v2_wasm_preserves_state_and_runs_new_code() {
     assert!(call_v2_only(&env, &contract_id));
 
     // Version marker bumped from the implicit 1 to 2.
-    assert_eq!(client.version(), 2);
+    assert_eq!(client.version(), String::from_str(&env, crate::CONTRACT_VERSION));
     let stored_version: Option<u32> = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::Version)
     });
@@ -101,7 +101,7 @@ fn upgrade_rejects_version_overflow() {
 
     // The failed call rolled back: still v1 code and the same version.
     assert!(!call_v2_only(&env, &contract_id));
-    assert_eq!(client.version(), u32::MAX);
+    assert_eq!(client.version(), String::from_str(&env, crate::CONTRACT_VERSION));
 }
 
 /// A v2 whose `Milestone` layout differs from what v1 wrote cannot decode the

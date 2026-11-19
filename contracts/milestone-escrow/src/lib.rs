@@ -12,11 +12,25 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
-    ContractExecutable, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec,
+    contract, contracterror, contractimpl, contractmeta, contracttype, symbol_short, token, Address,
+    BytesN, ContractExecutable, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 pub mod math;
+
+/// Code version embedded in the WASM and returned by `version()`.
+///
+/// This is a compile-time constant taken from Cargo.toml. It must not be
+/// confused with `SCHEMA_VERSION` (the storage layout version) or with the
+/// `DataKey::Version` marker, which is retained only as a migration marker.
+pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+contractmeta!(key = "name", val = "milesto-milestone-escrow");
+contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
+contractmeta!(
+    key = "source",
+    val = "https://github.com/Goldii-locks/escrow-contract"
+);
 
 /// Maximum number of ratio slots accepted by `compute_ratio_allocation`.
 /// A multisig setup with more than this many signers is operationally
@@ -432,7 +446,8 @@ pub struct EscrowState {
     /// `fee_allocation` is all zeros.
     pub fee_allocation_set: bool,
     pub fee_allocation: PlatformFeeAllocation,
-    pub version: u32,
+    /// Code version of the WASM serving this read (`CONTRACT_VERSION`).
+    pub version: String,
 }
 
 #[contracttype]
@@ -9177,37 +9192,25 @@ impl MilestoneEscrow {
         Ok(None)
     }
 
-    /// Return the contract's code version.
+    /// Return the version of the code that is actually running.
     ///
-    /// # Returns
-    /// The `u32` stored under the instance key `DataKey::Version`:
-    /// * `1` after `initialize` (which writes the marker `1u32`).
-    /// * Incremented by exactly one on every successful `upgrade`.
-    /// * `1` when the key is absent (the contract has not been initialized),
-    ///   i.e. the version of the code that shipped before any upgrade.
+    /// The value is the compile-time `CONTRACT_VERSION` from Cargo.toml and is
+    /// also embedded in the WASM as `contractmeta!(key = "version", ...)`.
+    /// Unlike the old implementation it does not read the `DataKey::Version`
+    /// storage marker: that marker counted upgrades (and even incremented on a
+    /// downgrade), so two deployments of identical code could report different
+    /// values. `DataKey::Version` is retained solely as a migration marker.
     ///
     /// # Guarantees
-    /// * **Read-only.**  Performs a single instance-storage `get` and nothing
-    ///   else: no `set`, `remove`, `extend_ttl`, or event publish in instance,
-    ///   persistent, or temporary storage.  The whole ledger is byte-identical
-    ///   before and after the call (enforced by `version_tests`).
+    /// * **Read-only.** No storage access at all: no `set`, `remove`,
+    ///   `extend_ttl`, or event publish in any storage durability.
     /// * Requires no authorization and is safe to call on an uninitialized
     ///   contract.
     ///
     /// # Errors
-    /// None.  `version` is infallible: it returns a bare `u32`, and the only
-    /// absent-state case (uninitialized contract) maps to the default `1`
-    /// rather than an error.
-    pub fn version(env: Env) -> u32 {
-        Self::read_version(&env)
-    }
-
-    /// Read path behind `version`.  Takes `&Env` and returns a plain value so
-    /// callers cannot thread a mutation through it.
-    ///
-    /// **This function must contain only read operations.**
-    fn read_version(env: &Env) -> u32 {
-        env.storage().instance().get(&DataKey::Version).unwrap_or(1)
+    /// None. `version` is infallible.
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, CONTRACT_VERSION)
     }
 
     /// Return the storage layout version (see `SCHEMA_VERSION`).
@@ -9350,7 +9353,7 @@ impl MilestoneEscrow {
                 treasury_bps: 0,
                 locked: false,
             }),
-            version: Self::read_version(&env),
+            version: String::from_str(&env, CONTRACT_VERSION),
         })
     }
 
