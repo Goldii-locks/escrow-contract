@@ -115,3 +115,44 @@ fn test_get_reputation_uninitialized_returns_error() {
         Err(Ok(Error::NotInitialized))
     );
 }
+
+/// Issue #736: every reputation increment publishes a `rep` event carrying
+/// the address, the new score and the milestone responsible for the change.
+#[test]
+fn reputation_change_emits_event_for_both_parties() {
+    use crate::ReputationChangedEvent;
+    use soroban_sdk::{symbol_short, FromVal, IntoVal, Val};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let fx = EscrowFixture::new(&env).funded().build();
+    let (client_addr, freelancer_addr, client, contract_id) =
+        (fx.client.clone(), fx.freelancer.clone(), fx.escrow, fx.contract_id);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.approve_milestone(&client_addr, &0u32);
+
+    let topic_val: Val = symbol_short!("rep").into_val(&env);
+    let events: std::vec::Vec<ReputationChangedEvent> = crate::all_event_tuples(&env)
+        .iter()
+        .filter(|event| {
+            event.0 == contract_id
+                && event
+                    .1
+                    .get(0)
+                    .is_some_and(|t| t.get_payload() == topic_val.get_payload())
+        })
+        .map(|event| ReputationChangedEvent::from_val(&env, &event.2))
+        .collect();
+
+    assert_eq!(events.len(), 2, "both parties must emit a rep event");
+    for address in [&client_addr, &freelancer_addr] {
+        let emitted = events
+            .iter()
+            .find(|event| &event.address == address)
+            .expect("missing reputation event for party");
+        assert_eq!(emitted.new_score, 1);
+        assert_eq!(emitted.milestone_index, 0);
+    }
+}

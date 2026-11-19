@@ -12,11 +12,25 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
-    ContractExecutable, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec,
+    contract, contracterror, contractimpl, contractmeta, contracttype, symbol_short, token, Address,
+    BytesN, ContractExecutable, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 pub mod math;
+
+/// Code version embedded in the WASM and returned by `version()`.
+///
+/// This is a compile-time constant taken from Cargo.toml. It must not be
+/// confused with `SCHEMA_VERSION` (the storage layout version) or with the
+/// `DataKey::Version` marker, which is retained only as a migration marker.
+pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+contractmeta!(key = "name", val = "milesto-milestone-escrow");
+contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
+contractmeta!(
+    key = "source",
+    val = "https://github.com/Goldii-locks/escrow-contract"
+);
 
 /// Maximum number of ratio slots accepted by `compute_ratio_allocation`.
 /// A multisig setup with more than this many signers is operationally
@@ -432,7 +446,8 @@ pub struct EscrowState {
     /// `fee_allocation` is all zeros.
     pub fee_allocation_set: bool,
     pub fee_allocation: PlatformFeeAllocation,
-    pub version: u32,
+    /// Code version of the WASM serving this read (`CONTRACT_VERSION`).
+    pub version: String,
 }
 
 #[contracttype]
@@ -991,6 +1006,19 @@ pub struct TaxWithholdingDeductionsEvent {
     pub tax_amount: i128,
     pub net_amount: i128,
     pub tax_rate_bps: u32,
+}
+
+/// Emitted whenever a reputation score changes, so indexers can follow score
+/// history without polling `get_reputation` for every address after a release.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReputationChangedEvent {
+    /// Address whose score changed (client or freelancer).
+    pub address: Address,
+    /// Score stored after the increment.
+    pub new_score: u32,
+    /// Milestone whose full release caused the change.
+    pub milestone_index: u32,
 }
 
 #[contracttype]
@@ -2134,6 +2162,17 @@ impl MilestoneEscrow {
         Ok(meta)
     }
 
+    /// Fee changes are only unilateral before funding. Once the parties have
+    /// committed funds, the allocation is frozen into `JobMeta` and any change
+    /// needs both parties' signatures (issue #694).
+    fn require_fee_allocation_change_allowed(env: &Env) -> Result<(), Error> {
+        let meta = Self::load_job_meta(env)?;
+        if meta.funded {
+            Self::require_client_and_freelancer_consent(env)?;
+        }
+        Ok(())
+    }
+
     /// The one "has `initialize` run?" predicate. `DataKey::Job` is written by
     /// every initialisation path and is what `load_job_meta` reads, so it is
     /// the marker; do not test `Admin` or `Version` ad hoc.
@@ -2998,10 +3037,19 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    fn increment_reputation(env: &Env, address: &Address) {
+    fn increment_reputation(env: &Env, address: &Address, milestone_index: u32) {
         let key = DataKey::Reputation(address.clone());
         let current: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(current + 1));
+        let new_score = current + 1;
+        env.storage().persistent().set(&key, &new_score);
+        env.events().publish(
+            (symbol_short!("rep"),),
+            ReputationChangedEvent {
+                address: address.clone(),
+                new_score,
+                milestone_index,
+            },
+        );
     }
 
     fn checked_add_amount(total: i128, amount: i128) -> Result<i128, Error> {
@@ -5100,8 +5148,8 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(env, milestone_index, &milestone);
         Self::clear_time_ext(env, milestone_index);
-        Self::increment_reputation(env, &meta.client);
-        Self::increment_reputation(env, &meta.freelancer);
+        Self::increment_reputation(env, &meta.client, milestone_index);
+        Self::increment_reputation(env, &meta.freelancer, milestone_index);
 
         // INTERACTION: Token transfer is the sole external call and executes only
         //    after all state mutations have been durably persisted.
@@ -5256,8 +5304,8 @@ impl MilestoneEscrow {
         if updated_milestone.released_amount == updated_milestone.amount {
             updated_milestone.status = MilestoneStatus::Released;
             Self::clear_time_ext(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         } else {
             updated_milestone.status = MilestoneStatus::PartiallyReleased;
         }
@@ -5346,8 +5394,8 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
         Self::clear_time_ext(&env, milestone_index);
-        Self::increment_reputation(&env, &meta.client);
-        Self::increment_reputation(&env, &meta.freelancer);
+        Self::increment_reputation(&env, &meta.client, milestone_index);
+        Self::increment_reputation(&env, &meta.freelancer, milestone_index);
 
         let event_remaining = milestone
             .amount
@@ -5569,8 +5617,8 @@ impl MilestoneEscrow {
             milestone.released_amount = milestone.amount;
             milestone.status = MilestoneStatus::Released;
             Self::store_milestone(&env, milestone_index, &milestone);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         // INTERACTION: one transfer for the whole batch.
@@ -6046,8 +6094,8 @@ impl MilestoneEscrow {
             if payout > 0 {
                 Self::pay_or_credit(&env, &token_client, &meta.freelancer, &payout)?;
             }
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         } else {
             milestone.status = MilestoneStatus::Refunded;
             Self::store_milestone(&env, milestone_index, &milestone);
@@ -6248,8 +6296,8 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
@@ -7196,6 +7244,7 @@ impl MilestoneEscrow {
         // Both the Admin read and all subsequent instance reads/writes touch
         // instance storage only, so the whole function uses a single ledger entry.
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        Self::require_fee_allocation_change_allowed(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
         // Precondition: validate illegal source state (locked allocation) before any ledger write
@@ -7346,6 +7395,9 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        // An admin who locked the allocation cannot unlock and rewrite it
+        // alone once the escrow is funded (issue #694).
+        Self::require_fee_allocation_change_allowed(&env)?;
 
         let current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
@@ -7685,8 +7737,8 @@ impl MilestoneEscrow {
 
             if milestone.released_amount >= milestone.amount {
                 milestone.status = MilestoneStatus::Released;
-                Self::increment_reputation(&env, &meta.client);
-                Self::increment_reputation(&env, &meta.freelancer);
+                Self::increment_reputation(&env, &meta.client, milestone_index);
+                Self::increment_reputation(&env, &meta.freelancer, milestone_index);
             } else {
                 milestone.status = MilestoneStatus::PartiallyReleased;
             }
@@ -8946,37 +8998,25 @@ impl MilestoneEscrow {
         Ok(None)
     }
 
-    /// Return the contract's code version.
+    /// Return the version of the code that is actually running.
     ///
-    /// # Returns
-    /// The `u32` stored under the instance key `DataKey::Version`:
-    /// * `1` after `initialize` (which writes the marker `1u32`).
-    /// * Incremented by exactly one on every successful `upgrade`.
-    /// * `1` when the key is absent (the contract has not been initialized),
-    ///   i.e. the version of the code that shipped before any upgrade.
+    /// The value is the compile-time `CONTRACT_VERSION` from Cargo.toml and is
+    /// also embedded in the WASM as `contractmeta!(key = "version", ...)`.
+    /// Unlike the old implementation it does not read the `DataKey::Version`
+    /// storage marker: that marker counted upgrades (and even incremented on a
+    /// downgrade), so two deployments of identical code could report different
+    /// values. `DataKey::Version` is retained solely as a migration marker.
     ///
     /// # Guarantees
-    /// * **Read-only.**  Performs a single instance-storage `get` and nothing
-    ///   else: no `set`, `remove`, `extend_ttl`, or event publish in instance,
-    ///   persistent, or temporary storage.  The whole ledger is byte-identical
-    ///   before and after the call (enforced by `version_tests`).
+    /// * **Read-only.** No storage access at all: no `set`, `remove`,
+    ///   `extend_ttl`, or event publish in any storage durability.
     /// * Requires no authorization and is safe to call on an uninitialized
     ///   contract.
     ///
     /// # Errors
-    /// None.  `version` is infallible: it returns a bare `u32`, and the only
-    /// absent-state case (uninitialized contract) maps to the default `1`
-    /// rather than an error.
-    pub fn version(env: Env) -> u32 {
-        Self::read_version(&env)
-    }
-
-    /// Read path behind `version`.  Takes `&Env` and returns a plain value so
-    /// callers cannot thread a mutation through it.
-    ///
-    /// **This function must contain only read operations.**
-    fn read_version(env: &Env) -> u32 {
-        env.storage().instance().get(&DataKey::Version).unwrap_or(1)
+    /// None. `version` is infallible.
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, CONTRACT_VERSION)
     }
 
     /// Return the storage layout version (see `SCHEMA_VERSION`).
@@ -9118,7 +9158,7 @@ impl MilestoneEscrow {
                 treasury_bps: 0,
                 locked: false,
             }),
-            version: Self::read_version(&env),
+            version: String::from_str(&env, CONTRACT_VERSION),
         })
     }
 
@@ -9247,6 +9287,9 @@ impl MilestoneEscrow {
     /// * `InvalidAmount`   – Zero/negative principal, rate, or duration, or an
     ///                       intermediate checked multiplication overflows.
     /// * `InvalidRatio`   – `annual_rate_bps` exceeds 10_000 (unsupported).
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn escrow_interest_yield(
         env: Env,
         admin: Address,
@@ -9353,6 +9396,9 @@ impl MilestoneEscrow {
     ///   `set_interest_yield_consent` instead.
     /// * `EscrowLocked`   – Configuration is locked for execution.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10_000 bps.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn set_escrow_interest_yield(
         env: Env,
         admin: Address,
@@ -9428,6 +9474,9 @@ impl MilestoneEscrow {
     ///   stored admin.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10 000 bps.
     /// * `EscrowLocked`   – Configuration is locked for execution.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn set_interest_yield_consent(
         env: Env,
         admin: Address,
@@ -9532,6 +9581,9 @@ impl MilestoneEscrow {
     /// * `Unauthorized`    – `admin` is neither the `FeeManager` delegate nor, if none is set, the
     ///   stored admin.
     /// * `InvalidStatus`   – The interest/yield configuration is already locked.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn lock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         // Guard 1 — authorization. `admin.require_auth()` inside the helper makes
@@ -9579,6 +9631,9 @@ impl MilestoneEscrow {
     /// * `Unauthorized` - `admin` is neither the `FeeManager` delegate nor, if none is set, the
     ///   stored admin.
     /// * `InvalidStatus` - Interest/yield lock is not active (already unlocked).
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
@@ -9604,6 +9659,9 @@ impl MilestoneEscrow {
     }
 
     /// Return whether the interest/yield share configuration is locked.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn is_escrow_interest_yield_locked(env: Env) -> Result<bool, Error> {
         Ok(Self::load_interest_yield_state(&env)?.locked)
     }
@@ -9631,6 +9689,9 @@ impl MilestoneEscrow {
     /// * `EscrowLocked`  – Interest yield state is locked.
     /// * `InvalidRatio`  – Ratios do not sum to `BPS_SCALE`.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn interest_yield_split_refund(
         env: Env,
         total_amount: i128,
@@ -9716,6 +9777,9 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Configuration has never been set.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn get_escrow_interest_yield(env: Env) -> Result<EscrowInterestYieldState, Error> {
         Self::load_interest_yield_state(&env)
     }
@@ -9845,6 +9909,9 @@ impl MilestoneEscrow {
     /// * `Unauthorized`   – `admin` is neither the `FeeManager` delegate nor, if none is set, the
     ///   stored admin.
     /// * `InvalidRatio`   – `rate_bps` exceeds 10 000.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn admin_set_yield_rate(env: Env, admin: Address, rate_bps: u32) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         // Precondition 1: contract must be fully initialised (job metadata
@@ -9938,6 +10005,9 @@ impl MilestoneEscrow {
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidAmount`   – `accrued_amount` ≤ 0 or the running total would
     ///                       overflow `i128`.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn admin_accrue_yield(
         env: Env,
         admin: Address,
@@ -10315,8 +10385,8 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
@@ -11250,6 +11320,9 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn get_yield_info(env: Env) -> Result<(u32, i128, bool), Error> {
         // Verify the contract is initialized before returning state.
         Self::load_job_meta(&env)?;
