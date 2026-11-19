@@ -67,6 +67,9 @@ fn seeded<'a>(
                 auto_release_seconds: 0,
                 milestone_count: 0,
                 total_amount: 0,
+                fee_client_bps: 0,
+                fee_freelancer_bps: 0,
+                fee_treasury_bps: 0,
             },
         );
         if let Some(proposal) = pending {

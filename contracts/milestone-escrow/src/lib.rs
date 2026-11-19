@@ -488,6 +488,11 @@ struct JobMeta {
     auto_release_seconds: u64,
     milestone_count: u32,
     total_amount: i128,
+    /// Fee allocation agreed at fund time. Once funded, fee changes require
+    /// both parties' consent (issue #694).
+    fee_client_bps: u32,
+    fee_freelancer_bps: u32,
+    fee_treasury_bps: u32,
 }
 
 /// Result of a split-refund allocation between client and freelancer.
@@ -2174,6 +2179,17 @@ impl MilestoneEscrow {
         Ok(meta)
     }
 
+    /// Fee changes are only unilateral before funding. Once the parties have
+    /// committed funds, the allocation is frozen into `JobMeta` and any change
+    /// needs both parties' signatures (issue #694).
+    fn require_fee_allocation_change_allowed(env: &Env) -> Result<(), Error> {
+        let meta = Self::load_job_meta(env)?;
+        if meta.funded {
+            Self::require_client_and_freelancer_consent(env)?;
+        }
+        Ok(())
+    }
+
     /// The one "has `initialize` run?" predicate. `DataKey::Job` is written by
     /// every initialisation path and is what `load_job_meta` reads, so it is
     /// the marker; do not test `Admin` or `Version` ad hoc.
@@ -3614,6 +3630,9 @@ impl MilestoneEscrow {
                 auto_release_seconds: 0,
                 milestone_count: 0,
                 total_amount: 0,
+                fee_client_bps: 0,
+                fee_freelancer_bps: 0,
+                fee_treasury_bps: 0,
             },
         );
 
@@ -3678,6 +3697,9 @@ impl MilestoneEscrow {
             auto_release_seconds,
             milestone_count,
             total_amount,
+            fee_client_bps: 0,
+                fee_freelancer_bps: 0,
+                fee_treasury_bps: 0,
         };
 
         Self::store_job_meta(&env, &meta);
@@ -4152,6 +4174,14 @@ impl MilestoneEscrow {
 
         let total_amount = Self::validate_fund_amount(&meta)?;
 
+        // Freeze the agreed fee schedule at fund time (issue #694). Later
+        // admin changes require both parties' consent.
+        if let Ok(allocation) = Self::load_platform_fee_allocation(&env) {
+            meta.fee_client_bps = allocation.client_bps;
+            meta.fee_freelancer_bps = allocation.freelancer_bps;
+            meta.fee_treasury_bps = allocation.treasury_bps;
+        }
+
         // Update status BEFORE token transfer to ensure state is persisted
         // and prevent double-funding via reentrancy
         meta.funded = true;
@@ -4237,6 +4267,11 @@ impl MilestoneEscrow {
             }
         }
         if all_funded {
+            if let Ok(allocation) = Self::load_platform_fee_allocation(&env) {
+                meta.fee_client_bps = allocation.client_bps;
+                meta.fee_freelancer_bps = allocation.freelancer_bps;
+                meta.fee_treasury_bps = allocation.treasury_bps;
+            }
             meta.funded = true;
             Self::store_job_meta(&env, &meta);
         }
@@ -7470,6 +7505,7 @@ impl MilestoneEscrow {
         // Both the Admin read and all subsequent instance reads/writes touch
         // instance storage only, so the whole function uses a single ledger entry.
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        Self::require_fee_allocation_change_allowed(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
         // Precondition: validate illegal source state (locked allocation) before any ledger write
@@ -7615,6 +7651,9 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        // An admin who locked the allocation cannot unlock and rewrite it
+        // alone once the escrow is funded (issue #694).
+        Self::require_fee_allocation_change_allowed(&env)?;
 
         let current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
