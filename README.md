@@ -290,6 +290,7 @@ Events carry party addresses as extra topics for `getEvents` filtering; see
 | 54 | `NoPendingMultiSigConfig` | `execute_multisig_config` / `cancel_multisig_config_proposal` found no pending signer-set change |
 | 55 | `DisputePending` | `replace_arbiter` was called while a milestone is `Disputed` |
 | 56 | `ReviewWindowClosed` | `raise_dispute` or `request_revision` was called on a `Delivered` milestone after its auto-release deadline |
+| 57 | `InvalidDeadline` | `set_milestone_due_dates` got a non-zero due date at or before the current ledger timestamp |
 
 ## Milestone States
 
@@ -375,8 +376,11 @@ cargo test -p milestone-escrow
 
 `contracts/escrow-factory` deploys one escrow per job (issue #666). It is
 deployed with `--admin <platform-admin> --wasm_hash <escrow-wasm-hash>`
-constructor arguments. The admin allows tokens with `allow_token` and can
-point the factory at a new escrow build with `set_wasm_hash`.
+constructor arguments. The admin allows tokens with `allow_token`, removes
+them again with `disallow_token`, and can point the factory at a new escrow
+build with `set_wasm_hash`. Token allow/deny changes emit `allowed` and
+`disallowd` events (the token address is the second topic); removing an absent
+token is a no-op. Existing escrows keep their own token and are unaffected.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
@@ -384,6 +388,10 @@ client's signature. It deploys the escrow with the platform admin as its
 admin and emits `created` (topics: `created`, client, freelancer, arbiter) with the
 new escrow's address, token, total amount, milestone count, auto-release window,
 settings and the escrow WASM hash. See "Escrow factory events" in `EVENTS.md`.
+The deployment salt is `sha256(client.to_xdr() || salt)`, so the same `salt`
+used by different clients yields different escrow addresses and cannot be
+front-run; frontends should call the read-only `escrow_address(client, salt)`
+to predict the address.
 
 ## Deploy (Testnet)
 

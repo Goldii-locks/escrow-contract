@@ -37,6 +37,7 @@ freelancer when the client acts and the client otherwise:
 | `cancel`   | `caller`, counterparty                |
 | `cxlappr`  | `caller`, counterparty                |
 | `cancelrev`| `caller`, counterparty                |
+| `arbchg`   | `new_arbiter`                         |
 
 ## Events
 

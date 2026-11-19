@@ -105,6 +105,17 @@ fn approve_topics_keep_event_name_and_index_client() {
 }
 
 #[test]
+fn arbchg_topics_keep_event_name_and_index_new_arbiter() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, _, _, _, _, _, escrow) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let new_arbiter = Address::generate(&env);
+    escrow.replace_arbiter(&new_arbiter);
+
+    assert_topics(&env, symbol_short!("arbchg"), &[new_arbiter]);
+}
+
+#[test]
 fn dispute_topics_keep_event_name_and_index_caller() {
     let env = Env::default();
     env.mock_all_auths();

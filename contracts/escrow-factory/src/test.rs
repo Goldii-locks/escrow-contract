@@ -275,6 +275,85 @@ fn created_event_carries_party_topics_and_deployment_details() {
     assert_eq!(event.wasm_hash, factory.get_wasm_hash());
 }
 
+#[test]
+fn disallow_token_removes_allowed_token_and_blocks_new_escrows() {
+    let (env, fid, admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+
+    // Only the stored admin may change the allowlist.
+    assert_eq!(
+        factory.try_disallow_token(&Address::generate(&env), &token),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(factory.get_allowed_tokens().len(), 1);
+
+    // Removing a token that was never allowed is a defined no-op.
+    factory.disallow_token(&admin, &Address::generate(&env));
+    assert_eq!(factory.get_allowed_tokens().len(), 1);
+
+    factory.disallow_token(&admin, &token);
+    let (topics, _) = last_event(&env);
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("disallowd"));
+    let event_token: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(event_token, token);
+    assert_eq!(factory.get_allowed_tokens().len(), 0);
+
+    // A second removal is also a no-op.
+    factory.disallow_token(&admin, &token);
+    assert_eq!(factory.get_allowed_tokens().len(), 0);
+
+    assert_eq!(
+        factory.try_create_escrow(
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &token,
+            &604800u64,
+            &vec![&env, 1_000_i128],
+            &zero_hashes(&env, 1),
+            &default_settings(),
+            &BytesN::from_array(&env, &[5u8; 32]),
+        ),
+        Err(Ok(Error::TokenNotAllowed))
+    );
+}
+
+#[test]
+fn salt_is_bound_to_client_and_address_is_predictable() {
+    let (env, fid, _admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let salt = BytesN::from_array(&env, &[7u8; 32]);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let amounts = vec![&env, 1_000_i128];
+    let hashes = zero_hashes(&env, 1);
+
+    let mut addresses = soroban_sdk::Vec::new(&env);
+    for _ in 0..2 {
+        let client = Address::generate(&env);
+        let predicted = factory.escrow_address(&client, &salt);
+        let deployed = factory.create_escrow(
+            &client,
+            &freelancer,
+            &arbiter,
+            &token,
+            &604800u64,
+            &amounts,
+            &hashes,
+            &default_settings(),
+            &salt,
+        );
+        assert_eq!(deployed, predicted);
+        assert_eq!(
+            escrow::Client::new(&env, &deployed).get_job().client,
+            client
+        );
+        addresses.push_back(deployed);
+    }
+    assert_ne!(addresses.get(0).unwrap(), addresses.get(1).unwrap());
+}
+
 /// Creating an escrow needs only the client's signature: the platform admin
 /// is named as the escrow admin without having to co-sign every job.
 #[test]
