@@ -3294,10 +3294,8 @@ impl MilestoneEscrow {
     ///
     /// * [`Error::InvalidAddress`] – Any address argument fails the internal
     ///   `validate_address` check, which rejects:
-    ///   - The Stellar zero account
-    ///     (`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF`),
-    ///   - The canonical Soroban zero contract address
-    ///     (`CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4`),
+    ///   - The Stellar zero account,
+    ///   - The canonical Soroban zero contract address,
     ///   - The escrow contract's own address
     ///     (`env.current_contract_address()`).
     ///   The check is applied in parameter order: `admin`, `client`,
@@ -3898,10 +3896,8 @@ impl MilestoneEscrow {
     /// * [`Error::InvalidAddress`] – `token` is one of the sentinel invalid
     ///   addresses (checked immediately after the admin check, before any
     ///   storage reads for job metadata or the whitelist):
-    ///   - The Stellar zero account
-    ///     (`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF`),
-    ///   - The canonical Soroban zero contract
-    ///     (`CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4`),
+    ///   - The Stellar zero account,
+    ///   - The canonical Soroban zero contract,
     ///   - The escrow contract's own address
     ///     (`env.current_contract_address()`).
     ///
@@ -3923,17 +3919,7 @@ impl MilestoneEscrow {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
 
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if token == zero_account || token == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &token)?;
         if token == env.current_contract_address() {
             return Err(Error::InvalidAddress);
         }
@@ -3993,17 +3979,7 @@ impl MilestoneEscrow {
 
         // Kept (unlike a bare lookup miss) so the zero sentinels still report
         // `InvalidAddress` rather than `TokenNotWhitelisted`.
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if token == zero_account || token == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &token)?;
 
         let mut whitelist: Vec<Address> =
             Self::cold_get(&env, &DataKey::WhitelistedTokens).ok_or(Error::NotInitialized)?;
@@ -4880,18 +4856,7 @@ impl MilestoneEscrow {
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
         // Check for zero addresses (both account and contract types)
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-
-        if freelancer == zero_account || freelancer == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &freelancer)?;
         freelancer.require_auth();
 
         let meta = Self::load_job_meta(&env)?;
@@ -5120,17 +5085,7 @@ impl MilestoneEscrow {
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if freelancer == zero_account || freelancer == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &freelancer)?;
         freelancer.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -5351,17 +5306,7 @@ impl MilestoneEscrow {
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_1 = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_2 = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if client == zero_1 || client == zero_2 || client == env.current_contract_address() {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &client)?;
 
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -5464,17 +5409,7 @@ impl MilestoneEscrow {
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if client == zero_account || client == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &client)?;
 
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -5628,17 +5563,7 @@ impl MilestoneEscrow {
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if client == zero_account || client == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &client)?;
 
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -5772,17 +5697,7 @@ impl MilestoneEscrow {
         // ── Caller validation (before any storage write) ─────────────────
         // Reject zero addresses before touching ledger state so that no
         // storage entry is mutated on an invalid caller.
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
 
         // require_dispute_party performs caller.require_auth() + verifies the
         // caller matches the stored client or freelancer in a single step.
@@ -5928,17 +5843,7 @@ impl MilestoneEscrow {
 
         // Validate the caller before any storage read/write so an unauthorized
         // address neither pays for the dispute lookup nor mutates state.
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
         let meta = Self::require_dispute_party(&env, &caller)?;
         if !meta.funded {
             return Err(Error::NotFunded);
@@ -6024,17 +5929,7 @@ impl MilestoneEscrow {
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
 
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
         let meta = Self::require_dispute_party(&env, &caller)?;
         if !meta.funded {
             return Err(Error::NotFunded);
@@ -6133,21 +6028,7 @@ impl MilestoneEscrow {
         Self::assert_emergency_pause_not_locked(&env)?;
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-
-        if arbiter == zero_account
-            || arbiter == zero_contract
-            || arbiter == env.current_contract_address()
-        {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &arbiter)?;
         arbiter.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -6369,21 +6250,7 @@ impl MilestoneEscrow {
     ) -> Result<RefundAllocation, Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-
-        if arbiter == zero_account
-            || arbiter == zero_contract
-            || arbiter == env.current_contract_address()
-        {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &arbiter)?;
         arbiter.require_auth();
 
         let meta = Self::load_job_meta(&env)?;
@@ -6545,17 +6412,7 @@ impl MilestoneEscrow {
     ///                      in this round (duplicate single-party call).
     pub fn cancel_escrow(env: Env, caller: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
 
         // Reject if the contract is emergency-paused.
         let emergency_paused = env
@@ -6681,17 +6538,7 @@ impl MilestoneEscrow {
     /// * `InvalidStatus`  – `caller` has no recorded approval to revoke.
     pub fn revoke_cancel_approval(env: Env, caller: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
 
         // Initialization guard runs before `require_auth` so an uninitialized
         // contract returns `NotInitialized` instead of failing on auth.
@@ -10702,17 +10549,7 @@ impl MilestoneEscrow {
     pub fn set_tax_recipient(env: Env, admin: Address, recipient: Address) -> Result<(), Error> {
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
 
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if recipient == zero_account || recipient == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &recipient)?;
 
         env.storage()
             .persistent()
