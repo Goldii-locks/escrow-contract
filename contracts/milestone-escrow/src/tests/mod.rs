@@ -117,6 +117,7 @@ mod tax_withholding_split_refund_tests;
 mod tax_withholding_tests;
 mod test_emergency_pause;
 mod test_payment_streaming_milestones;
+mod treasury_fee_tests;
 pub(crate) mod testutils;
 mod time_ext_persistence_tests;
 mod time_until_auto_release_tests;

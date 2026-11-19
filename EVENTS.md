@@ -94,6 +94,8 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `pf_lock`  | `PlatformFeeAllocationLockedEvent` | state change    |
 | `pf_ovr`   | `PlatformFeeAllocationOverrideEvent` | state change  |
 | `pf_split` | `PlatformFeeSplitCalculatedEvent`| calculation       |
+| `treasury` | `Address`                         | state change      |
+| `pf_charge`| `PlatformFeeChargedEvent`        | payout fee        |
 | `p_stream` | `PaymentStreamingEvent`          | calculation       |
 | `p_strcns` | `PaymentStreamingConsentEvent`   | state change      |
 | `m_ext`    | `MilestoneTimeExtensionEvent`    | state change      |

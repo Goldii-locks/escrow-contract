@@ -261,6 +261,8 @@ const ACCEPTANCE_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const OVERDUE_GRACE_SECONDS: u64 = 24 * 60 * 60;
 
 const BPS_SCALE: u32 = 10_000;
+/// Timelock for treasury address changes (#674): seven days.
+const TREASURY_UPDATE_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
 // Keep active escrow state available for roughly one year of ledger time.
 const TTL_THRESHOLD: u32 = 30 * 24 * 60 * 5;
 const TTL_EXTEND_TO: u32 = 365 * 24 * 60 * 5;
@@ -751,6 +753,12 @@ pub enum DataKey {
     /// Persistent: delivery deadline (ledger timestamp) of milestone `u32`,
     /// set by `set_milestone_due_dates`.  Absent or `0` means no deadline.
     DueAt(u32),
+    /// Instance: address receiving the configured treasury share of payouts.
+    /// Absent means the admin address is used, so existing deployments keep
+    /// working without a migration.
+    Treasury,
+    /// Instance: admin-timelocked treasury change awaiting execution.
+    PendingTreasury,
 }
 
 #[contracttype]
@@ -992,6 +1000,23 @@ pub struct PlatformFeeAllocation {
     pub freelancer_bps: u32,
     pub treasury_bps: u32,
     pub locked: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingTreasury {
+    pub address: Address,
+    pub effective_at: u64,
+}
+
+/// Emitted on every freelancer payout that charges a treasury fee (#674).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeChargedEvent {
+    pub recipient: Address,
+    pub gross_amount: i128,
+    pub fee_amount: i128,
+    pub treasury: Address,
 }
 
 #[contracttype]
@@ -2255,6 +2280,69 @@ impl MilestoneEscrow {
     /// * `InsufficientBalance` – the transfer failed and the contract does not
     ///   hold `amount` beyond what is already owed.
     /// * `ArithmeticOverflow`  – the credited totals overflow `i128`.
+    /// Treasury receiving platform fees. Defaults to the admin until an
+    /// admin-timelocked update is applied, so old deployments need no migration.
+    fn treasury_address(env: &Env) -> Result<Address, Error> {
+        Ok(env
+            .storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .unwrap_or_else(|| Self::load_admin(env).unwrap()))
+    }
+
+    /// Treasury share using the same rounding as `calculate_platform_fee_split`.
+    /// No allocation stored means no fee (fee-free legacy behaviour).
+    fn treasury_fee_for(env: &Env, amount: i128) -> Result<i128, Error> {
+        let allocation = match Self::load_platform_fee_allocation(env) {
+            Ok(allocation) => allocation,
+            Err(_) => return Ok(0),
+        };
+        if allocation.treasury_bps == 0 {
+            return Ok(0);
+        }
+        // For ordinary amounts use the shared split so rounding matches
+        // `calculate_platform_fee_split` exactly. At the i128 ceiling the
+        // intermediate `amount * bps` can overflow, so divide first there.
+        if amount > i128::MAX / BPS_SCALE as i128 {
+            let scale = BPS_SCALE as i128;
+            let bps = allocation.treasury_bps as i128;
+            return amount
+                .checked_div(scale)
+                .and_then(|q| q.checked_mul(bps))
+                .and_then(|q| q.checked_add(amount.checked_rem(scale)?.checked_mul(bps)?.checked_div(scale)?))
+                .ok_or(Error::ArithmeticOverflow);
+        }
+        Ok(Self::allocate_platform_fee(amount, &allocation)?.treasury_amount)
+    }
+
+    /// Pay a freelancer, deducting the configured treasury fee. Refund paths
+    /// never call this helper, so they remain fee-free.
+    fn pay_freelancer_with_fee(
+        env: &Env,
+        meta: &JobMeta,
+        token_client: &token::Client,
+        amount: &i128,
+    ) -> Result<(), Error> {
+        let fee = Self::treasury_fee_for(env, *amount)?;
+        if fee <= 0 {
+            return Self::pay_or_credit(env, token_client, &meta.freelancer, amount);
+        }
+        let net = amount.checked_sub(fee).ok_or(Error::ArithmeticOverflow)?;
+        Self::pay_or_credit(env, token_client, &meta.freelancer, &net)?;
+        let treasury = Self::treasury_address(env)?;
+        Self::pay_or_credit(env, token_client, &treasury, &fee)?;
+        env.events().publish(
+            (symbol_short!("pf_charge"),),
+            PlatformFeeChargedEvent {
+                recipient: meta.freelancer.clone(),
+                gross_amount: *amount,
+                fee_amount: fee,
+                treasury,
+            },
+        );
+        Ok(())
+    }
+
     fn pay_or_credit(
         env: &Env,
         token_client: &token::Client,
@@ -5256,7 +5344,7 @@ impl MilestoneEscrow {
         }
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &amount)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &amount)?;
 
         let mut updated_milestone = milestone;
         updated_milestone.released_amount = updated_milestone
@@ -5362,7 +5450,7 @@ impl MilestoneEscrow {
         }
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &remaining)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &remaining)?;
         milestone.released_amount = milestone.amount;
 
         milestone.status = MilestoneStatus::Released;
@@ -6020,7 +6108,7 @@ impl MilestoneEscrow {
             Self::store_milestone(&env, milestone_index, &milestone);
 
             if payout > 0 {
-                Self::pay_or_credit(&env, &token_client, &meta.freelancer, &payout)?;
+                Self::pay_freelancer_with_fee(&env, &meta, &token_client, &payout)?;
             }
             Self::increment_reputation(&env, &meta.client);
             Self::increment_reputation(&env, &meta.freelancer);
@@ -6244,7 +6332,7 @@ impl MilestoneEscrow {
             Self::pay_or_credit(&env, &token_client, &meta.client, &client_refund)?;
         }
         if freelancer_payout > 0 {
-            Self::pay_or_credit(&env, &token_client, &meta.freelancer, &freelancer_payout)?;
+            Self::pay_freelancer_with_fee(&env, &meta, &token_client, &freelancer_payout)?;
         }
 
         milestone.released_amount = milestone
@@ -7228,6 +7316,48 @@ impl MilestoneEscrow {
     /// * `InvalidRatio` - The sum of the BPS values does not equal 10,000 (BPS_SCALE).
     /// * `FeeTooHigh` - The treasury or client BPS exceeds the maximum allowed limits.
     /// * `InvalidStatus` - The allocation is locked.
+    /// Propose a treasury address change. It takes effect only after
+    /// `TREASURY_UPDATE_DELAY_SECONDS`, giving clients time to react.
+    pub fn propose_treasury_update(env: Env, admin: Address, treasury: Address) -> Result<(), Error> {
+        Self::require_role(&env, &admin, AdminRole::Operator)?;
+        Self::validate_address(&env, &treasury)?;
+        let effective_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(TREASURY_UPDATE_DELAY_SECONDS)
+            .ok_or(Error::ArithmeticOverflow)?;
+        env.storage().instance().set(
+            &DataKey::PendingTreasury,
+            &PendingTreasury {
+                address: treasury,
+                effective_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Apply a treasury change once its timelock has elapsed.
+    pub fn apply_treasury_update(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_role(&env, &admin, AdminRole::Operator)?;
+        let pending: PendingTreasury = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingTreasury)
+            .ok_or(Error::NotInitialized)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(Error::InvalidStatus);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::Treasury, &pending.address);
+        env.storage().instance().remove(&DataKey::PendingTreasury);
+        env.events().publish(
+            (symbol_short!("treasury"),),
+            pending.address,
+        );
+        Ok(())
+    }
+
     pub fn set_platform_fee_allocation(
         env: Env,
         admin: Address,
@@ -10082,7 +10212,7 @@ impl MilestoneEscrow {
         }
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &remaining)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &remaining)?;
 
         env.events().publish(
             (symbol_short!("admovrls"),),
@@ -10289,7 +10419,7 @@ impl MilestoneEscrow {
             Self::pay_or_credit(&env, &token_client, &meta.client, &client_refund)?;
         }
         if freelancer_payout > 0 {
-            Self::pay_or_credit(&env, &token_client, &meta.freelancer, &freelancer_payout)?;
+            Self::pay_freelancer_with_fee(&env, &meta, &token_client, &freelancer_payout)?;
         }
 
         milestone.released_amount = milestone
@@ -11463,7 +11593,7 @@ impl MilestoneEscrow {
             .set(&DataKey::MultisigLocked, &false);
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &remaining)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &remaining)?;
 
         env.events().publish(
             (symbol_short!("msadmrel"),),
