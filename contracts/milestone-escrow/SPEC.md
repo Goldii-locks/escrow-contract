@@ -99,7 +99,7 @@ stateDiagram-v2
 
 | Flag | Key | Set by | Cleared by | Checked by |
 |---|---|---|---|---|
-| Funded | `JobMeta.funded`, `DataKey::FundedAt` | `fund` | never | most settlement entry points (`NotFunded`) |
+| Funded | `JobMeta.funded`, `DataKey::FundedAt`, `DataKey::FundedCount` | `fund`, or the last `fund_milestone` (when `FundedCount` reaches `milestone_count`) | never | most settlement entry points (`NotFunded`) |
 | Acceptance | `DataKey::Acceptance` (bit 1 freelancer, bit 2 arbiter) | `accept_job`, `accept_arbiter` | never | `mark_delivered`, `raise_dispute`, `resolve_dispute`, `apply_dispute_arbitration_split` (`NotAccepted`), `withdraw_unaccepted` |
 | Emergency pause | `DataKey::Ep` | `emergency_pause`, `emergency_pause_admin_override` | `emergency_unpause`, `emergency_pause_admin_override` | `ensure_not_paused` and the calculators listed below |
 | Admin pause | `DataKey::Paused` | `admin_pause_escrow` | `admin_resume_escrow` | `ensure_not_paused`, `assert_not_paused` |
@@ -163,7 +163,11 @@ topic.
 
 `raise_dispute` takes a 32-byte `reason_hash` and persists a `DisputeInfo`
 record holding the ledger timestamp (`disputed_at`), the status to restore on
-escalation, the `reason_hash`, and an evidence list that starts empty (#712).
+escalation, the `reason_hash`, the caller as `raised_by` (#997), and an evidence
+list that starts empty (#712). `migrate` (schema 3 to 4) adds `raised_by` to
+disputes that were already open, using the job's client as a placeholder because
+the raiser was not stored; the `dispute` event's `caller` is authoritative for
+those.
 Either party can append up to `MAX_DISPUTE_EVIDENCE_ENTRIES` (10) hashes with
 `submit_evidence` while the milestone is `Disputed`; each submission emits
 `evidence` and is readable through `get_dispute_info`. Resolving, escalating or

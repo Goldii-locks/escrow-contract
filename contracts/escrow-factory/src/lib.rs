@@ -39,14 +39,23 @@ pub struct EscrowSettings {
     pub arbiter_fee_bps: u32,
 }
 
+/// Payload of the factory's `created` event. The party addresses are indexed
+/// as topics (`created`, `client`, `freelancer`, `arbiter`) so RPC `getEvents`
+/// can filter by participant; the data records everything needed to audit how
+/// the escrow was configured, including the exact settings and escrow WASM hash
+/// used for the deployment.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowCreatedEvent {
     pub escrow: Address,
-    pub client: Address,
-    pub freelancer: Address,
-    pub arbiter: Address,
     pub token: Address,
+    /// Sum of all milestone amounts, in the token's smallest unit.
+    pub total_amount: i128,
+    pub milestone_count: u32,
+    pub auto_release_seconds: u64,
+    pub settings: EscrowSettings,
+    /// Escrow WASM hash the factory held when it deployed this escrow.
+    pub wasm_hash: BytesN<32>,
 }
 
 #[contract]
@@ -111,6 +120,16 @@ impl EscrowFactory {
             return Err(Error::InvalidAmount);
         }
 
+        // Summed up front for the `created` event; an overflowing total can
+        // never be funded, so it is rejected like any other invalid amount.
+        let milestone_count = milestone_amounts.len();
+        let mut total_amount: i128 = 0;
+        for amount in milestone_amounts.iter() {
+            total_amount = total_amount
+                .checked_add(amount)
+                .ok_or(Error::InvalidAmount)?;
+        }
+
         let tokens = Self::load_tokens(&env)?;
         if !tokens.contains(&token) {
             return Err(Error::TokenNotAllowed);
@@ -131,7 +150,7 @@ impl EscrowFactory {
         // Deploying runs the escrow's __constructor with these arguments, so
         // the escrow is initialised in the same call that creates it.
         let escrow: Address = env.deployer().with_current_contract(salt).deploy_contract(
-            ContractExecutable::Wasm(wasm_hash),
+            ContractExecutable::Wasm(wasm_hash.clone()),
             (
                 admin.clone(),
                 client.clone(),
@@ -146,13 +165,15 @@ impl EscrowFactory {
         );
 
         env.events().publish(
-            (symbol_short!("created"),),
+            (symbol_short!("created"), client, freelancer, arbiter),
             EscrowCreatedEvent {
                 escrow: escrow.clone(),
-                client,
-                freelancer,
-                arbiter,
                 token,
+                total_amount,
+                milestone_count,
+                auto_release_seconds,
+                settings,
+                wasm_hash,
             },
         );
 

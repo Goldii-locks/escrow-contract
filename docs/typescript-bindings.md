@@ -90,3 +90,17 @@ client repos:
 
 A follow-up issue in each client repo should link back to this repo's
 `typescript-bindings` CI job and pin the released version they migrate to.
+
+## Schema 4 changes (#997, #1007)
+
+Regenerate the bindings after upgrading; the generated types change in two places:
+
+- `DisputeInfo` (returned by `get_dispute_info`) has a new required field,
+  `raised_by: string`, the address that called `raise_dispute`. Code that builds
+  a `DisputeInfo` by hand (for example in test fixtures) must set it. Disputes
+  that were open when an escrow migrated from schema 3 carry the job's client
+  here as a placeholder; use the `dispute` event's `caller` topic for those.
+- The `escrow-factory` `EscrowCreatedEvent` has the new shape `{ escrow, token,
+  total_amount, milestone_count, auto_release_seconds, settings, wasm_hash }`,
+  and its party addresses are event topics rather than data fields. See
+  "Escrow factory events" in `EVENTS.md`.
