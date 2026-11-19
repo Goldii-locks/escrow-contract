@@ -5199,11 +5199,16 @@ impl MilestoneEscrow {
         let mut milestone = Self::load_milestone(env, milestone_index)?;
         Self::require_milestone_is_funded(env, meta, &milestone)?;
 
-        // CHECK 2: Milestone must be in the Delivered state.  Any other status —
-        // including Released (double-claim), Disputed, Refunded, Pending, or
-        // PartiallyReleased — is rejected here, making the guard the sole
-        // gatekeeper against double-execution and out-of-sequence calls.
-        if milestone.status != MilestoneStatus::Delivered {
+        // CHECK 2: Delivered and PartiallyReleased are both eligible. A
+        // partial payment must not switch off the client-silence protection:
+        // the freelancer can claim the remaining balance after the deadline.
+        // The deadline still runs from the original `delivered_at` (no clock
+        // reset on partial payment), so a partial payment cannot postpone it.
+        // Released (double-claim), Disputed, Refunded and Pending are rejected,
+        // making this guard the gatekeeper against out-of-sequence calls.
+        if milestone.status != MilestoneStatus::Delivered
+            && milestone.status != MilestoneStatus::PartiallyReleased
+        {
             return Err(Error::InvalidStatus);
         }
 
