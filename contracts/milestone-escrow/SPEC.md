@@ -75,6 +75,8 @@ stateDiagram-v2
     state "Funded" as Funded
     [*] --> Unfunded: __constructor
     Unfunded --> Funded: fund
+    Delivered --> Pending: request_revision (due date >= now + REVISION_DELIVERY_WINDOW)
+    Pending --> Refunded: reclaim_overdue (only if never revised past the grace deadline)
 
     state "Accepted" as Accepted
     Funded --> Accepted: accept_job and accept_arbiter
@@ -112,6 +114,9 @@ stateDiagram-v2
 `ensure_not_paused` rejects with `Paused` while `Ep` or the admin `Paused` flag is set and with
 `EscrowLocked` while `CancelLock` is set. `assert_not_paused` rejects with
 `Paused` while the admin `Paused` flag is set.
+A revision of a milestone with a due date pushes that deadline to at least
+`REVISION_DELIVERY_WINDOW` after the revision, so `reclaim_overdue` cannot take
+back work that was delivered on time.
 User-facing state changes (including `extend_milestone_deadline` and
 `rotate_freelancer`) must use `ensure_not_paused`. The remaining
 `assert_not_paused` callers are recovery paths that intentionally stay

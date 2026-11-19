@@ -53,6 +53,11 @@ After a milestone is `Delivered`, the authorized client may call
 - `delivered_at` is cleared (persistent and temporary), so the previous
   auto-release window cannot fire.
 - `revision_count` increments by one. `MAX_REVISIONS` is 3.
+- If the milestone has a due date, it is pushed to at least `now +
+  REVISION_DELIVERY_WINDOW` (7 days). This gives the freelancer a fresh
+  delivery window and prevents a timely delivery from being reclaimed via
+  `reclaim_overdue` after the original due date plus grace has passed.
+  Milestones without a due date remain without one.
 - Further revision requests after the cap return `MaxRevisions`; the client
   must approve, partially approve, or dispute.
 - The on-chain event `msrev` carries `milestone_index`, `note_hash`, and
