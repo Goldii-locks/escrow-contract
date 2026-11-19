@@ -29,6 +29,10 @@ hash for every commit in the `reproducible-wasm` job summary.
   calls that do not use them stop loading them. With a 50-token whitelist and a
   32-signer multisig, the instance entry `approve_milestone` loads shrinks from
   4,212 to 644 bytes and its metered instructions drop by about 15 % (#772).
+- `msfund`, `withdraw`, `sweep`, `overdue`, `unaccref`, `msrev`, `extend`,
+  `ms_add`, `ms_reduce`, `cancel`, `cxlappr`, `cancelrev`, `acceptjob` and
+  `acceptarb` carry the party addresses as topics after the event name, actor
+  first, so `getEvents` can filter them by participant (#1019).
 
 ### Added
 

@@ -12767,7 +12767,7 @@ fn test_cancel_escrow_emits_structured_event() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == cancel_topic_val.get_payload() {
                 cancel_events += 1;
-                assert_eq!(event.1.len(), 1);
+                assert_eq!(event.1.len(), 3); // topic name + caller, counterparty
                 assert_eq!(
                     CancelEscrowInitiatedEvent::from_val(&env, &event.2),
                     CancelEscrowInitiatedEvent {
