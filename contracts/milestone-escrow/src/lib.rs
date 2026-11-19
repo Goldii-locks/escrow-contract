@@ -521,19 +521,11 @@ pub enum DataKey {
     /// (2 chars vs 16) to minimise on-ledger symbol bytes.
     Ep,
     PlatformFeeAllocation,
-    /// Temporary key: records the ledger timestamp at which a milestone was
-    /// marked delivered.  Written by `mark_delivered`, consumed by
-    /// `claim_auto_release` and `time_until_auto_release`.  Uses temporary
-    /// storage because it is single-use, deadline-scoped workflow state whose
-    /// ledger footprint cost should not persist beyond the auto-release window.
+    /// Retired (#1001): no longer read or written; `Milestone.delivered_at`
+    /// is the only delivery timestamp. Kept for discriminant stability.
     DeliveredAt(u32),
-    /// Temporary key: written by `approve_milestone` when a milestone reaches
-    /// the terminal `Released` state via a full approval.  Acts as a cheap
-    /// short-lived completion signal so callers can confirm terminal state
-    /// without loading the full persistent `Milestone` entry.  Uses temporary
-    /// storage because the signal is transient: once the milestone is released,
-    /// the approval workflow for that milestone is permanently closed and this
-    /// flag has no further use.
+    /// Retired (#1001): no longer read or written; the persisted milestone
+    /// status is the completion signal. Kept for discriminant stability.
     MilestoneReleased(u32),
     /// Temporary: lock set when dispute arbitration split execution is in
     /// progress for a milestone to prevent reentrant or concurrent mutations.
@@ -561,12 +553,8 @@ pub enum DataKey {
     /// raise_dispute, resolve_dispute) so that an emergency admin investigation
     /// cannot be interfered with.
     Paused,
-    /// Temporary key: written by `raise_dispute` when a milestone enters the
-    /// `Disputed` state.  Acts as a cheap short-lived signal so that callers
-    /// can verify dispute status without loading the full persistent
-    /// `Milestone` entry.  Uses temporary storage because the dispute workflow
-    /// is transient: once resolved, the flag has no further use and its ledger
-    /// footprint should not persist.
+    /// Retired (#1001): no longer read or written; the persisted milestone
+    /// status is the dispute signal. Kept for discriminant stability.
     DisputeFlag(u32),
     /// Persistent: boolean flag set to `true` when the multisig approval
     /// workflow enters a locked condition that requires admin intervention.
@@ -630,20 +618,9 @@ pub enum DataKey {
     /// Key type: `u32` (the proposal index) — significantly smaller than a
     /// composite `(Address, u32)` alternative.
     MultiSigApproval(u32),
-    // ── dispute_arbitration_split compact storage keys ─────────────────────
-    /// Temporary: records the client-refund BPS applied by
-    /// `apply_dispute_arbitration_split` for a given milestone.
-    ///
-    /// Key type is only `u32` (the milestone index) — no `Address` payload —
-    /// so the ledger key footprint stays minimal compared to a composite
-    /// `(Address, u32)` alternative.  Presence of the entry signals that a
-    /// split was applied; the value is a single `u32` BPS rather than a full
-    /// `RefundAllocation` (2×i128 + 2×u32).  Freelancer BPS is derived as
-    /// `BPS_SCALE - value`, removing redundant stored bytes.  Uses temporary
-    /// storage so the footprint is auto-evicted after the dispute workflow.
-    ///
-    /// Appended at the end of `DataKey` so existing variant discriminants stay
-    /// stable (serialization compatibility for already-written ledger entries).
+    /// Retired (#1001): no longer read or written; the applied split is
+    /// reported by `ArbitrationSplitAppliedEvent`. Kept for discriminant
+    /// stability.
     ArbitrationSplitBps(u32),
     /// Persistent: records an in-flight multisig-gated admin transfer
     /// proposal created by `propose_admin_transfer`. Presence of this key
@@ -962,8 +939,8 @@ pub struct DisputeResolvedEvent {
 ///
 /// Every field reconciles exactly with the state the call persisted:
 /// `client_refund` / `freelancer_payout` are the amounts actually transferred
-/// (capped to the contract balance), `client_refund_bps` is the value written
-/// under `ArbitrationSplitBps(milestone_index)`, `released_amount` is the
+/// (capped to the contract balance), `client_refund_bps` is the BPS the arbiter
+/// applied, `released_amount` is the
 /// milestone's cumulative release after the split, and `status` is the terminal
 /// milestone status stored by the call. Emitted only on the success path.
 #[contracttype]
@@ -983,8 +960,7 @@ pub struct ArbitrationSplitAppliedEvent {
     /// Arbiter fee taken from the disputed balance before the split (issue
     /// #738). Zero when the escrow has no arbiter fee.
     pub arbiter_fee_amount: i128,
-    /// Basis points of the disputed balance awarded to the client. Matches the
-    /// value persisted under `ArbitrationSplitBps(milestone_index)`.
+    /// Basis points of the disputed balance awarded to the client.
     pub client_refund_bps: u32,
     /// Basis points awarded to the freelancer (`10_000 - client_refund_bps`).
     pub freelancer_payout_bps: u32,
@@ -2175,27 +2151,6 @@ impl MilestoneEscrow {
         Ok(meta)
     }
 
-    /// Read the dispute flag for `index`.  Returns `false` when the flag
-    /// was never written or has been evicted.
-    #[allow(dead_code)]
-    fn is_dispute_flag(env: &Env, index: u32) -> bool {
-        env.storage()
-            .temporary()
-            .get::<_, bool>(&DataKey::DisputeFlag(index))
-            .unwrap_or(false)
-    }
-
-    /// Write the dispute flag to temporary storage.  This is a cheap,
-    /// short-lived signal that the milestone at `index` has been disputed.
-    /// Callers that need to verify dispute status can read this temporary key
-    /// rather than fetching the full persistent `Milestone` entry, reducing
-    /// ledger footprint rent on the read path.
-    fn store_dispute_flag(env: &Env, index: u32) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::DisputeFlag(index), &true);
-    }
-
     /// Release the dispute lock for a given milestone index.  Called
     /// unconditionally after every `raise_dispute` attempt — success or
     /// failure — so the lock can never become permanently held.
@@ -2996,22 +2951,6 @@ impl MilestoneEscrow {
         Ok(outstanding)
     }
 
-    /// Write the delivery timestamp to temporary storage.  Temporary entries
-    /// are automatically evicted by the network after their TTL expires, which
-    /// makes them the correct storage tier for single-use, deadline-scoped
-    /// workflow state like the auto-release window.
-    fn store_delivered_at(env: &Env, index: u32, timestamp: u64) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::DeliveredAt(index), &timestamp);
-    }
-
-    /// Read the delivery timestamp from temporary storage.  Returns `None` if
-    /// the entry has already been evicted (TTL expired) or was never written.
-    fn load_delivered_at(env: &Env, index: u32) -> Option<u64> {
-        env.storage().temporary().get(&DataKey::DeliveredAt(index))
-    }
-
     fn auto_release_deadline(
         meta: &JobMeta,
         delivered_at: u64,
@@ -3023,60 +2962,12 @@ impl MilestoneEscrow {
             .ok_or(Error::ArithmeticOverflow)
     }
 
-    /// Write the terminal approval flag to temporary storage.  This is a
-    /// cheap, short-lived signal that the milestone at `index` has been fully
-    /// released via `approve_milestone`.  Callers that only need to verify
-    /// completion can read this temporary key rather than fetching the full
-    /// persistent `Milestone` entry, reducing ledger footprint rent on the
-    /// hot read path.
-    fn store_milestone_released(env: &Env, index: u32) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::MilestoneReleased(index), &true);
-    }
-
     fn load_time_extension(env: &Env, index: u32) -> u32 {
         env.storage()
             .temporary()
             .get(&DataKey::TimeExt(index))
             .or_else(|| env.storage().persistent().get(&DataKey::TimeExt(index)))
             .unwrap_or(0)
-    }
-
-    /// Check whether `approve_milestone` has marked the given milestone index
-    /// as fully released via the temporary completion flag.  Returns `false`
-    /// if the flag was never written or has been evicted.
-    #[allow(dead_code)]
-    fn is_milestone_released_flag(env: &Env, index: u32) -> bool {
-        env.storage()
-            .temporary()
-            .get::<_, bool>(&DataKey::MilestoneReleased(index))
-            .unwrap_or(false)
-    }
-
-    /// Persist the applied client-refund BPS under the compact temporary key
-    /// `ArbitrationSplitBps(index)`.  Only a single `u32` is written — the
-    /// freelancer share is always `BPS_SCALE - client_refund_bps` and is never
-    /// stored separately.
-    fn store_arbitration_split_bps(env: &Env, index: u32, client_refund_bps: u32) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::ArbitrationSplitBps(index), &client_refund_bps);
-    }
-
-    /// Read the compact arbitration-split BPS for `index` from temporary
-    /// storage.  Returns `None` if the entry was never written or was evicted.
-    fn load_arbitration_split_bps(env: &Env, index: u32) -> Option<u32> {
-        env.storage()
-            .temporary()
-            .get(&DataKey::ArbitrationSplitBps(index))
-    }
-
-    /// Cheap presence check for whether an arbitration split has been applied
-    /// to `index`, without loading the full persistent `Milestone` entry.
-    #[allow(dead_code)]
-    fn is_arbitration_split_applied(env: &Env, index: u32) -> bool {
-        Self::load_arbitration_split_bps(env, index).is_some()
     }
 
     // ── pause guard ──────────────────────────────────────────────────────────
@@ -4920,10 +4811,6 @@ impl MilestoneEscrow {
         milestone.delivered_at = delivered_at;
         milestone.deliverable = deliverable.clone();
         Self::store_milestone(&env, milestone_index, &milestone);
-        // Write the delivery timestamp to temporary storage so that
-        // claim_auto_release and time_until_auto_release can read it from the
-        // optimised temporary tier without touching the persistent Milestone entry.
-        Self::store_delivered_at(&env, milestone_index, delivered_at);
 
         env.events().publish(
             (symbol_short!("deliver"), meta.freelancer.clone()),
@@ -4992,9 +4879,6 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Pending;
         milestone.delivered_at = 0;
         Self::store_milestone(&env, milestone_index, &milestone);
-        env.storage()
-            .temporary()
-            .remove(&DataKey::DeliveredAt(milestone_index));
         env.storage()
             .temporary()
             .remove(&DataKey::TimeExt(milestone_index));
@@ -5067,8 +4951,7 @@ impl MilestoneEscrow {
         let new_extension = current_extension
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
-        let delivered_at =
-            Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
+        let delivered_at = milestone.delivered_at;
         let new_deadline = Self::auto_release_deadline(&meta, delivered_at, new_extension)?;
         env.storage()
             .persistent()
@@ -5096,7 +4979,6 @@ impl MilestoneEscrow {
     /// writes regardless of the total milestone count:
     ///
     /// - 1× instance read  (`DataKey::Job` → `JobMeta`)
-    /// - 1× temporary read (`DataKey::DeliveredAt(milestone_index)`)
     /// - 1× persistent read  (`DataKey::Milestone(milestone_index)`)
     /// - 1× persistent write (`DataKey::Milestone(milestone_index)`)
     /// - 1× token transfer
@@ -5207,12 +5089,8 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
-        // CHECK 3: Read the delivery timestamp from temporary storage first
-        //    (optimised ledger-footprint path).  Fall back to the value stored on
-        //    the persistent Milestone entry so that entries written before this
-        //    migration remain fully functional.
-        let delivered_at =
-            Self::load_delivered_at(env, milestone_index).unwrap_or(milestone.delivered_at);
+        // CHECK 3: Read the delivery timestamp from the Milestone entry.
+        let delivered_at = milestone.delivered_at;
         let extension = Self::load_time_extension(env, milestone_index);
 
         let deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
@@ -5299,8 +5177,7 @@ impl MilestoneEscrow {
         let milestone = Self::load_milestone(&env, milestone_index)?;
         // Read delivery timestamp from temporary storage (optimised path) and
         // fall back to the persistent Milestone field for pre-migration entries.
-        let delivered_at =
-            Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
+        let delivered_at = milestone.delivered_at;
         let extension = Self::load_time_extension(&env, milestone_index);
         let deadline = Self::auto_release_deadline(&meta, delivered_at, extension)?;
         let current = env.ledger().timestamp();
@@ -5407,7 +5284,6 @@ impl MilestoneEscrow {
 
         if updated_milestone.released_amount == updated_milestone.amount {
             updated_milestone.status = MilestoneStatus::Released;
-            Self::store_milestone_released(&env, milestone_index);
             Self::clear_time_ext(&env, milestone_index);
             Self::increment_reputation(&env, &meta.client);
             Self::increment_reputation(&env, &meta.freelancer);
@@ -5511,14 +5387,6 @@ impl MilestoneEscrow {
         Self::clear_time_ext(&env, milestone_index);
         Self::increment_reputation(&env, &meta.client);
         Self::increment_reputation(&env, &meta.freelancer);
-
-        // Write a short-lived completion flag to temporary storage.  This is
-        // transient workflow state: the milestone approval window is now
-        // permanently closed, so this signal does not need to survive beyond
-        // the TTL of the ledger entry.  Using temporary storage avoids the
-        // higher rent cost of a persistent or instance entry for data that has
-        // no long-term value.
-        Self::store_milestone_released(&env, milestone_index);
 
         let event_remaining = milestone
             .amount
@@ -5694,7 +5562,6 @@ impl MilestoneEscrow {
             milestone.released_amount = milestone.amount;
             milestone.status = MilestoneStatus::Released;
             Self::store_milestone(&env, milestone_index, &milestone);
-            Self::store_milestone_released(&env, milestone_index);
             Self::increment_reputation(&env, &meta.client);
             Self::increment_reputation(&env, &meta.freelancer);
         }
@@ -5867,11 +5734,6 @@ impl MilestoneEscrow {
         );
         milestone.status = MilestoneStatus::Disputed;
         Self::store_milestone(env, milestone_index, &milestone);
-
-        // Write a short-lived dispute flag to temporary storage so that callers
-        // can verify dispute status without loading the full persistent
-        // Milestone entry, reducing ledger footprint on the read path.
-        Self::store_dispute_flag(env, milestone_index);
 
         env.events().publish(
             (symbol_short!("dispute"), caller.clone()),
@@ -6068,15 +5930,11 @@ impl MilestoneEscrow {
         milestone.status = dispute_info.previous_status.clone();
         if milestone.status == MilestoneStatus::Delivered {
             milestone.delivered_at = escalated_at;
-            Self::store_delivered_at(&env, milestone_index, escalated_at);
         }
         Self::store_milestone(&env, milestone_index, &milestone);
         env.storage()
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
-        env.storage()
-            .temporary()
-            .remove(&DataKey::DisputeFlag(milestone_index));
 
         env.events().publish(
             (symbol_short!("dispescal"),),
@@ -6245,31 +6103,6 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    // ── dispute_arbitration_split: storage-optimised key design ────────────
-    //
-    // Design rationale
-    // ─────────────────
-    // A naïve split-state layout would persist a full `RefundAllocation`
-    // (2×i128 + 2×u32) under Address-bearing keys such as
-    // `(arbiter: Address, milestone_index: u32)`.  On Soroban each Address
-    // contributes ~32 bytes to the ledger key footprint.
-    //
-    // This implementation uses three optimisations to minimise bytes stored:
-    //
-    // 1. **Key is only `u32`** (`ArbitrationSplitBps(milestone_index)`) —
-    //    no Address payload in the key.
-    //
-    // 2. **Value is a single `u32` BPS** — freelancer BPS is derived as
-    //    `BPS_SCALE - client_refund_bps`, so the second BPS field and both
-    //    i128 payout amounts are never written to storage (amounts live in
-    //    the persistent `Milestone` entry already required for settlement).
-    //
-    // 3. **Temporary storage tier** — the compact BPS signal is auto-evicted
-    //    after the dispute workflow ends rather than accruing persistent rent.
-    //
-    // Deterministic access: the same milestone index always maps to the same
-    // key; reads never require scanning Address-keyed maps.
-
     /// Allocate a disputed amount into client refund vs freelancer payout by BPS.
     ///
     /// Uses floor division for the client share and assigns the remainder to the
@@ -6356,11 +6189,6 @@ impl MilestoneEscrow {
     /// Client receives `client_refund_bps` of the remaining balance; freelancer
     /// receives the remainder. Milestones end `Refunded` or `Released` for a
     /// one-sided outcome and `Split` when both parties receive a payout.
-    ///
-    /// After a successful apply, a compact temporary entry
-    /// `ArbitrationSplitBps(milestone_index) → client_refund_bps` is written so
-    /// downstream readers can confirm the applied split without loading a full
-    /// `RefundAllocation` or an Address-keyed map.
     pub fn apply_dispute_arbitration_split(
         env: Env,
         arbiter: Address,
@@ -6447,7 +6275,6 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::store_milestone_released(&env, milestone_index);
             Self::increment_reputation(&env, &meta.client);
             Self::increment_reputation(&env, &meta.freelancer);
         }
@@ -6457,10 +6284,6 @@ impl MilestoneEscrow {
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
         Self::clear_time_ext(&env, milestone_index);
-
-        // Compact temporary signal: one u32 key + one u32 value (not a full
-        // RefundAllocation, and not an Address-bearing composite key).
-        Self::store_arbitration_split_bps(&env, milestone_index, client_refund_bps);
 
         let resolved = RefundAllocation {
             client_refund,
@@ -6906,8 +6729,7 @@ impl MilestoneEscrow {
                     milestone.released_amount = milestone.amount;
                 }
                 milestone.status = settled_status.clone();
-                // Only the persistent Milestone entry is written; the temporary
-                // MilestoneReleased flag is redundant here (issue #383).
+                // Only the persistent Milestone entry is written.
                 Self::store_milestone(env, index, &milestone);
                 Self::clear_time_ext(env, index);
             }
@@ -7917,7 +7739,6 @@ impl MilestoneEscrow {
 
             if milestone.released_amount >= milestone.amount {
                 milestone.status = MilestoneStatus::Released;
-                Self::store_milestone_released(&env, milestone_index);
                 Self::increment_reputation(&env, &meta.client);
                 Self::increment_reputation(&env, &meta.freelancer);
             } else {
@@ -8129,8 +7950,7 @@ impl MilestoneEscrow {
         let new_extension = current_extension
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
-        let delivered_at =
-            Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
+        let delivered_at = milestone.delivered_at;
         let new_deadline = Self::auto_release_deadline(&meta, delivered_at, new_extension)?;
 
         env.storage()
@@ -9319,8 +9139,7 @@ impl MilestoneEscrow {
             // Auto-release only applies to Delivered milestones
             // (claim_auto_release), so only they have a deadline.
             let deadline = if milestone.status == MilestoneStatus::Delivered {
-                let delivered_at =
-                    Self::load_delivered_at(&env, index).unwrap_or(milestone.delivered_at);
+                let delivered_at = milestone.delivered_at;
                 Some(Self::auto_release_deadline(
                     &meta,
                     delivered_at,
@@ -10300,7 +10119,6 @@ impl MilestoneEscrow {
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
         Self::clear_time_ext(&env, milestone_index);
-        Self::store_milestone_released(&env, milestone_index);
 
         // Reset accrued yield on emergency override
         if env
@@ -10537,7 +10355,6 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::store_milestone_released(&env, milestone_index);
             Self::increment_reputation(&env, &meta.client);
             Self::increment_reputation(&env, &meta.freelancer);
         }
@@ -11684,14 +11501,8 @@ impl MilestoneEscrow {
         }
 
         // CEI: commit state before external call. Only `Milestone(index)`
-        // (persistent) is written here. Unlike the normal approval path, we
-        // deliberately skip the `MilestoneReleased(index)` temporary flag:
-        // nothing reads it on this override path (`is_milestone_released_flag`
-        // is dead code), and the terminal `Released` status already persisted on
-        // the milestone is the authoritative completion signal. Skipping it
-        // keeps the ledger footprint of this call to two distinct keys
-        // (`Milestone(index)` + `MultisigLocked`), matching the already-lean
-        // `multisig_admin_override_refund` path.
+        // (persistent) is written here; the terminal `Released` status is the
+        // authoritative completion signal.
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);

@@ -3,9 +3,9 @@
 //!
 //! Every test asserts that the emitted `ArbitrationSplitAppliedEvent` fields
 //! reconcile exactly with the state the call persisted (token balances, the
-//! stored `ArbitrationSplitBps` entry, the milestone's cumulative release, and
-//! its terminal status), and that no `arbsplit` event is emitted on any
-//! failure path.
+//! milestone's cumulative release, and its terminal status), that the retired
+//! `ArbitrationSplitBps` key is never written (#1001), and that no `arbsplit`
+//! event is emitted on any failure path.
 
 use super::*;
 use crate::{ArbitrationSplitAppliedEvent, DataKey, Error, MilestoneStatus};
@@ -102,13 +102,11 @@ fn event_reconciles_with_persisted_state_on_partial_split() {
     assert_eq!(token.balance(&client_addr), ev.client_refund);
     assert_eq!(token.balance(&freelancer_addr), ev.freelancer_payout);
 
-    // BPS reconcile with the value persisted under ArbitrationSplitBps(0).
+    // BPS reconcile with the requested split; the retired
+    // ArbitrationSplitBps(0) key is not written.
     assert_eq!(ev.client_refund_bps, 7_000);
     assert_eq!(ev.freelancer_payout_bps, 3_000);
-    assert_eq!(
-        stored_split_bps(&env, &contract_id, 0),
-        Some(ev.client_refund_bps)
-    );
+    assert_eq!(stored_split_bps(&env, &contract_id, 0), None);
 
     // Milestone state reconciles with the persisted milestone.
     let ms = client.get_job().milestones.get(0).unwrap();
@@ -148,7 +146,7 @@ fn event_reports_refunded_status_on_full_client_refund() {
     assert_eq!(ev.status, ms.status);
     assert_eq!(token.balance(&client_addr), 7_500);
     assert_eq!(token.balance(&freelancer_addr), 0);
-    assert_eq!(stored_split_bps(&env, &contract_id, 0), Some(10_000));
+    assert_eq!(stored_split_bps(&env, &contract_id, 0), None);
 }
 
 #[test]
@@ -177,7 +175,7 @@ fn event_reports_released_status_on_full_freelancer_award() {
     assert_eq!(ev.released_amount, ms.released_amount);
     assert_eq!(ev.status, ms.status);
     assert_eq!(token.balance(&freelancer_addr), 9_000);
-    assert_eq!(stored_split_bps(&env, &contract_id, 0), Some(0));
+    assert_eq!(stored_split_bps(&env, &contract_id, 0), None);
 }
 
 #[test]
@@ -201,7 +199,7 @@ fn event_amounts_sum_to_disputed_balance_with_odd_rounding() {
     assert_eq!(token.balance(&client_addr), ev.client_refund);
     assert_eq!(token.balance(&freelancer_addr), ev.freelancer_payout);
     assert_eq!(ev.released_amount, ev.freelancer_payout);
-    assert_eq!(stored_split_bps(&env, &contract_id, 0), Some(5_000));
+    assert_eq!(stored_split_bps(&env, &contract_id, 0), None);
 }
 
 // ── failure paths: no event emitted ────────────────────────────────────────
@@ -267,7 +265,7 @@ fn no_event_on_double_execution_failure() {
     client.apply_dispute_arbitration_split(&arbiter_addr, &0u32, &3_000u32);
     assert_eq!(arbsplit_event_count(&env), 1);
     let stored = stored_split_bps(&env, &contract_id, 0);
-    assert_eq!(stored, Some(3_000));
+    assert_eq!(stored, None);
 
     // Milestone is now terminal; a repeat call reverts with InvalidStatus.
     // A reverted invocation rolls back its events, so the failure path
@@ -276,6 +274,6 @@ fn no_event_on_double_execution_failure() {
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     assert_eq!(arbsplit_event_count(&env), 0);
 
-    // The persisted split from the successful call is untouched.
+    // Still nothing stored under the retired key.
     assert_eq!(stored_split_bps(&env, &contract_id, 0), stored);
 }
