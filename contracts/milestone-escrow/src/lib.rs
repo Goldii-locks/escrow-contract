@@ -5002,14 +5002,12 @@ impl MilestoneEscrow {
         if meta.client != client {
             return Err(Error::Unauthorized);
         }
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
         if milestone_index >= meta.milestone_count {
             return Err(Error::InvalidMilestone);
         }
 
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        Self::require_milestone_is_funded(&env, &meta, &milestone)?;
         if milestone.status != MilestoneStatus::Delivered {
             return Err(Error::InvalidStatus);
         }
@@ -5978,14 +5976,12 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
         let meta = Self::require_dispute_party(&env, &caller)?;
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
         if milestone_index >= meta.milestone_count {
             return Err(Error::InvalidMilestone);
         }
 
         let milestone = Self::load_milestone(&env, milestone_index)?;
+        Self::require_milestone_is_funded(&env, &meta, &milestone)?;
         if milestone.status != MilestoneStatus::Disputed {
             return Err(Error::InvalidStatus);
         }
@@ -6074,14 +6070,12 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
         let meta = Self::require_dispute_party(&env, &caller)?;
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
         if milestone_index >= meta.milestone_count {
             return Err(Error::InvalidMilestone);
         }
 
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        Self::require_milestone_is_funded(&env, &meta, &milestone)?;
         if milestone.status != MilestoneStatus::Disputed {
             return Err(Error::InvalidStatus);
         }
