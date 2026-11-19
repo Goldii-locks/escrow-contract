@@ -4546,7 +4546,7 @@ impl MilestoneEscrow {
         Self::store_job_meta(&env, &meta);
 
         env.events().publish(
-            (symbol_short!("arbchg"),),
+            (symbol_short!("arbchg"), new_arbiter.clone()),
             ArbiterReplacedEvent {
                 client: meta.client.clone(),
                 freelancer: meta.freelancer.clone(),
