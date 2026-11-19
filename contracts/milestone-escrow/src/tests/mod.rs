@@ -83,6 +83,7 @@ mod job_acceptance_tests;
 mod load_platform_fee_allocation_tests;
 mod lock_escrow_interest_yield_event_tests;
 mod lock_escrow_interest_yield_guards_tests;
+mod math_tests;
 mod migrate_tests;
 mod milestone_amendment_tests;
 mod milestone_cap_tests;
@@ -12789,7 +12790,7 @@ fn test_cancel_escrow_emits_structured_event() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == cancel_topic_val.get_payload() {
                 cancel_events += 1;
-                assert_eq!(event.1.len(), 1);
+                assert_eq!(event.1.len(), 3); // topic name + caller, counterparty
                 assert_eq!(
                     CancelEscrowInitiatedEvent::from_val(&env, &event.2),
                     CancelEscrowInitiatedEvent {

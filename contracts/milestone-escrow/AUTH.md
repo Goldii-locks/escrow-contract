@@ -94,6 +94,7 @@ are listed at the bottom as **No auth required**.
 | `execute_multisig_config` | none: controlled by the current signers' approvals of the proposal | — |
 | `add_milestone` | `client` **and** `freelancer` (both) | `client.require_auth()` + `freelancer.require_auth()` |
 | `reduce_milestone` | `client` **and** `freelancer` (both) | `client.require_auth()` + `freelancer.require_auth()` |
+| `increase_milestone` | `client` **and** `freelancer` (both) | `client.require_auth()` + `freelancer.require_auth()` |
 | `approve_milestones` | `client` | `client.require_auth()` |
 | `rotate_freelancer` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |
 | `replace_arbiter` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |

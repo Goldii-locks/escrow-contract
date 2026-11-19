@@ -882,6 +882,21 @@ pub struct MilestoneReducedEvent {
     pub milestone_count: u32,
 }
 
+/// Emitted by `increase_milestone` when both parties consent to raising a
+/// `Pending` milestone's amount (issue #1020).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneIncreasedEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestone_index: u32,
+    pub old_amount: i128,
+    pub new_amount: i128,
+    /// Contract-level total after the increase.
+    pub total_amount: i128,
+    pub milestone_count: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MilestoneFundedEvent {
@@ -2912,7 +2927,13 @@ impl MilestoneEscrow {
 
     /// Record `bit` in the acceptance mask on behalf of `party` and publish
     /// the acceptance under `topic`.
-    fn record_acceptance(env: &Env, party: Address, bit: u32, topic: Symbol) -> Result<(), Error> {
+    fn record_acceptance(
+        env: &Env,
+        party: Address,
+        client: Address,
+        bit: u32,
+        topic: Symbol,
+    ) -> Result<(), Error> {
         let mask = Self::load_acceptance(env);
         if mask & bit != 0 {
             return Err(Error::InvalidStatus);
@@ -2923,7 +2944,7 @@ impl MilestoneEscrow {
             .set(&DataKey::Acceptance, &new_mask);
 
         env.events().publish(
-            (topic,),
+            (topic, party.clone(), client),
             JobAcceptedEvent {
                 party,
                 acceptance_mask: new_mask,
@@ -4235,7 +4256,11 @@ impl MilestoneEscrow {
         }
 
         env.events().publish(
-            (symbol_short!("msfund"),),
+            (
+                symbol_short!("msfund"),
+                client.clone(),
+                meta.freelancer.clone(),
+            ),
             MilestoneFundedEvent {
                 client,
                 milestone_index,
@@ -4347,7 +4372,7 @@ impl MilestoneEscrow {
         token_client.transfer(&client, env.current_contract_address(), &amount);
 
         env.events().publish(
-            (symbol_short!("ms_add"),),
+            (symbol_short!("ms_add"), client.clone(), freelancer.clone()),
             MilestoneAddedEvent {
                 client,
                 freelancer,
@@ -4443,7 +4468,11 @@ impl MilestoneEscrow {
         Self::pay_or_credit(&env, &token_client, &client, &refund)?;
 
         env.events().publish(
-            (symbol_short!("ms_reduce"),),
+            (
+                symbol_short!("ms_reduce"),
+                client.clone(),
+                freelancer.clone(),
+            ),
             MilestoneReducedEvent {
                 client,
                 freelancer,
@@ -4451,6 +4480,116 @@ impl MilestoneEscrow {
                 old_amount: new_amount + refund,
                 new_amount,
                 refund,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Raise the amount of a `Pending` milestone (issue #1020).
+    ///
+    /// Both parties must sign.  Only `Pending` milestones can be raised, as
+    /// with `reduce_milestone`.  On a funded milestone the client deposits the
+    /// difference in the same call and the received amount is checked, so the
+    /// conservation invariant `total_amount == Σ milestone.amounts` holds
+    /// across the amendment.  In per-milestone mode an unfunded milestone only
+    /// has its stored amount changed; `fund_milestone` later collects it.
+    ///
+    /// # Parameters
+    /// * `client`          – The job's client; pays the difference.
+    /// * `freelancer`      – The job's freelancer; consents to the larger scope.
+    /// * `milestone_index` – Index of the milestone to raise.
+    /// * `new_amount`      – Replacement amount.  Must be strictly above the
+    ///                        milestone's current amount.
+    ///
+    /// # Errors
+    /// * `Paused` / `EscrowLocked`     – Emergency pause or cancel lock is on.
+    /// * `NotInitialized`              – Contract has not been initialized.
+    /// * `Unauthorized`                – `client` / `freelancer` do not match
+    ///                                    the stored job parties.
+    /// * `InvalidMilestone`            – `milestone_index` is out of range.
+    /// * `NotFunded`                   – An upfront escrow has not been funded
+    ///                                    yet.
+    /// * `InvalidStatus`               – The milestone is not `Pending`.
+    /// * `InvalidAmount`               – `new_amount` is not strictly above the
+    ///                                    current amount, or `total_amount`
+    ///                                    overflows `i128`.
+    /// * `InsufficientBalance`         – The escrow received less than the
+    ///                                    difference.
+    pub fn increase_milestone(
+        env: Env,
+        client: Address,
+        freelancer: Address,
+        milestone_index: u32,
+        new_amount: i128,
+    ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::ensure_not_paused(&env)?;
+        Self::assert_tax_withholding_not_locked(&env)?;
+        Self::assert_platform_fee_allocation_not_locked(&env)?;
+        Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
+
+        let mut meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        let funded = Self::milestone_is_funded(&meta, &milestone);
+        if !funded && Self::load_funding_mode(&env) != FundingMode::PerMilestone {
+            return Err(Error::NotFunded);
+        }
+        if milestone.status != MilestoneStatus::Pending {
+            return Err(Error::InvalidStatus);
+        }
+        if new_amount <= milestone.amount {
+            return Err(Error::InvalidAmount);
+        }
+        let old_amount = milestone.amount;
+        let difference = new_amount
+            .checked_sub(old_amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let new_total = meta
+            .total_amount
+            .checked_add(difference)
+            .ok_or(Error::InvalidAmount)?;
+
+        milestone.amount = new_amount;
+        Self::store_milestone(&env, milestone_index, &milestone);
+        // Persist amended state BEFORE the token transfer so a reentrant call
+        // sees the updated amount/total (mirrors `fund`).
+        meta.total_amount = new_total;
+        Self::store_job_meta(&env, &meta);
+
+        if funded {
+            let token_client = token::Client::new(&env, &meta.token);
+            let before = token_client.balance(&env.current_contract_address());
+            token_client.transfer(&client, env.current_contract_address(), &difference);
+            let after = token_client.balance(&env.current_contract_address());
+            let received = after.checked_sub(before).unwrap_or(0);
+            if received != difference {
+                return Err(Error::InsufficientBalance);
+            }
+        }
+
+        env.events().publish(
+            (symbol_short!("ms_incr"), client.clone(), freelancer.clone()),
+            MilestoneIncreasedEvent {
+                client,
+                freelancer,
+                milestone_index,
+                old_amount,
+                new_amount,
                 total_amount: meta.total_amount,
                 milestone_count: meta.milestone_count,
             },
@@ -4476,7 +4615,7 @@ impl MilestoneEscrow {
         if meta.freelancer != freelancer {
             return Err(Error::Unauthorized);
         }
-        Self::record_acceptance(&env, freelancer, 1, symbol_short!("acceptjob"))
+        Self::record_acceptance(&env, freelancer, meta.client, 1, symbol_short!("acceptjob"))
     }
 
     /// Accept the job as its arbiter, agreeing to resolve its disputes.
@@ -4495,7 +4634,7 @@ impl MilestoneEscrow {
         if meta.arbiter != arbiter {
             return Err(Error::Unauthorized);
         }
-        Self::record_acceptance(&env, arbiter, 2, symbol_short!("acceptarb"))
+        Self::record_acceptance(&env, arbiter, meta.client, 2, symbol_short!("acceptarb"))
     }
 
     /// Appoint a new arbiter, jointly authorized by the client and the
@@ -4712,7 +4851,11 @@ impl MilestoneEscrow {
         Self::pay_or_credit(&env, &token_client, &meta.client, &total_refunded)?;
 
         env.events().publish(
-            (symbol_short!("unaccref"),),
+            (
+                symbol_short!("unaccref"),
+                meta.client.clone(),
+                meta.freelancer.clone(),
+            ),
             UnacceptedWithdrawnEvent {
                 client: meta.client,
                 token: meta.token,
@@ -4847,7 +4990,11 @@ impl MilestoneEscrow {
         Self::pay_or_credit(&env, &token_client, &meta.client, &remaining)?;
 
         env.events().publish(
-            (symbol_short!("overdue"),),
+            (
+                symbol_short!("overdue"),
+                meta.client.clone(),
+                meta.freelancer.clone(),
+            ),
             OverdueReclaimedEvent {
                 client: meta.client,
                 milestone_index,
@@ -5020,7 +5167,11 @@ impl MilestoneEscrow {
         Self::clear_time_ext(&env, milestone_index);
 
         env.events().publish(
-            (symbol_short!("msrev"),),
+            (
+                symbol_short!("msrev"),
+                client.clone(),
+                meta.freelancer.clone(),
+            ),
             RevisionRequestedEvent {
                 milestone_index,
                 client,
@@ -5093,7 +5244,11 @@ impl MilestoneEscrow {
             .set(&DataKey::TimeExt(milestone_index), &new_extension);
 
         env.events().publish(
-            (symbol_short!("extend"),),
+            (
+                symbol_short!("extend"),
+                client.clone(),
+                meta.freelancer.clone(),
+            ),
             DeadlineExtendedEvent {
                 milestone_index,
                 client,
@@ -5548,8 +5703,13 @@ impl MilestoneEscrow {
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &caller, &amount);
 
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
         env.events().publish(
-            (symbol_short!("withdraw"),),
+            (symbol_short!("withdraw"), caller.clone(), counterparty),
             WithdrawnEvent {
                 recipient: caller,
                 token: meta.token,
@@ -5569,8 +5729,8 @@ impl MilestoneEscrow {
     /// behaves like `withdraw`: the credit is cleared before the transfer and
     /// the whole call reverts, keeping the credit, if the transfer fails.
     ///
-    /// The `withdraw` event carries `caller` as an extra topic and
-    /// `recipient` in its body.
+    /// Like `withdraw`, the `withdraw` event's topics are `caller` and the
+    /// counterparty; `recipient` is in its body.
     ///
     /// # Parameters
     /// * `caller`    – Address with an owed balance. Must authorize the call.
@@ -5604,8 +5764,13 @@ impl MilestoneEscrow {
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &recipient, &amount);
 
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
         env.events().publish(
-            (symbol_short!("withdraw"), caller),
+            (symbol_short!("withdraw"), caller, counterparty),
             WithdrawnEvent {
                 recipient,
                 token: meta.token,
@@ -6555,12 +6720,17 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
         let new_mask = live_mask | bit;
         if new_mask == 3 {
             env.storage().instance().remove(&DataKey::CancelApproval);
             env.storage().instance().set(&DataKey::CancelLock, &true);
             env.events().publish(
-                (symbol_short!("cancel"),),
+                (symbol_short!("cancel"), caller.clone(), counterparty),
                 CancelEscrowInitiatedEvent {
                     caller_is_client: caller == meta.client,
                     client: meta.client.clone(),
@@ -6584,7 +6754,7 @@ impl MilestoneEscrow {
             },
         );
         env.events().publish(
-            (symbol_short!("cxlappr"),),
+            (symbol_short!("cxlappr"), caller.clone(), counterparty),
             CancelApprovalRecordedEvent {
                 caller,
                 approval_mask: new_mask,
@@ -6669,8 +6839,13 @@ impl MilestoneEscrow {
             );
         }
 
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
         env.events().publish(
-            (symbol_short!("cancelrev"),),
+            (symbol_short!("cancelrev"), caller.clone(), counterparty),
             CancelApprovalRevokedEvent {
                 caller,
                 approval_mask: new_mask,
@@ -9345,7 +9520,11 @@ impl MilestoneEscrow {
 
         token_client.transfer(&env.current_contract_address(), &meta.client, &excess);
         env.events().publish(
-            (symbol_short!("sweep"),),
+            (
+                symbol_short!("sweep"),
+                meta.client.clone(),
+                meta.freelancer.clone(),
+            ),
             ExcessSweptEvent {
                 token,
                 amount: excess,
