@@ -12,7 +12,13 @@ pub enum Error {
     Unauthorized = 3,
     TokenNotAllowed = 4,
     InvalidAmount = 5,
+    InvalidDisputeTimeout = 6,
 }
+
+/// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
+pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+/// Mirrors `milestone_escrow::MAX_DISPUTE_TIMEOUT_SECONDS` (180 days).
+pub const MAX_DISPUTE_TIMEOUT_SECONDS: u64 = 180 * 24 * 60 * 60;
 
 #[contracttype]
 enum DataKey {
@@ -109,6 +115,11 @@ impl EscrowFactory {
 
         if milestone_amounts.is_empty() {
             return Err(Error::InvalidAmount);
+        }
+        if !(MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS)
+            .contains(&settings.dispute_timeout_seconds)
+        {
+            return Err(Error::InvalidDisputeTimeout);
         }
 
         let tokens = Self::load_tokens(&env)?;

@@ -41,6 +41,12 @@ const MAX_EMERGENCY_ALLOCATION_PARTIES: u32 = 255;
 /// Default window before either party may return an unresolved dispute to its
 /// pre-dispute milestone state.
 pub const DISPUTE_TIMEOUT_SECONDS: u64 = 30 * 24 * 60 * 60;
+/// Minimum allowed `dispute_timeout_seconds` (1 day), so the arbiter always
+/// gets time to act before either party can escalate.
+pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+/// Maximum allowed `dispute_timeout_seconds` (180 days), so escalation and
+/// admin settlement of a disputed milestone stay reachable.
+pub const MAX_DISPUTE_TIMEOUT_SECONDS: u64 = 180 * 24 * 60 * 60;
 /// Maximum number of milestones `approve_milestones` accepts in one call.
 /// Validation does a duplicate scan over the index list, so the cap bounds
 /// its worst-case CPU cost along with the per-milestone storage writes.
@@ -178,7 +184,8 @@ pub enum Error {
     /// A settlement asked to distribute more than the contract currently
     /// holds in the escrowed token.
     InsufficientBalance = 37,
-    /// A dispute timeout must be greater than zero.
+    /// A dispute timeout must be between `MIN_DISPUTE_TIMEOUT_SECONDS` and
+    /// `MAX_DISPUTE_TIMEOUT_SECONDS`.
     InvalidDisputeTimeout = 38,
     /// The configured dispute timeout has not elapsed yet.
     DisputeTimeoutNotReached = 39,
@@ -3398,7 +3405,7 @@ impl MilestoneEscrow {
     /// * [`Error::InvalidRatio`] – `settings.arbiter_fee_bps` exceeds
     ///   `MAX_ARBITER_FEE_BPS`.
     /// * [`Error::InvalidDisputeTimeout`] – `settings.dispute_timeout_seconds`
-    ///   is zero.
+    ///   is outside `MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS`.
     /// * Every error documented on `__constructor`.
     #[allow(clippy::too_many_arguments)]
     fn initialize_with_settings(
@@ -3486,10 +3493,12 @@ impl MilestoneEscrow {
     ///
     /// After `dispute_timeout_seconds`, either the client or freelancer may
     /// call `escalate_dispute` to restore the milestone to its status before
-    /// the dispute was raised. The timeout must be non-zero.
+    /// the dispute was raised. The timeout must be within
+    /// `MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS`.
     ///
     /// # Errors
-    /// * [`Error::InvalidDisputeTimeout`] – `dispute_timeout_seconds` is zero.
+    /// * [`Error::InvalidDisputeTimeout`] – `dispute_timeout_seconds` is out
+    ///   of range.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn initialize_with_dispute_timeout(
@@ -3580,7 +3589,9 @@ impl MilestoneEscrow {
         if auto_release_seconds == 0 || auto_release_seconds > MAX_AUTO_RELEASE_SECONDS {
             return Err(Error::InvalidDuration);
         }
-        if dispute_timeout_seconds == 0 {
+        if !(MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS)
+            .contains(&dispute_timeout_seconds)
+        {
             return Err(Error::InvalidDisputeTimeout);
         }
 

@@ -25,6 +25,10 @@ hash for every commit in the `reproducible-wasm` job summary.
   error on a `Delivered` milestone once its auto-release deadline has passed,
   and `escalate_dispute` restores the original deadline instead of starting a
   fresh window, so the client cannot undo an expired review window (#991).
+- `dispute_timeout_seconds` is bounded to `MIN_DISPUTE_TIMEOUT_SECONDS` (1 day)
+  through `MAX_DISPUTE_TIMEOUT_SECONDS` (180 days); the escrow constructor and
+  the factory's `create_escrow` return `InvalidDisputeTimeout` outside that
+  range, so disputed funds cannot be locked by an unbounded timeout (#992).
 
 ### Changed
 

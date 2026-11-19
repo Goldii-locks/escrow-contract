@@ -52,6 +52,7 @@ Review the source constants and configuration in [`contracts/milestone-escrow/sr
 - [ ] Fee rate and fee caps, including confirmation that the advertised 1% fee is enforceable and correctly allocated. Owner: Protocol owner. Reference: [contract configuration](contracts/milestone-escrow/src/lib.rs).
 - [ ] Persistent and temporary storage TTLs, renewal triggers, and expiry behavior. Owner: Contract lead. Reference: [contract storage and TTL logic](contracts/milestone-escrow/src/lib.rs).
 - [ ] Auto-release and other configured timeouts, including boundary and overflow behavior. Owner: Contract lead. Reference: [contract timeout logic](contracts/milestone-escrow/src/lib.rs).
+  - Dispute timeout: `dispute_timeout_seconds` must lie within `MIN_DISPUTE_TIMEOUT_SECONDS` (1 day) and `MAX_DISPUTE_TIMEOUT_SECONDS` (180 days), enforced by the escrow constructor and mirrored in the factory (`InvalidDisputeTimeout` outside the range). The floor gives the arbiter time to act before escalation; the cap keeps `escalate_dispute` and `settle_all_remaining` reachable if the arbiter disappears (#992).
 - [ ] Maximum milestone count and the resource cost at that limit. Owner: Protocol owner. Reference: [contract limits](contracts/milestone-escrow/src/lib.rs).
 
 ## Admin Keys and Roles

@@ -67,7 +67,8 @@ fn escalation_fails_before_timeout_and_restores_delivered_after_timeout() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let (client_addr, freelancer_addr, _, _, client) = custom_timeout_escrow(&env, 60);
+    let (client_addr, freelancer_addr, _, _, client) =
+        custom_timeout_escrow(&env, MIN_DISPUTE_TIMEOUT_SECONDS);
     env.ledger().set_timestamp(1_100);
     client.raise_dispute(&client_addr, &0, &dispute_reason_hash(&env));
 
@@ -75,7 +76,8 @@ fn escalation_fails_before_timeout_and_restores_delivered_after_timeout() {
     assert_eq!(raised.disputed_at, 1_100);
     assert_eq!(raised.new_status, MilestoneStatus::Disputed);
 
-    env.ledger().set_timestamp(1_159);
+    env.ledger()
+        .set_timestamp(1_100 + MIN_DISPUTE_TIMEOUT_SECONDS - 1);
     assert_eq!(
         client.try_escalate_dispute(&freelancer_addr, &0),
         Err(Ok(Error::DisputeTimeoutNotReached))
@@ -85,7 +87,8 @@ fn escalation_fails_before_timeout_and_restores_delivered_after_timeout() {
         MilestoneStatus::Disputed
     );
 
-    env.ledger().set_timestamp(1_160);
+    env.ledger()
+        .set_timestamp(1_100 + MIN_DISPUTE_TIMEOUT_SECONDS);
     client.escalate_dispute(&freelancer_addr, &0);
 
     let restored = client.get_job().milestones.get(0).unwrap();
@@ -120,6 +123,55 @@ fn initialize_rejects_zero_dispute_timeout() {
             &crate::spec_hashes_for(&vec![&env, 1_000_i128]),
         ),
         Err(Ok(Error::InvalidDisputeTimeout))
+    );
+}
+
+fn try_init_with_timeout(env: &Env, timeout_seconds: u64) -> Result<(), Error> {
+    let admin = Address::generate(env);
+    let client_addr = Address::generate(env);
+    let freelancer = Address::generate(env);
+    let arbiter = Address::generate(env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(env, &contract_id);
+    let amounts = vec![env, 1_000_i128];
+    client
+        .try_initialize_with_dispute_timeout(
+            &admin,
+            &client_addr,
+            &freelancer,
+            &arbiter,
+            &token_id,
+            &600,
+            &timeout_seconds,
+            &amounts,
+            &crate::spec_hashes_for(&amounts),
+        )
+        .map(|_| ())
+        .map_err(|e| e.unwrap())
+}
+
+#[test]
+fn initialize_enforces_dispute_timeout_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    assert_eq!(
+        try_init_with_timeout(&env, MIN_DISPUTE_TIMEOUT_SECONDS - 1),
+        Err(Error::InvalidDisputeTimeout)
+    );
+    assert_eq!(
+        try_init_with_timeout(&env, MIN_DISPUTE_TIMEOUT_SECONDS),
+        Ok(())
+    );
+    assert_eq!(
+        try_init_with_timeout(&env, MAX_DISPUTE_TIMEOUT_SECONDS),
+        Ok(())
+    );
+    assert_eq!(
+        try_init_with_timeout(&env, MAX_DISPUTE_TIMEOUT_SECONDS + 1),
+        Err(Error::InvalidDisputeTimeout)
     );
 }
 
