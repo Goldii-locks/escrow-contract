@@ -35,7 +35,7 @@ fn get_job_and_cancel_override_at_cap_fit_budget() {
     let repeated = std::vec![1_i128; MAX_MILESTONES as usize];
     let amounts = &repeated;
     let fx = EscrowFixture::new(&env)
-        .milestones(&amounts)
+        .milestones(amounts)
         .funded()
         .build();
 
