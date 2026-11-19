@@ -438,7 +438,110 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CBYZLR6PJMVSKD77TNY25XNNIYBKRN7U4CO6L5DT4XZGHI36BG3TCRGD",
+              "contract": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": "stellar_asset",
+                  "storage": [
+                    {
+                      "key": {
+                        "symbol": "METADATA"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "decimal"
+                            },
+                            "val": {
+                              "u32": 7
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "name"
+                            },
+                            "val": {
+                              "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "symbol"
+                            },
+                            "val": {
+                              "string": "aaa"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Admin"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "AssetInfo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "AlphaNum4"
+                          },
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "asset_code"
+                                },
+                                "val": {
+                                  "string": "aaa\\0"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "issuer"
+                                },
+                                "val": {
+                                  "bytes": "0000000000000000000000000000000000000000000000000000000000000004"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 120960
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CCEQ4SNS63NZN5FNYUYZFXKAXHO5R64DIUX4TPQGM3KRMO6CUTJWVGHJ",
               "key": {
                 "vec": [
                   {
@@ -462,7 +565,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CBYZLR6PJMVSKD77TNY25XNNIYBKRN7U4CO6L5DT4XZGHI36BG3TCRGD",
+              "contract": "CCEQ4SNS63NZN5FNYUYZFXKAXHO5R64DIUX4TPQGM3KRMO6CUTJWVGHJ",
               "key": {
                 "vec": [
                   {
@@ -550,7 +653,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CBYZLR6PJMVSKD77TNY25XNNIYBKRN7U4CO6L5DT4XZGHI36BG3TCRGD",
+              "contract": "CCEQ4SNS63NZN5FNYUYZFXKAXHO5R64DIUX4TPQGM3KRMO6CUTJWVGHJ",
               "key": {
                 "vec": [
                   {
@@ -607,7 +710,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CBYZLR6PJMVSKD77TNY25XNNIYBKRN7U4CO6L5DT4XZGHI36BG3TCRGD",
+              "contract": "CCEQ4SNS63NZN5FNYUYZFXKAXHO5R64DIUX4TPQGM3KRMO6CUTJWVGHJ",
               "key": {
                 "vec": [
                   {
@@ -635,7 +738,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CBYZLR6PJMVSKD77TNY25XNNIYBKRN7U4CO6L5DT4XZGHI36BG3TCRGD",
+              "contract": "CCEQ4SNS63NZN5FNYUYZFXKAXHO5R64DIUX4TPQGM3KRMO6CUTJWVGHJ",
               "key": "ledger_key_contract_instance",
               "durability": "persistent",
               "val": {
@@ -801,109 +904,6 @@
           "ext": "v0"
         },
         "live_until": 2628000
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN",
-              "key": "ledger_key_contract_instance",
-              "durability": "persistent",
-              "val": {
-                "contract_instance": {
-                  "executable": "stellar_asset",
-                  "storage": [
-                    {
-                      "key": {
-                        "symbol": "METADATA"
-                      },
-                      "val": {
-                        "map": [
-                          {
-                            "key": {
-                              "symbol": "decimal"
-                            },
-                            "val": {
-                              "u32": 7
-                            }
-                          },
-                          {
-                            "key": {
-                              "symbol": "name"
-                            },
-                            "val": {
-                              "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF"
-                            }
-                          },
-                          {
-                            "key": {
-                              "symbol": "symbol"
-                            },
-                            "val": {
-                              "string": "aaa"
-                            }
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "Admin"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "AssetInfo"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "AlphaNum4"
-                          },
-                          {
-                            "map": [
-                              {
-                                "key": {
-                                  "symbol": "asset_code"
-                                },
-                                "val": {
-                                  "string": "aaa\\0"
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "issuer"
-                                },
-                                "val": {
-                                  "bytes": "0000000000000000000000000000000000000000000000000000000000000004"
-                                }
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 120960
       },
       {
         "entry": {
@@ -1111,7 +1111,7 @@
     {
       "event": {
         "ext": "v0",
-        "contract_id": "CBYZLR6PJMVSKD77TNY25XNNIYBKRN7U4CO6L5DT4XZGHI36BG3TCRGD",
+        "contract_id": "CCEQ4SNS63NZN5FNYUYZFXKAXHO5R64DIUX4TPQGM3KRMO6CUTJWVGHJ",
         "type": "contract",
         "body": {
           "v0": {
@@ -1269,7 +1269,7 @@
                     "symbol": "escrow"
                   },
                   "val": {
-                    "address": "CBYZLR6PJMVSKD77TNY25XNNIYBKRN7U4CO6L5DT4XZGHI36BG3TCRGD"
+                    "address": "CCEQ4SNS63NZN5FNYUYZFXKAXHO5R64DIUX4TPQGM3KRMO6CUTJWVGHJ"
                   }
                 },
                 {

@@ -376,7 +376,10 @@ token is a no-op. Existing escrows keep their own token and are unaffected.
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
 client's signature. It deploys the escrow with the platform admin as its
-admin and emits `created` with the new escrow's address.
+admin and emits `created` with the new escrow's address. The deployment salt
+is `sha256(client.to_xdr() || salt)`, so the same `salt` used by different
+clients yields different escrow addresses and cannot be front-run; frontends
+should call the read-only `escrow_address(client, salt)` to predict the address.
 
 ## Deploy (Testnet)
 

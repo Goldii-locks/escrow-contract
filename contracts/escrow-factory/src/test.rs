@@ -282,6 +282,41 @@ fn disallow_token_removes_allowed_token_and_blocks_new_escrows() {
     );
 }
 
+#[test]
+fn salt_is_bound_to_client_and_address_is_predictable() {
+    let (env, fid, _admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let salt = BytesN::from_array(&env, &[7u8; 32]);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let amounts = vec![&env, 1_000_i128];
+    let hashes = zero_hashes(&env, 1);
+
+    let mut addresses = soroban_sdk::Vec::new(&env);
+    for _ in 0..2 {
+        let client = Address::generate(&env);
+        let predicted = factory.escrow_address(&client, &salt);
+        let deployed = factory.create_escrow(
+            &client,
+            &freelancer,
+            &arbiter,
+            &token,
+            &604800u64,
+            &amounts,
+            &hashes,
+            &default_settings(),
+            &salt,
+        );
+        assert_eq!(deployed, predicted);
+        assert_eq!(
+            escrow::Client::new(&env, &deployed).get_job().client,
+            client
+        );
+        addresses.push_back(deployed);
+    }
+    assert_ne!(addresses.get(0).unwrap(), addresses.get(1).unwrap());
+}
+
 /// Creating an escrow needs only the client's signature: the platform admin
 /// is named as the escrow admin without having to co-sign every job.
 #[test]

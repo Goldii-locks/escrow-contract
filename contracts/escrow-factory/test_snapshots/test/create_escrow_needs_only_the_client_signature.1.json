@@ -418,7 +418,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CCX3DKVRK7O5NDZXPPL7JAI45VLAHDMC5WOKQYWYAVRKO7DG4QZ4FLCD",
+              "contract": "CC6O7YSWLK6YMGOSG2VQASNJLFL6YK4BJ5NRWY2LNDPZYXTNXQ7HN4PS",
               "key": {
                 "vec": [
                   {
@@ -442,7 +442,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CCX3DKVRK7O5NDZXPPL7JAI45VLAHDMC5WOKQYWYAVRKO7DG4QZ4FLCD",
+              "contract": "CC6O7YSWLK6YMGOSG2VQASNJLFL6YK4BJ5NRWY2LNDPZYXTNXQ7HN4PS",
               "key": {
                 "vec": [
                   {
@@ -530,7 +530,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CCX3DKVRK7O5NDZXPPL7JAI45VLAHDMC5WOKQYWYAVRKO7DG4QZ4FLCD",
+              "contract": "CC6O7YSWLK6YMGOSG2VQASNJLFL6YK4BJ5NRWY2LNDPZYXTNXQ7HN4PS",
               "key": {
                 "vec": [
                   {
@@ -587,7 +587,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CCX3DKVRK7O5NDZXPPL7JAI45VLAHDMC5WOKQYWYAVRKO7DG4QZ4FLCD",
+              "contract": "CC6O7YSWLK6YMGOSG2VQASNJLFL6YK4BJ5NRWY2LNDPZYXTNXQ7HN4PS",
               "key": {
                 "vec": [
                   {
@@ -615,7 +615,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CCX3DKVRK7O5NDZXPPL7JAI45VLAHDMC5WOKQYWYAVRKO7DG4QZ4FLCD",
+              "contract": "CC6O7YSWLK6YMGOSG2VQASNJLFL6YK4BJ5NRWY2LNDPZYXTNXQ7HN4PS",
               "key": "ledger_key_contract_instance",
               "durability": "persistent",
               "val": {
