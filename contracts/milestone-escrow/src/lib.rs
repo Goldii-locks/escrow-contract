@@ -500,7 +500,7 @@ pub struct SplitRefundFeeDistribution {
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdminRole {
-    /// `upgrade`, `migrate`, `migrate_cold_config`.
+    /// `upgrade`, `migrate`.
     Upgrader,
     /// Pause and resume, including the emergency pause controls.
     Operator,
@@ -2058,7 +2058,7 @@ impl MilestoneEscrow {
     /// 32-signer multisig set.
     ///
     /// A deployment upgraded from the old layout still holds these values in
-    /// instance storage until the admin calls `migrate_cold_config`, so an
+    /// instance storage until the admin calls `migrate`, so an
     /// absent persistent entry falls back to the instance copy. The instance
     /// entry is loaded by every call anyway, so the fallback costs no extra
     /// ledger entry, and the persistent copy always wins once written.
@@ -6798,30 +6798,6 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Migrate a deployment upgraded from the old storage layout (issue #772).
-    ///
-    /// Moves `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
-    /// `PlatformFeeAllocation` out of the contract-instance entry, which every
-    /// invocation loads, into persistent keys read only by the functions that
-    /// use them. A multisig regime still stored under the pre-#456
-    /// `MultiSigSigners` / `MultiSigThreshold` keys is folded into a persistent
-    /// `MultiSigConfig` on the way.
-    ///
-    /// Call it once, right after `upgrade` to this version. Until then the
-    /// contract keeps working, because every cold-config read falls back to the
-    /// instance copy; the migration only shrinks the instance entry. It is
-    /// idempotent: a second call finds nothing to move.
-    ///
-    /// Returns the number of instance entries that were moved or folded.
-    ///
-    /// # Errors
-    /// * `NotInitialized` – Admin key has never been stored.
-    /// * `Unauthorized`   – `admin` is not the stored admin.
-    pub fn migrate_cold_config(env: Env, admin: Address) -> Result<u32, Error> {
-        Self::require_role(&env, &admin, AdminRole::Upgrader)?;
-        Ok(Self::move_cold_config(&env))
-    }
-
     /// Bring storage written by an older version of this contract up to
     /// `SCHEMA_VERSION`.
     ///
@@ -6837,10 +6813,9 @@ impl MilestoneEscrow {
     /// Steps:
     /// * `1 → 2`: every `Milestone` stored without `spec_hash` gains a zero
     ///   `spec_hash` (#767), and the whitelist, multisig, yield and fee
-    ///   configuration moves to persistent storage (#772, as
-    ///   `migrate_cold_config`).  Milestones that already carry a `spec_hash`
-    ///   (deployments created after #767 but before the schema marker) are
-    ///   left as they are.
+    ///   configuration moves to persistent storage (#772).  Milestones that
+    ///   already carry a `spec_hash` (deployments created after #767 but
+    ///   before the schema marker) are left as they are.
     /// * `2 → 3`: every `Milestone` stored without `deliverable` gains a zero
     ///   `deliverable`.
     ///
@@ -6923,8 +6898,12 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Body of `migrate_cold_config`, shared with `migrate`.  Returns the
-    /// number of instance entries that were moved or folded.
+    /// Move `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
+    /// `PlatformFeeAllocation` out of the contract-instance entry into
+    /// persistent keys, folding a pre-#456 `MultiSigSigners` /
+    /// `MultiSigThreshold` pair into `MultiSigConfig` (issue #772).  Run by
+    /// `migrate` for the `1 → 2` step.  Returns the number of instance entries
+    /// that were moved or folded.
     fn move_cold_config(env: &Env) -> u32 {
         let mut moved = 0u32;
         if Self::migrate_cold_entry::<Vec<Address>>(env, &DataKey::WhitelistedTokens) {
@@ -8119,7 +8098,7 @@ impl MilestoneEscrow {
     /// report `NotInitialized` for an existing multisig regime.  The legacy
     /// keys live in the contract-instance entry, which every call loads
     /// anyway, so the fallback adds no ledger entry to the footprint.
-    /// `migrate_cold_config` folds them into the persistent
+    /// `migrate` folds them into the persistent
     /// `MultiSigConfig` (issue #772).
     ///
     /// **This function must contain only read operations.**
