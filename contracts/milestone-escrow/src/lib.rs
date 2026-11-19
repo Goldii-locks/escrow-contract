@@ -12,8 +12,8 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contractmeta, contracttype, symbol_short, token, Address,
-    BytesN, ContractExecutable, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
+    contract, contracterror, contractimpl, contractmeta, contracttype, symbol_short, token,
+    Address, BytesN, ContractExecutable, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 pub mod math;
@@ -284,9 +284,11 @@ const MAX_ARBITER_FEE_BPS: u32 = 1_000;
 
 /// Seconds in a standard Gregorian year (365 days). Used by the simple-interest
 /// estimator in `escrow_interest_yield`.
+#[cfg(test)]
 const SECONDS_PER_YEAR: i128 = 31_536_000;
 
 /// Basis-point denominator for interest math (`1 bp = 1 / 10_000`).
+#[cfg(test)]
 const BPS_DENOMINATOR: i128 = 10_000;
 
 /// Storage layout this code reads and writes.  Bump it whenever a stored
@@ -2414,6 +2416,7 @@ impl MilestoneEscrow {
     ///
     /// Rejects zero/negative principal, rate, or duration immediately, and
     /// rejects rates above 100 % (`BPS_SCALE`) as an unsupported configuration.
+    #[cfg(test)]
     fn validate_interest_yield_params(
         principal: i128,
         annual_rate_bps: i128,
@@ -2436,6 +2439,7 @@ impl MilestoneEscrow {
 
     /// Validate stored yield-share configuration: both shares must be finite and
     /// sum exactly to `BPS_SCALE` (10_000).
+    #[cfg(test)]
     fn validate_interest_yield_share_config(
         client_share_bps: u32,
         freelancer_share_bps: u32,
@@ -2451,6 +2455,7 @@ impl MilestoneEscrow {
 
     /// Validate an admin-configured annual yield rate in basis points.
     /// `0` is allowed (disables accrual); values above `BPS_SCALE` are rejected.
+    #[cfg(test)]
     fn validate_yield_rate_bps(rate_bps: u32) -> Result<(), Error> {
         if rate_bps > BPS_SCALE {
             return Err(Error::InvalidRatio);
@@ -2475,6 +2480,7 @@ impl MilestoneEscrow {
     /// `get_escrow_interest_yield_no_mutation_tests` pins that guarantee by
     /// comparing whole-ledger snapshots (`Env::to_ledger_snapshot`) taken
     /// around the public read paths that call this helper.
+    #[cfg(test)]
     fn load_interest_yield_state(env: &Env) -> Result<EscrowInterestYieldState, Error> {
         Self::cold_get(env, &DataKey::InterestYieldState).ok_or(Error::NotInitialized)
     }
@@ -2505,6 +2511,7 @@ impl MilestoneEscrow {
             .unwrap_or(false))
     }
 
+    #[cfg(test)]
     fn store_interest_yield_state(env: &Env, state: &EscrowInterestYieldState) {
         env.storage()
             .persistent()
@@ -2631,6 +2638,7 @@ impl MilestoneEscrow {
         Ok(distribution)
     }
 
+    #[cfg(test)]
     fn ensure_interest_yield_unlocked(env: &Env) -> Result<(), Error> {
         let state = Self::load_interest_yield_state(env)?;
         if state.locked {
@@ -2655,6 +2663,7 @@ impl MilestoneEscrow {
     /// * absent state  – not locked, so the write is allowed to create it;
     /// * present, `locked == false` – writable;
     /// * present, `locked == true`  – the illegal source state, `EscrowLocked`.
+    #[cfg(test)]
     fn ensure_interest_yield_writable(env: &Env) -> Result<(), Error> {
         let state: Option<EscrowInterestYieldState> =
             Self::cold_get(env, &DataKey::InterestYieldState);

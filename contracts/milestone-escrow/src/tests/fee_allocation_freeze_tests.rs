@@ -6,7 +6,15 @@ use super::*;
 use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
 use soroban_sdk::IntoVal;
 
-fn fixture(env: &Env) -> (Address, Address, Address, Address, MilestoneEscrowClient<'_>) {
+fn fixture(
+    env: &Env,
+) -> (
+    Address,
+    Address,
+    Address,
+    Address,
+    MilestoneEscrowClient<'_>,
+) {
     let (client_addr, freelancer, _arbiter, admin, _token, contract_id, escrow) =
         setup_funded_escrow(env, vec![env, 1_000_i128]);
     (contract_id, admin, client_addr, freelancer, escrow)

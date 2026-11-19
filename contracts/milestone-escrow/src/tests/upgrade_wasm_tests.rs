@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::{DataKey, Error, MilestoneStatus};
-use soroban_sdk::{Address, BytesN, Env, String, Symbol, Val};
+use soroban_sdk::{Address, BytesN, Env, Symbol, Val};
 
 const ESCROW_V2_WASM: &[u8] = include_bytes!("../../testdata/escrow_v2.wasm");
 
@@ -109,7 +109,6 @@ fn upgrade_rejects_version_overflow() {
     // The failed call rolled back: still v1 code and the same version.
     assert!(!call_v2_only(&env, &contract_id));
 }
-
 
 /// A v2 whose `Milestone` layout differs from what v1 wrote cannot decode the
 /// existing entries: reading them traps.

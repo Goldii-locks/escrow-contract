@@ -127,8 +127,12 @@ fn reputation_change_emits_event_for_both_parties() {
     env.mock_all_auths();
 
     let fx = EscrowFixture::new(&env).funded().build();
-    let (client_addr, freelancer_addr, client, contract_id) =
-        (fx.client.clone(), fx.freelancer.clone(), fx.escrow, fx.contract_id);
+    let (client_addr, freelancer_addr, client, contract_id) = (
+        fx.client.clone(),
+        fx.freelancer.clone(),
+        fx.escrow,
+        fx.contract_id,
+    );
 
     client.mark_delivered(&freelancer_addr, &0u32);
     client.approve_milestone(&client_addr, &0u32);
