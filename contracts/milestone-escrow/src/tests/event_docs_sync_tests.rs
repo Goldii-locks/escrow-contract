@@ -3,6 +3,15 @@ extern crate std;
 const SRC: &str = include_str!("../lib.rs");
 const DOCS: &str = include_str!("../../../../EVENTS.md");
 
+/// Heading that starts the escrow-factory section of `EVENTS.md`. The factory
+/// is a separate contract, so its events are not emitted by `lib.rs` here.
+const FACTORY_SECTION: &str = "\n## Escrow factory events";
+
+/// The part of `EVENTS.md` that documents this contract's events.
+fn escrow_docs() -> &'static str {
+    DOCS.split(FACTORY_SECTION).next().unwrap_or(DOCS)
+}
+
 fn src_emits(topic: &str) -> bool {
     let needle = "symbol_short!(\"";
     let mut rest = SRC;
@@ -67,7 +76,7 @@ fn every_source_event_topic_is_documented() {
 fn every_documented_topic_exists_in_source() {
     let mut checked = 0u32;
     let mut missing = 0u32;
-    for line in DOCS.lines() {
+    for line in escrow_docs().lines() {
         let trimmed = line.trim_start();
         if !trimmed.starts_with("| `") {
             continue;

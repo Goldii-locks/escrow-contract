@@ -58,6 +58,8 @@ struct Cost {
 /// `mark_delivered`, `approve_milestone` and `raise_dispute` once the
 /// write-only `DeliveredAt`, `MilestoneReleased` and `DisputeFlag` temporary
 /// keys were retired (#1001).
+/// `submit_evidence` raised to 215k instructions / 600 write bytes once it
+/// runs the schema guard and `DisputeInfo` carries `raised_by` (#997).
 const BUDGETS: [(&str, i64, u32, u32); 8] = [
     ("initialize", 245_000, 7, 1_910),
     ("fund", 362_000, 4, 1_530),
@@ -65,7 +67,7 @@ const BUDGETS: [(&str, i64, u32, u32); 8] = [
     ("approve_milestone", 490_000, 6, 1_440),
     ("claim_auto_release", 517_000, 6, 1_315),
     ("raise_dispute", 316_000, 4, 950),
-    ("submit_evidence", 201_000, 2, 580),
+    ("submit_evidence", 215_000, 2, 600),
     ("resolve_dispute", 558_000, 7, 1_315),
 ];
 

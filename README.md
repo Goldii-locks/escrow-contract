@@ -97,7 +97,7 @@ The contract exposes **94 public functions** grouped by category below.
 |---|---|---|
 | `raise_dispute` | Client or Freelancer | Freeze a milestone for arbitration, committing a 32-byte `reason_hash` |
 | `submit_evidence` | Client or Freelancer | Anchor an evidence hash on an open dispute (max 10 per dispute) |
-| `get_dispute_info` | Anyone | Read the dispute reason hash, timestamps and evidence trail |
+| `get_dispute_info` | Anyone | Read who raised the dispute, the reason hash, timestamps and evidence trail |
 | `escalate_dispute` | Client or Freelancer | After timeout, restore milestone to pre-dispute status |
 | `resolve_dispute` | Arbiter | Release to freelancer or refund to client, after any arbiter fee, committing a 32-byte `decision_hash` of the written decision |
 | `dispute_arbitration_split` | Arbiter | Propose a split between client/freelancer |
@@ -373,7 +373,9 @@ point the factory at a new escrow build with `set_wasm_hash`.
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
 client's signature. It deploys the escrow with the platform admin as its
-admin and emits `created` with the new escrow's address.
+admin and emits `created` (topics: `created`, client, freelancer, arbiter) with the
+new escrow's address, token, total amount, milestone count, auto-release window,
+settings and the escrow WASM hash. See "Escrow factory events" in `EVENTS.md`.
 
 ## Deploy (Testnet)
 
@@ -463,8 +465,11 @@ existed are treated as schema 1.
 
 Schema 2 adds `spec_hash` to every stored `Milestone` (#767; old milestones
 get a zero hash) and moves the whitelist, multisig, yield and fee
-configuration out of instance storage (#772). A release that changes a stored
-type must bump `SCHEMA_VERSION` and add the step to `migrate`.
+configuration out of instance storage (#772). Schema 3 added
+`Milestone::deliverable`. Schema 4 adds `DisputeInfo::raised_by` (#997); open
+disputes are stamped with the job's client because their raiser was never
+stored. A release that changes a stored type must bump `SCHEMA_VERSION` and add
+the step to `migrate`.
 
 ## Verifying the deployed contract
 

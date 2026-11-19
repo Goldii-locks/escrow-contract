@@ -939,6 +939,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "FundedCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 2
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "FundingMode"
                           }
                         ]
@@ -1045,7 +1057,7 @@
                         ]
                       },
                       "val": {
-                        "u32": 3
+                        "u32": 4
                       }
                     },
                     {

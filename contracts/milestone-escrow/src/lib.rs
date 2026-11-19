@@ -302,7 +302,10 @@ const BPS_DENOMINATOR: i128 = 10_000;
 ///   storage (#772).
 /// * `3` – `Milestone::deliverable`, the hash recorded by
 ///   `mark_delivered_with_hash`.
-pub const SCHEMA_VERSION: u32 = 3;
+/// * `4` – `DisputeInfo::raised_by` (#997), the party that called
+///   `raise_dispute`.  Disputes already open at the upgrade have no recorded
+///   raiser; `migrate` stamps them with the job's client (see `migrate`).
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -390,6 +393,23 @@ pub struct DisputeInfo {
     pub reason_hash: BytesN<32>,
     /// Evidence hashes added by either party while the milestone is Disputed.
     pub evidence: Vec<EvidenceRecord>,
+    /// The escrow party (client or freelancer) that called `raise_dispute`
+    /// (#997).  Disputes that were already open when the escrow migrated from
+    /// schema 3 carry the job's client here, because the raiser was never
+    /// recorded; for those, the original `dispute` event's `caller` topic is
+    /// authoritative.
+    pub raised_by: Address,
+}
+
+/// `DisputeInfo` as stored by schema version 3, before `raised_by`.
+/// Only `migrate` and `get_dispute_info` read it.
+#[contracttype]
+#[derive(Clone, Debug)]
+struct DisputeInfoV3 {
+    disputed_at: u64,
+    previous_status: MilestoneStatus,
+    reason_hash: BytesN<32>,
+    evidence: Vec<EvidenceRecord>,
 }
 
 #[contracttype]
@@ -720,6 +740,18 @@ pub enum DataKey {
     /// Instance: ledger timestamp at which `fund` ran.  Starts the
     /// `ACCEPTANCE_WINDOW_SECONDS` window checked by `withdraw_unaccepted`.
     FundedAt,
+    /// Instance: number of milestones that hold their own deposit (#999).
+    /// `fund_milestone` advances it by one, so deciding whether the job is
+    /// fully funded is a comparison with `milestone_count` instead of a scan
+    /// over every milestone.  `fund` sets it to `milestone_count` and
+    /// `add_milestone` keeps it equal to the new count, so a funded job
+    /// always satisfies `FundedCount == milestone_count`.  `reduce_milestone`
+    /// leaves it alone: a reduced milestone stays funded.  There is no
+    /// milestone-removal endpoint; one would have to decrement it for every
+    /// funded milestone it removes.  Escrows created before this key existed
+    /// have no entry; `load_funded_count` counts their milestones once and
+    /// the next `fund_milestone` stores the result.
+    FundedCount,
     /// Persistent: the monotonic counter behind contract-assigned
     /// admin-transfer proposal IDs (issue #785).  `propose_admin_transfer`
     /// reads it, advances it with `checked_add` (`ArithmeticOverflow` instead
@@ -2898,6 +2930,26 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Number of milestones holding their own deposit (see
+    /// `DataKey::FundedCount`).  O(1) once the counter exists; escrows that
+    /// predate it fall back to counting `Milestone::funded` once.
+    fn load_funded_count(env: &Env, meta: &JobMeta) -> Result<u32, Error> {
+        if let Some(count) = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::FundedCount)
+        {
+            return Ok(count);
+        }
+        let mut count = 0u32;
+        for index in 0..meta.milestone_count {
+            if Self::load_milestone(env, index)?.funded {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     fn load_milestone(env: &Env, index: u32) -> Result<Milestone, Error> {
         env.storage()
             .persistent()
@@ -3591,6 +3643,7 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage().instance().set(&DataKey::FundedCount, &0u32);
 
         let meta = JobMeta {
             client,
@@ -4071,6 +4124,9 @@ impl MilestoneEscrow {
         Self::store_job_meta(&env, &meta);
         env.storage()
             .instance()
+            .set(&DataKey::FundedCount, &meta.milestone_count);
+        env.storage()
+            .instance()
             .set(&DataKey::FundedAt, &env.ledger().timestamp());
 
         let token_client = token::Client::new(&env, &meta.token);
@@ -4123,6 +4179,11 @@ impl MilestoneEscrow {
         if milestone.amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        // Read before this milestone is marked funded: the legacy fallback
+        // counts stored flags, and this milestone is still unfunded.
+        let funded_count = Self::load_funded_count(&env, &meta)?
+            .checked_add(1)
+            .ok_or(Error::ArithmeticOverflow)?;
 
         let token_client = token::Client::new(&env, &meta.token);
         let before = token_client.balance(&env.current_contract_address());
@@ -4142,14 +4203,10 @@ impl MilestoneEscrow {
                 .set(&DataKey::FundedAt, &env.ledger().timestamp());
         }
 
-        let mut all_funded = true;
-        for index in 0..meta.milestone_count {
-            if !Self::load_milestone(&env, index)?.funded {
-                all_funded = false;
-                break;
-            }
-        }
-        if all_funded {
+        env.storage()
+            .instance()
+            .set(&DataKey::FundedCount, &funded_count);
+        if funded_count == meta.milestone_count {
             meta.funded = true;
             Self::store_job_meta(&env, &meta);
         }
@@ -4257,6 +4314,11 @@ impl MilestoneEscrow {
         meta.milestone_count = new_index + 1;
         meta.total_amount = new_total;
         Self::store_job_meta(&env, &meta);
+        // The job is funded, so every milestone, including this one, holds
+        // its deposit (#999).
+        env.storage()
+            .instance()
+            .set(&DataKey::FundedCount, &meta.milestone_count);
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&client, env.current_contract_address(), &amount);
@@ -5784,6 +5846,7 @@ impl MilestoneEscrow {
                 previous_status: milestone.status.clone(),
                 reason_hash: reason_hash.clone(),
                 evidence: Vec::new(env),
+                raised_by: caller.clone(),
             },
         );
         milestone.status = MilestoneStatus::Disputed;
@@ -5835,6 +5898,7 @@ impl MilestoneEscrow {
         milestone_index: u32,
         evidence_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
@@ -5891,18 +5955,32 @@ impl MilestoneEscrow {
 
     /// Read the on-chain record for an open dispute (#712).
     ///
-    /// Returns the raising party's `reason_hash`, the ledger timestamp of the
-    /// raise (`disputed_at`), the status to restore on escalation, and every
-    /// evidence hash submitted so far. Callers use this to anchor arbitration
+    /// Returns the raising party's `reason_hash`, who raised the dispute
+    /// (`raised_by`), the ledger timestamp of the raise (`disputed_at`), the
+    /// status to restore on escalation, and every evidence hash submitted so
+    /// far. Callers use this to anchor arbitration
     /// context without relying on off-chain metadata.
     ///
     /// # Errors
     /// * [`Error::InvalidStatus`] – No open dispute exists for the milestone.
     pub fn get_dispute_info(env: Env, milestone_index: u32) -> Result<DisputeInfo, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::DisputeInfo(milestone_index))
-            .ok_or(Error::InvalidStatus)
+        let key = DataKey::DisputeInfo(milestone_index);
+        let persistent = env.storage().persistent();
+        let fields: Map<Symbol, Val> = persistent.get(&key).ok_or(Error::InvalidStatus)?;
+        if fields.contains_key(Symbol::new(&env, "raised_by")) {
+            return persistent.get(&key).ok_or(Error::InvalidStatus);
+        }
+        // Schema-3 record read between `upgrade` and `migrate`: getters keep
+        // working, with the same client placeholder `migrate` would write.
+        let old: DisputeInfoV3 = persistent.get(&key).ok_or(Error::InvalidStatus)?;
+        let meta = Self::load_job_meta(&env)?;
+        Ok(DisputeInfo {
+            disputed_at: old.disputed_at,
+            previous_status: old.previous_status,
+            reason_hash: old.reason_hash,
+            evidence: old.evidence,
+            raised_by: meta.client,
+        })
     }
 
     /// Escalate an unresolved dispute after its configured timeout by
@@ -6833,6 +6911,11 @@ impl MilestoneEscrow {
     ///   before the schema marker) are left as they are.
     /// * `2 → 3`: every `Milestone` stored without `deliverable` gains a zero
     ///   `deliverable`.
+    /// * `3 → 4`: every `DisputeInfo` stored without `raised_by` gains one
+    ///   (#997).  The raiser of a dispute that is already open was never
+    ///   stored, so it is set to the job's client as a placeholder; the
+    ///   `dispute` event for that dispute names the real caller.  Disputes
+    ///   raised after the upgrade record their actual raiser.
     ///
     /// Returns the new schema version and emits `("migrate",)` with a
     /// `MigratedEvent`.
@@ -6851,6 +6934,9 @@ impl MilestoneEscrow {
 
         if from_version < 3 {
             Self::migrate_milestones_to_v3(&env)?;
+        }
+        if from_version < 4 {
+            Self::migrate_disputes_to_v4(&env)?;
         }
         if from_version < 2 {
             Self::move_cold_config(&env);
@@ -6910,6 +6996,36 @@ impl MilestoneEscrow {
                 }
             };
             persistent.set(&key, &migrated);
+        }
+        Ok(())
+    }
+
+    /// Schema 3 → 4 for disputes: add `raised_by` (the job's client, as a
+    /// placeholder) to every open `DisputeInfo` stored without it (#997).
+    /// Records that already carry the field are left untouched.
+    fn migrate_disputes_to_v4(env: &Env) -> Result<(), Error> {
+        let meta = Self::load_job_meta(env)?;
+        let persistent = env.storage().persistent();
+        let raised_by_field = Symbol::new(env, "raised_by");
+        for index in 0..meta.milestone_count {
+            let key = DataKey::DisputeInfo(index);
+            let Some(fields) = persistent.get::<_, Map<Symbol, Val>>(&key) else {
+                continue;
+            };
+            if fields.contains_key(raised_by_field.clone()) {
+                continue;
+            }
+            let old: DisputeInfoV3 = persistent.get(&key).ok_or(Error::InvalidStatus)?;
+            persistent.set(
+                &key,
+                &DisputeInfo {
+                    disputed_at: old.disputed_at,
+                    previous_status: old.previous_status,
+                    reason_hash: old.reason_hash,
+                    evidence: old.evidence,
+                    raised_by: meta.client.clone(),
+                },
+            );
         }
         Ok(())
     }
