@@ -1984,9 +1984,14 @@ impl MilestoneEscrow {
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 
+    /// Load the single source of truth for the admin: the **instance** entry.
+    ///
+    /// Pre-#679 deployments also carry a legacy persistent `DataKey::Admin`
+    /// copy. It is deliberately ignored here; see the migration note on
+    /// `migrate`.
     fn load_admin(env: &Env) -> Result<Address, Error> {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
     }
@@ -1994,32 +1999,6 @@ impl MilestoneEscrow {
     fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = Self::load_admin(env)?;
-        if stored_admin != *admin {
-            return Err(Error::Unauthorized);
-        }
-        Ok(())
-    }
-
-    /// Variant of `require_admin` that reads `DataKey::Admin` from **instance**
-    /// storage instead of persistent storage.
-    ///
-    /// During `initialize` the admin address is written to both
-    /// `instance()` and `persistent()` storage (see `initialize`).  Callers
-    /// that also write other instance-storage keys in the same call can use
-    /// this helper so that both the admin read and the subsequent instance write
-    /// touch a **single** ledger entry rather than two.
-    ///
-    /// # Errors
-    /// * `NotInitialized` – The instance `Admin` key is absent (contract has
-    ///   not been initialised).
-    /// * `Unauthorized`   – `admin` does not match the stored admin.
-    fn require_admin_from_instance(env: &Env, admin: &Address) -> Result<(), Error> {
-        admin.require_auth();
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
         if stored_admin != *admin {
             return Err(Error::Unauthorized);
         }
@@ -3265,7 +3244,7 @@ impl MilestoneEscrow {
     ///   `MilestoneStatus::Pending` with `released_amount = 0`.
     /// * Each `Milestone.spec_hash` – the corresponding hash from
     ///   `milestone_spec_hashes`.
-    /// * `DataKey::Admin` (instance **and** persistent storage) – the `admin`
+    /// * `DataKey::Admin` (instance storage only) – the `admin`
     ///   address.
     /// * `DataKey::Version` (instance storage) – version marker `1u32`.
     /// * `DataKey::Ep` (instance storage) – emergency-pause flag set to
@@ -3580,8 +3559,8 @@ impl MilestoneEscrow {
             },
         );
 
+        // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().persistent().set(
             &DataKey::PlatformFeeAllocation,
@@ -3840,10 +3819,7 @@ impl MilestoneEscrow {
             return Err(Error::AdminTransferPending);
         }
 
-        env.storage().persistent().set(&DataKey::Admin, &new_admin);
-        // Keep the instance copy in sync: `require_admin_from_instance`
-        // authorizes against it, so a stale value would leave the old admin
-        // in control of those endpoints.
+        // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
         env.events().publish(
@@ -3882,7 +3858,7 @@ impl MilestoneEscrow {
     ///
     /// * [`Error::NotInitialized`] – Returned from any of three call sites
     ///   inside the function:
-    ///   1. `require_admin` fails to load `DataKey::Admin` from persistent
+    ///   1. `require_admin` fails to load `DataKey::Admin` from instance
     ///      storage (the contract was never initialized).
     ///   2. `load_job_meta` fails to load `DataKey::JobMeta` from instance
     ///      storage (initialize was never called or storage was cleared).
@@ -7012,6 +6988,14 @@ impl MilestoneEscrow {
     /// 2. `migrate(admin)` rewrites the stored entries one schema step at a
     ///    time and records `SCHEMA_VERSION`.  Normal operation resumes.
     ///
+    /// Migration note (#679): before this change the admin was written to both
+    /// instance and persistent storage. The persistent `DataKey::Admin` copy is
+    /// no longer read or written by any code path; the instance copy is the
+    /// single source of truth. Contracts deployed with both copies need no
+    /// state rewrite: a stale persistent value is inert and cannot grant or
+    /// revoke authority, and every admin-changing path now updates exactly one
+    /// entry, so no stale-authority window remains.
+    ///
     /// Steps:
     /// * `1 → 2`: every `Milestone` stored without `spec_hash` gains a zero
     ///   `spec_hash` (#767), and the whitelist, multisig, yield and fee
@@ -8646,7 +8630,7 @@ impl MilestoneEscrow {
         new_address: Address,
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        Self::require_admin_from_instance(&env, &admin)?;
+        Self::require_admin(&env, &admin)?;
         Self::validate_address(&env, &new_address)?;
 
         let instance = env.storage().instance();
@@ -8708,10 +8692,10 @@ impl MilestoneEscrow {
         new_admin: Address,
     ) -> Result<u32, Error> {
         Self::ensure_migrated(&env)?;
-        // Storage-footprint note: `DataKey::Version` (instance) and
-        // `DataKey::Admin` (persistent) are only ever written together, in a
-        // single atomic `initialize` call — a failed `initialize` reverts the
-        // whole invocation, so one can never be present without the other.
+        // Storage-footprint note: `DataKey::Version` and `DataKey::Admin`
+        // (both instance) are only ever written together in a single atomic
+        // `initialize` call — a failed `initialize` reverts the whole
+        // invocation, so one can never be present without the other.
         // `load_admin` alone is therefore a complete "is this contract
         // initialised" check (it already backs this same guarantee in
         // `execute_admin_transfer`), so a separate `require_initialized`
@@ -8848,11 +8832,7 @@ impl MilestoneEscrow {
         // rewrite the Admin ledger entry; it still emits the event and clears
         // the pending proposal.
         if old_admin != pending.new_admin {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Admin, &pending.new_admin);
-            // Keep the instance copy read by `require_admin_from_instance`
-            // in sync with the persistent one.
+            // Single source of truth: instance storage only (#679).
             env.storage()
                 .instance()
                 .set(&DataKey::Admin, &pending.new_admin);
