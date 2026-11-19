@@ -1,5 +1,6 @@
 #![cfg(test)]
-//! Tests for `add_milestone` / `reduce_milestone` (issue #737).
+//! Tests for `add_milestone` / `reduce_milestone` (issue #737) and
+//! `increase_milestone` (issue #1020).
 //!
 //! Coverage required by the acceptance criteria:
 //! * add with funding (client deposit, count/total update, event),
@@ -12,8 +13,9 @@
 
 use crate::test::{setup_funded_escrow, setup_unfunded_escrow};
 use crate::{
-    all_event_tuples, DataKey, Error, JobMeta, MilestoneAddedEvent, MilestoneEscrowClient,
-    MilestoneReducedEvent, MilestoneStatus, MAX_MILESTONES,
+    all_event_tuples, DataKey, Error, FundingMode, JobMeta, MilestoneAddedEvent, MilestoneEscrow,
+    MilestoneEscrowClient, MilestoneIncreasedEvent, MilestoneReducedEvent, MilestoneStatus,
+    MAX_MILESTONES,
 };
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{symbol_short, token, vec, Address, Env, FromVal, IntoVal, Symbol, Val};
@@ -399,4 +401,207 @@ fn amendment_sequence_preserves_conservation_invariant() {
     let meta = job_meta(&env, &contract_id);
     assert_eq!(milestone_sum(&escrow), meta.total_amount);
     assert_eq!(balance(&env, &token_addr, &contract_id), meta.total_amount);
+}
+
+// ── increase_milestone ───────────────────────────────────────────────────────
+
+/// A per-milestone escrow over `[1_000, 2_000]`, accepted but with no
+/// milestone funded. The client holds 3_500.
+fn setup_per_milestone(
+    env: &Env,
+) -> (
+    Address,
+    Address,
+    Address,
+    Address,
+    MilestoneEscrowClient<'_>,
+) {
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter_addr = Address::generate(env);
+    let admin_addr = Address::generate(env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    token::StellarAssetClient::new(env, &token_addr).mint(&client_addr, &3_500);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(env, &contract_id);
+    let amounts = vec![env, 1_000_i128, 2_000_i128];
+    escrow.initialize_with_funding_mode(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_addr,
+        &604_800,
+        &amounts,
+        &crate::spec_hashes_for(&amounts),
+        &FundingMode::PerMilestone,
+    );
+    escrow.accept_job(&freelancer_addr);
+    escrow.accept_arbiter(&arbiter_addr);
+    (
+        client_addr,
+        freelancer_addr,
+        token_addr,
+        contract_id,
+        escrow,
+    )
+}
+
+#[test]
+fn increase_milestone_upfront_collects_difference_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, token_addr, contract_id, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 2_000_i128]);
+    token::StellarAssetClient::new(&env, &token_addr).mint(&client_addr, &500);
+
+    escrow.increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_500_i128);
+
+    assert_eq!(topic_count(&env, symbol_short!("ms_incr")), 1);
+    let event: MilestoneIncreasedEvent = last_event_payload(&env);
+    assert_eq!(event.milestone_index, 0);
+    assert_eq!(event.old_amount, 1_000);
+    assert_eq!(event.new_amount, 1_500);
+    assert_eq!(event.total_amount, 3_500);
+    assert_eq!(event.milestone_count, 2);
+
+    let milestone = escrow
+        .get_job()
+        .milestones
+        .get(0)
+        .expect("first milestone exists");
+    assert_eq!(milestone.amount, 1_500);
+    assert_eq!(milestone.status, MilestoneStatus::Pending);
+
+    let meta = job_meta(&env, &contract_id);
+    assert_eq!(meta.total_amount, 3_500);
+    assert_eq!(milestone_sum(&escrow), meta.total_amount);
+    assert_eq!(balance(&env, &token_addr, &client_addr), 0);
+    assert_eq!(balance(&env, &token_addr, &contract_id), 3_500);
+}
+
+#[test]
+fn increase_milestone_per_milestone_funded_collects_difference() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, token_addr, contract_id, escrow) = setup_per_milestone(&env);
+    escrow.fund_milestone(&client_addr, &0u32);
+
+    escrow.increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_500_i128);
+
+    let milestone = escrow
+        .get_job()
+        .milestones
+        .get(0)
+        .expect("first milestone exists");
+    assert_eq!(milestone.amount, 1_500);
+    assert_eq!(job_meta(&env, &contract_id).total_amount, 3_500);
+    assert_eq!(balance(&env, &token_addr, &client_addr), 2_000);
+    assert_eq!(balance(&env, &token_addr, &contract_id), 1_500);
+}
+
+#[test]
+fn increase_milestone_per_milestone_unfunded_only_changes_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, token_addr, contract_id, escrow) = setup_per_milestone(&env);
+
+    escrow.increase_milestone(&client_addr, &freelancer_addr, &1u32, &2_500_i128);
+
+    assert_eq!(topic_count(&env, symbol_short!("ms_incr")), 1);
+    let milestone = escrow
+        .get_job()
+        .milestones
+        .get(1)
+        .expect("second milestone exists");
+    assert_eq!(milestone.amount, 2_500);
+    assert_eq!(job_meta(&env, &contract_id).total_amount, 3_500);
+    assert_eq!(balance(&env, &token_addr, &client_addr), 3_500);
+    assert_eq!(balance(&env, &token_addr, &contract_id), 0);
+}
+
+#[test]
+fn increase_milestone_rejects_non_pending_milestones() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 2_000_i128]);
+
+    escrow.mark_delivered(&freelancer_addr, &0u32);
+    let res = escrow.try_increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_500_i128);
+    assert_eq!(res, Err(Ok(Error::InvalidStatus)));
+
+    assert_eq!(milestone_sum(&escrow), 3_000);
+}
+
+#[test]
+fn increase_milestone_rejected_without_both_signatures() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, token_addr, contract_id, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    token::StellarAssetClient::new(&env, &token_addr).mint(&client_addr, &500);
+
+    let invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "increase_milestone",
+        args: (&client_addr, &freelancer_addr, &0u32, &1_500_i128).into_val(&env),
+        sub_invokes: &[],
+    };
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &client_addr,
+            invoke: &invoke,
+        }])
+        .try_increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_500_i128);
+    assert!(
+        matches!(result, Err(Err(_))),
+        "client-only signature must revert"
+    );
+
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &freelancer_addr,
+            invoke: &invoke,
+        }])
+        .try_increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_500_i128);
+    assert!(
+        matches!(result, Err(Err(_))),
+        "freelancer-only signature must revert"
+    );
+
+    // No mutation, no deposit.
+    assert_eq!(job_meta(&env, &contract_id).total_amount, 1_000);
+    assert_eq!(balance(&env, &token_addr, &contract_id), 1_000);
+    assert_eq!(topic_count(&env, symbol_short!("ms_incr")), 0);
+}
+
+#[test]
+fn increase_milestone_rejects_amounts_not_above_current() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let res = escrow.try_increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_000_i128);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+
+    let res = escrow.try_increase_milestone(&client_addr, &freelancer_addr, &0u32, &600_i128);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+
+    assert_eq!(milestone_sum(&escrow), 1_000);
+}
+
+#[test]
+fn increase_milestone_rejects_unfunded_upfront_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_unfunded_escrow(&env, vec![&env, 1_000_i128]);
+
+    let res = escrow.try_increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_500_i128);
+    assert_eq!(res, Err(Ok(Error::NotFunded)));
 }

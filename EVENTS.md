@@ -33,6 +33,7 @@ freelancer when the client acts and the client otherwise:
 | `extend`   | `client`, `freelancer`                |
 | `ms_add`   | `client`, `freelancer`                |
 | `ms_reduce`| `client`, `freelancer`                |
+| `ms_incr`  | `client`, `freelancer`                |
 | `cancel`   | `caller`, counterparty                |
 | `cxlappr`  | `caller`, counterparty                |
 | `cancelrev`| `caller`, counterparty                |
@@ -54,6 +55,7 @@ freelancer when the client acts and the client otherwise:
 | `msfund`   | `MilestoneFundedEvent`           | state change      |
 | `ms_add`   | `MilestoneAddedEvent`            | state change      |
 | `ms_reduce`| `MilestoneReducedEvent`          | state change      |
+| `ms_incr`  | `MilestoneIncreasedEvent`        | state change      |
 | `deliver`  | `DeliveredEvent`                 | state change      |
 | `msrev`    | `RevisionRequestedEvent`         | state change      |
 | `approve`  | `ApprovedEvent`                  | state change      |

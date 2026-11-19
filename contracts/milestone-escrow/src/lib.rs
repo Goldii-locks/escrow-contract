@@ -843,6 +843,21 @@ pub struct MilestoneReducedEvent {
     pub milestone_count: u32,
 }
 
+/// Emitted by `increase_milestone` when both parties consent to raising a
+/// `Pending` milestone's amount (issue #1020).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneIncreasedEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestone_index: u32,
+    pub old_amount: i128,
+    pub new_amount: i128,
+    /// Contract-level total after the increase.
+    pub total_amount: i128,
+    pub milestone_count: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MilestoneFundedEvent {
@@ -4430,6 +4445,113 @@ impl MilestoneEscrow {
                 old_amount: new_amount + refund,
                 new_amount,
                 refund,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Raise the amount of a `Pending` milestone (issue #1020).
+    ///
+    /// Both parties must sign.  Only `Pending` milestones can be raised, as
+    /// with `reduce_milestone`.  On a funded milestone the client deposits the
+    /// difference in the same call and the received amount is checked, so the
+    /// conservation invariant `total_amount == Σ milestone.amounts` holds
+    /// across the amendment.  In per-milestone mode an unfunded milestone only
+    /// has its stored amount changed; `fund_milestone` later collects it.
+    ///
+    /// # Parameters
+    /// * `client`          – The job's client; pays the difference.
+    /// * `freelancer`      – The job's freelancer; consents to the larger scope.
+    /// * `milestone_index` – Index of the milestone to raise.
+    /// * `new_amount`      – Replacement amount.  Must be strictly above the
+    ///                        milestone's current amount.
+    ///
+    /// # Errors
+    /// * `Paused` / `EscrowLocked`     – Emergency pause or cancel lock is on.
+    /// * `NotInitialized`              – Contract has not been initialized.
+    /// * `Unauthorized`                – `client` / `freelancer` do not match
+    ///                                    the stored job parties.
+    /// * `InvalidMilestone`            – `milestone_index` is out of range.
+    /// * `NotFunded`                   – An upfront escrow has not been funded
+    ///                                    yet.
+    /// * `InvalidStatus`               – The milestone is not `Pending`.
+    /// * `InvalidAmount`               – `new_amount` is not strictly above the
+    ///                                    current amount, or `total_amount`
+    ///                                    overflows `i128`.
+    /// * `InsufficientBalance`         – The escrow received less than the
+    ///                                    difference.
+    pub fn increase_milestone(
+        env: Env,
+        client: Address,
+        freelancer: Address,
+        milestone_index: u32,
+        new_amount: i128,
+    ) -> Result<(), Error> {
+        Self::ensure_not_paused(&env)?;
+        Self::assert_tax_withholding_not_locked(&env)?;
+        Self::assert_platform_fee_allocation_not_locked(&env)?;
+        Self::assert_emergency_pause_not_locked(&env)?;
+        Self::assert_time_ext_not_locked(&env)?;
+        Self::assert_payment_streaming_not_locked(&env)?;
+
+        let mut meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        let funded = Self::milestone_is_funded(&meta, &milestone);
+        if !funded && Self::load_funding_mode(&env) != FundingMode::PerMilestone {
+            return Err(Error::NotFunded);
+        }
+        if milestone.status != MilestoneStatus::Pending {
+            return Err(Error::InvalidStatus);
+        }
+        if new_amount <= milestone.amount {
+            return Err(Error::InvalidAmount);
+        }
+        let old_amount = milestone.amount;
+        let difference = new_amount - old_amount;
+        let new_total = meta
+            .total_amount
+            .checked_add(difference)
+            .ok_or(Error::InvalidAmount)?;
+
+        milestone.amount = new_amount;
+        Self::store_milestone(&env, milestone_index, &milestone);
+        // Persist amended state BEFORE the token transfer so a reentrant call
+        // sees the updated amount/total (mirrors `fund`).
+        meta.total_amount = new_total;
+        Self::store_job_meta(&env, &meta);
+
+        if funded {
+            let token_client = token::Client::new(&env, &meta.token);
+            let before = token_client.balance(&env.current_contract_address());
+            token_client.transfer(&client, env.current_contract_address(), &difference);
+            let after = token_client.balance(&env.current_contract_address());
+            let received = after.checked_sub(before).unwrap_or(0);
+            if received != difference {
+                return Err(Error::InsufficientBalance);
+            }
+        }
+
+        env.events().publish(
+            (symbol_short!("ms_incr"), client.clone(), freelancer.clone()),
+            MilestoneIncreasedEvent {
+                client,
+                freelancer,
+                milestone_index,
+                old_amount,
+                new_amount,
                 total_amount: meta.total_amount,
                 milestone_count: meta.milestone_count,
             },

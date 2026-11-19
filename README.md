@@ -68,6 +68,7 @@ The contract exposes **94 public functions** grouped by category below.
 | `withdraw_unaccepted` | Client | Reclaim funds if job not accepted within 7 days |
 | `add_milestone` | Client + Freelancer | Append a new Pending milestone to a funded job; the client deposits its amount in the same call (capped at `MAX_MILESTONES` = 50) |
 | `reduce_milestone` | Client + Freelancer | Lower a Pending milestone's amount and refund the difference to the client |
+| `increase_milestone` | Client + Freelancer | Raise a Pending milestone's amount; the client deposits the difference if the milestone is funded |
 | `rotate_freelancer` | Client + Freelancer | Move the freelancer role and future payouts to a new address |
 | `replace_arbiter` | Client + Freelancer | Appoint a new arbiter when the sitting one is unavailable; refused while a dispute is open |
 | `get_job` | Anyone | View current job state |

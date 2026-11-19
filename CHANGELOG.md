@@ -36,6 +36,12 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Added
 
+- `increase_milestone(client, freelancer, milestone_index, new_amount)`:
+  raise a `Pending` milestone's amount with both parties' consent. On a
+  funded milestone the client deposits the difference in the same call; in
+  per-milestone mode an unfunded milestone only has its amount changed.
+  Updates `total_amount` and emits `ms_incr` with the old and new amounts
+  (#1020).
 - Property-based tests (`proptest`) for conservation of funds, terminal state immutability,
   and failed-call balance isolation across arbitrary operation sequences (#722).
 - `migrate_cold_config(admin)`: run once after upgrading an existing deployment
