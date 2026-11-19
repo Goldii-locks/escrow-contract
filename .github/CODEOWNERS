@@ -1,2 +1,17 @@
+# Changes to the contract, its design docs, deployment records and release
+# automation require review from the contract lead.
+
+/contracts/                   @godamongstmen897
+/deployments/                 @godamongstmen897
+/scripts/deploy-*             @godamongstmen897
+/.github/workflows/           @godamongstmen897
+/.github/CODEOWNERS           @godamongstmen897
+
+# Design docs
+/ADMIN_MULTISIG_DECISION.md   @godamongstmen897
+/EVENTS.md                    @godamongstmen897
 # Changes to the mainnet launch gate need the contract lead (#1004).
-/MAINNET.md @godamongstmen897
+/MAINNET.md                   @godamongstmen897
+/SECURITY.md                  @godamongstmen897
+/SPEC.md                      @godamongstmen897
+/THREAT_MODEL.md              @godamongstmen897

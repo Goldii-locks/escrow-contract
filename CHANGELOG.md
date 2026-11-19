@@ -52,6 +52,11 @@ hash for every commit in the `reproducible-wasm` job summary.
   build (artifact) and published as the versioned GitHub Package
   `@goldii-locks/milestone-escrow-bindings` on `v*` tags; consumption guide in
   `docs/typescript-bindings.md` (#744).
+- `withdraw_to(caller, recipient)`: pay the amount owed to `caller` to a
+  different `recipient` when `caller` can no longer receive the token (for
+  example after the issuer deauthorized it). `recipient` must not be a zero
+  address or the contract (`InvalidAddress`). Emits `withdraw` with `caller`
+  as an extra topic (#1012).
 
 ## [0.2.0] - 2026-06-20
 

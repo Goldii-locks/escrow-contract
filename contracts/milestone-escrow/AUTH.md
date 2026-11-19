@@ -37,6 +37,7 @@ are listed at the bottom as **No auth required**.
 | `approve_partial` | `client` | `client.require_auth()` |
 | `approve_milestone` | `client` | `client.require_auth()` |
 | `withdraw` | `caller` (any address with owed balance) | `caller.require_auth()` |
+| `withdraw_to` | `caller` (any address with owed balance) | `caller.require_auth()` |
 | `raise_dispute` | `caller` (client **or** freelancer) | `require_dispute_party` |
 | `escalate_dispute` | `caller` (client **or** freelancer) | `require_dispute_party` |
 | `resolve_dispute` | `arbiter` | `arbiter.require_auth()` |

@@ -20,6 +20,7 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `approve`  | `client`                              |
 | `dispute`  | `caller`                              |
 | `freerot`  | `new_freelancer`                      |
+| `withdraw` | `caller` (`withdraw_to` only)         |
 
 ## Events
 

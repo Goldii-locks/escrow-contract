@@ -5456,6 +5456,62 @@ impl MilestoneEscrow {
         Ok(())
     }
 
+    /// Withdraw the amount owed to `caller` to a different `recipient`
+    /// address (#1012).
+    ///
+    /// Credits exist because a transfer to `caller` failed. When that cannot
+    /// be fixed (e.g. the issuer deauthorized the account), `caller` can still
+    /// sign and send the credit somewhere it can be received. Otherwise this
+    /// behaves like `withdraw`: the credit is cleared before the transfer and
+    /// the whole call reverts, keeping the credit, if the transfer fails.
+    ///
+    /// The `withdraw` event carries `caller` as an extra topic and
+    /// `recipient` in its body.
+    ///
+    /// # Parameters
+    /// * `caller`    – Address with an owed balance. Must authorize the call.
+    /// * `recipient` – Address that receives the owed balance.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Contract has not been initialized.
+    /// * `InvalidAddress` – `recipient` is a zero address or the contract.
+    /// * `InvalidAmount`  – Nothing is owed to `caller`.
+    pub fn withdraw_to(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        caller.require_auth();
+        Self::validate_address(&env, &recipient)?;
+        let meta = Self::load_job_meta(&env)?;
+
+        let key = DataKey::Owed(caller.clone());
+        let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let total_owed = Self::load_total_owed(&env)
+            .checked_sub(amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        // CEI: clear the credit before the external transfer.
+        env.storage().persistent().remove(&key);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalOwed, &total_owed);
+
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        env.events().publish(
+            (symbol_short!("withdraw"), caller),
+            WithdrawnEvent {
+                recipient,
+                token: meta.token,
+                amount,
+            },
+        );
+
+        Ok(())
+    }
+
     /// Approve several delivered milestones in one transaction (#741).
     ///
     /// Releases the full remaining balance of every listed milestone with a
