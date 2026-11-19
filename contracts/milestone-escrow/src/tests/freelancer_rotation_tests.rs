@@ -23,6 +23,7 @@ fn rotation_redirects_payout_and_emits_event() {
     assert_eq!(data.client, client);
     assert_eq!(data.previous_freelancer, old_freelancer);
     assert_eq!(data.new_freelancer, new_freelancer);
+    escrow.accept_job(&new_freelancer);
 
     escrow.mark_delivered(&new_freelancer, &0);
     escrow.approve_milestone(&client, &0);
@@ -39,6 +40,7 @@ fn old_freelancer_cannot_call_freelancer_methods_after_rotation() {
     let (_, old_freelancer, _, _, _, _, escrow) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     let new_freelancer = Address::generate(&env);
     escrow.rotate_freelancer(&new_freelancer);
+    escrow.accept_job(&new_freelancer);
 
     assert_eq!(
         escrow.try_mark_delivered(&old_freelancer, &0),
@@ -104,4 +106,23 @@ fn rotation_rejects_existing_party_addresses() {
         escrow.try_rotate_freelancer(&admin),
         Err(Ok(Error::InvalidParties))
     );
+}
+
+#[test]
+fn rotated_freelancer_must_accept_before_delivery() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let new_freelancer = Address::generate(&env);
+    escrow.rotate_freelancer(&new_freelancer);
+
+    assert_eq!(
+        escrow.try_mark_delivered(&new_freelancer, &0),
+        Err(Ok(Error::NotAccepted))
+    );
+    escrow.accept_job(&new_freelancer);
+    escrow.mark_delivered(&new_freelancer, &0);
+    escrow.raise_dispute(&client, &0, &soroban_sdk::BytesN::from_array(&env, &[2; 32]));
+    assert_eq!(escrow.get_milestone(&0).status, crate::MilestoneStatus::Disputed);
 }

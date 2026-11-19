@@ -4,7 +4,7 @@
 
 use crate::test::setup_funded_escrow;
 use crate::{ArbiterReplacedEvent, Error, MilestoneStatus};
-use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
 use soroban_sdk::{
     symbol_short, token, vec, Address, BytesN, Env, FromVal, IntoVal, Symbol, TryIntoVal,
 };
@@ -33,6 +33,7 @@ fn replacement_moves_arbitration_to_the_new_arbiter_and_emits_event() {
         }
     );
     assert_eq!(escrow.get_job().arbiter, new_arbiter);
+    escrow.accept_arbiter(&new_arbiter);
 
     escrow.mark_delivered(&freelancer, &0);
     escrow.raise_dispute(&client, &0, &BytesN::from_array(&env, &[3; 32]));
@@ -112,4 +113,34 @@ fn replacement_is_refused_while_a_dispute_is_open() {
     let new_arbiter = Address::generate(&env);
     escrow.replace_arbiter(&new_arbiter);
     assert_eq!(escrow.get_job().arbiter, new_arbiter);
+}
+
+#[test]
+fn new_arbiter_must_accept_after_replacement() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, freelancer, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    let new_arbiter = Address::generate(&env);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.replace_arbiter(&new_arbiter);
+
+    assert_eq!(escrow.try_raise_dispute(&client, &0, &BytesN::from_array(&env, &[1; 32])), Err(Ok(Error::NotAccepted)));
+    escrow.accept_arbiter(&new_arbiter);
+    escrow.raise_dispute(&client, &0, &BytesN::from_array(&env, &[1; 32]));
+    assert_eq!(escrow.get_milestone(&0).status, MilestoneStatus::Disputed);
+}
+
+#[test]
+fn replacement_does_not_reopen_unaccepted_refund_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, admin, _, _, escrow) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    escrow.replace_arbiter(&Address::generate(&env));
+    env.ledger().with_mut(|l| l.timestamp += 14 * 24 * 60 * 60);
+    assert_eq!(
+        escrow.try_withdraw_unaccepted(&client),
+        Err(Ok(Error::InvalidStatus))
+    );
+    let _ = admin;
 }

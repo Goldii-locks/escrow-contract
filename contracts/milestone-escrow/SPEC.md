@@ -100,7 +100,7 @@ stateDiagram-v2
 | Flag | Key | Set by | Cleared by | Checked by |
 |---|---|---|---|---|
 | Funded | `JobMeta.funded`, `DataKey::FundedAt` | `fund` | never | most settlement entry points (`NotFunded`) |
-| Acceptance | `DataKey::Acceptance` (bit 1 freelancer, bit 2 arbiter) | `accept_job`, `accept_arbiter` | never | `mark_delivered`, `raise_dispute`, `resolve_dispute`, `apply_dispute_arbitration_split` (`NotAccepted`), `withdraw_unaccepted` |
+| Acceptance | `DataKey::Acceptance` (bit 1 freelancer, bit 2 arbiter) | `accept_job`, `accept_arbiter` | `replace_arbiter` clears bit 2, `rotate_freelancer` clears bit 1; `AcceptanceFinalized` is permanent | incoming party must call `accept_arbiter` / `accept_job`; `mark_delivered`, `raise_dispute`, `resolve_dispute`, `apply_dispute_arbitration_split` (`NotAccepted`), `withdraw_unaccepted` |
 | Emergency pause | `DataKey::Ep` | `emergency_pause`, `emergency_pause_admin_override` | `emergency_unpause`, `emergency_pause_admin_override` | `ensure_not_paused` and the calculators listed below |
 | Admin pause | `DataKey::Paused` | `admin_pause_escrow` | `admin_resume_escrow` | `ensure_not_paused`, `assert_not_paused` |
 | Cancel approval | `DataKey::CancelApproval` (`CancelApprovalRecord`: `mask` + `approved_at`) | `cancel_escrow` (first party) | `revoke_cancel_approval`, `cancel_escrow` (second party), expiry after `CANCEL_APPROVAL_TTL_SECONDS` | `cancel_escrow`, `revoke_cancel_approval` |
@@ -181,6 +181,11 @@ outlives the dispute it belongs to.
 | `revoke_cancel_approval` | client or freelancer | not cancel locked; caller has approved | n/a | clears caller's approval | none | `cancelrev` |
 | `admin_override_cancel_release` | admin | `CancelLock` set; funded | every milestone except `Released`, `Refunded` | `Released`; clears `CancelLock`; resets `YieldAccrued` | → freelancer, sum of remaining | `adcovls` |
 | `admin_override_cancel_refund` | admin | `CancelLock` set; funded | every milestone except `Released`, `Refunded` | `Refunded`; clears `CancelLock` and `YieldAccrued` | → client, sum of remaining | `adcovrf` |
+
+Replacing a party clears that party's acceptance bit; delivery and disputes
+stay blocked until the incoming party accepts. `withdraw_unaccepted` uses the
+original `FundedAt` and a permanent `AcceptanceFinalized` flag, so a replacement
+never reopens the refund window.
 
 Cancellation is a two-party handshake: one party approves, the `CancelLock` only
 fires when the other party approves too. A single-party approval is valid for

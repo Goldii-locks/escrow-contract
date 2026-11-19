@@ -771,6 +771,9 @@ pub enum DataKey {
     /// Persistent: delivery deadline (ledger timestamp) of milestone `u32`,
     /// set by `set_milestone_due_dates`.  Absent or `0` means no deadline.
     DueAt(u32),
+    /// Instance: set once both parties have accepted.  A later party
+    /// replacement must not reopen the `withdraw_unaccepted` window.
+    AcceptanceFinalized,
 }
 
 #[contracttype]
@@ -2854,6 +2857,24 @@ impl MilestoneEscrow {
             .unwrap_or(0)
     }
 
+    /// Freeze the unaccepted-refund window when both parties had accepted,
+    /// before a replacement clears one of the consent bits. Done here rather
+    /// than in `record_acceptance` so normal acceptances add no ledger write.
+    fn finalize_acceptance_on_replacement(env: &Env) {
+        if Self::load_acceptance(env) == 3 {
+            env.storage()
+                .instance()
+                .set(&DataKey::AcceptanceFinalized, &true);
+        }
+    }
+
+    /// Clear one consent bit when the corresponding party is replaced; the
+    /// incoming party must accept explicitly before delivery/disputes resume.
+    fn clear_acceptance_bit(env: &Env, bit: u32) {
+        let mask = Self::load_acceptance(env) & !bit;
+        env.storage().instance().set(&DataKey::Acceptance, &mask);
+    }
+
     /// Reject with `NotAccepted` unless both the freelancer and the arbiter
     /// have accepted the job.
     fn require_accepted(env: &Env) -> Result<(), Error> {
@@ -4546,6 +4567,9 @@ impl MilestoneEscrow {
         let old_arbiter = meta.arbiter.clone();
         meta.arbiter = new_arbiter.clone();
         Self::store_job_meta(&env, &meta);
+        Self::finalize_acceptance_on_replacement(&env);
+        // The new arbiter has not consented yet; require accept_arbiter.
+        Self::clear_acceptance_bit(&env, 2);
 
         env.events().publish(
             (symbol_short!("arbchg"),),
@@ -4594,6 +4618,9 @@ impl MilestoneEscrow {
         let previous_freelancer = meta.freelancer.clone();
         meta.freelancer = new_freelancer.clone();
         Self::store_job_meta(&env, &meta);
+        Self::finalize_acceptance_on_replacement(&env);
+        // The new payout identity has not consented yet; require accept_job.
+        Self::clear_acceptance_bit(&env, 1);
 
         env.events().publish(
             (symbol_short!("freerot"), new_freelancer.clone()),
@@ -4634,7 +4661,14 @@ impl MilestoneEscrow {
         }
         // Upfront: the whole job; PerMilestone: at least one funded milestone.
         Self::require_escrow_has_funding(&env, &meta)?;
-        if Self::load_acceptance(&env) == 3 {
+        // A replacement clears a consent bit but must not reopen the window:
+        // acceptance was finalized when both parties first consented.
+        let finalized: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::AcceptanceFinalized)
+            .unwrap_or(false);
+        if finalized || Self::load_acceptance(&env) == 3 {
             return Err(Error::InvalidStatus);
         }
 

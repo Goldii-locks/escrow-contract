@@ -79,6 +79,15 @@ are not required to settle the escrow.
 - Excess is always sent to the client. Callers cannot pick another recipient.
 - Emits `sweep` with token, amount, and recipient.
 
+## Party replacement and consent
+
+`replace_arbiter` and `rotate_freelancer` clear the replaced party's consent bit
+in `Acceptance`; the incoming party must call `accept_arbiter` / `accept_job`
+before delivery or disputes are allowed. Once both parties have accepted, the
+`AcceptanceFinalized` flag closes `withdraw_unaccepted` permanently: a
+replacement never reopens the client's unaccepted-refund window. The original
+`FundedAt` timestamp continues to start that window.
+
 ## Emergency pause control
 
 - `emergency_pause(client, freelancer)`: both parties must authorize. Sets a
