@@ -5262,21 +5262,38 @@ impl MilestoneEscrow {
     ///   - The timestamp conversion to i64 fails.
     ///   - The subtraction overflows (current > deadline, rare in i64).
     ///   - The job metadata is missing (`NotInitialized`).
-    ///   - The milestone is missing (`InvalidMilestone`).
+    ///   - The milestone index is out of range or the milestone is missing
+    ///     (`InvalidMilestone`).
+    ///   - The milestone is not `Delivered` or `PartiallyReleased`
+    ///     (`InvalidStatus`).
     ///
     /// # Behavior in Edge Cases
     ///
-    /// - Empty state (no milestone): Returns `InvalidMilestone`.
+    /// - Out-of-range index: Returns `InvalidMilestone`.
+    /// - Undelivered / settled milestone: Returns `InvalidStatus` instead of a
+    ///   huge negative "overdue" value.
     /// - Boundary state (large extensions/timestamps): Returns error on overflow.
     /// - Expired milestone: Returns 0 or negative value (seconds past deadline).
     /// - Just-delivered (delivered_at = current): Returns approximately `auto_release_seconds + extension_seconds`.
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> Result<i64, Error> {
         let meta = Self::load_job_meta(&env)?;
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
         let milestone = Self::load_milestone(&env, milestone_index)?;
+        // Only a claimable delivery has an auto-release deadline. Pending,
+        // Released, Refunded and Disputed milestones have delivered_at == 0 or
+        // a stale value, which would otherwise yield a nonsense overdue result.
+        match milestone.status {
+            MilestoneStatus::Delivered | MilestoneStatus::PartiallyReleased => {}
+            _ => return Err(Error::InvalidStatus),
+        }
         // Read delivery timestamp from temporary storage (optimised path) and
         // fall back to the persistent Milestone field for pre-migration entries.
-        let delivered_at =
-            Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
+        let delivered_at = match Self::load_delivered_at(&env, milestone_index) {
+            Some(timestamp) => timestamp,
+            None => milestone.delivered_at,
+        };
         let extension = Self::load_time_extension(&env, milestone_index);
         let deadline = Self::auto_release_deadline(&meta, delivered_at, extension)?;
         let current = env.ledger().timestamp();
