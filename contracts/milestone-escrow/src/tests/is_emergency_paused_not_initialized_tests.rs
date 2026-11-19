@@ -105,7 +105,7 @@ fn capture_ledger(env: &Env, contract_id: &Address) -> LedgerSnapshot {
             ep_exists: env.storage().instance().has(&DataKey::Ep),
             job_exists: env.storage().instance().has(&DataKey::Job),
             admin_instance: env.storage().instance().get(&DataKey::Admin),
-            admin_persistent: env.storage().persistent().get(&DataKey::Admin),
+            admin_persistent: env.storage().instance().get(&DataKey::Admin),
             ep_lock: env.storage().instance().get(&DataKey::EpLk),
         }
     })

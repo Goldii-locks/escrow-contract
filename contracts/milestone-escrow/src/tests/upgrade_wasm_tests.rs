@@ -37,7 +37,7 @@ fn upgrade_to_v2_wasm_preserves_state_and_runs_new_code() {
     let whitelist_before = client.get_whitelisted_tokens();
     let stored_admin = || -> Address {
         env.as_contract(&contract_id, || {
-            env.storage().persistent().get(&DataKey::Admin).unwrap()
+            env.storage().instance().get(&DataKey::Admin).unwrap()
         })
     };
     assert_eq!(stored_admin(), admin_addr);

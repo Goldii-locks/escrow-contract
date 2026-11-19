@@ -52,7 +52,7 @@ fn test_propose_admin_transfer_does_not_require_version_key() {
     // Seed only the persistent Admin key — never call `initialize`, so
     // `DataKey::Version` is never written.
     env.as_contract(&contract_id, || {
-        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admin, &admin);
     });
     let version_present: bool = env.as_contract(&contract_id, || {
         env.storage().instance().has(&DataKey::Version)
@@ -102,7 +102,7 @@ fn test_propose_admin_transfer_wrong_admin_still_unauthorized() {
     let contract_id = env.register(MilestoneEscrow, ());
 
     env.as_contract(&contract_id, || {
-        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Version, &1u32);
         env.storage()
             .instance()

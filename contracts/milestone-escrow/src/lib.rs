@@ -2587,19 +2587,6 @@ impl MilestoneEscrow {
             treasury_fee_share,
         };
 
-        // 4. Emit a structured event carrying the inputs and the resulting state.
-        env.events().publish(
-            (symbol_short!("sprefnet"),),
-            SplitRefundNetDistributionEvent {
-                total_amount,
-                client_refund_bps,
-                freelancer_payout_bps,
-                client_net_refund: distribution.client_net_refund,
-                client_fee_share: distribution.client_fee_share,
-                freelancer_net_payout: distribution.freelancer_net_payout,
-                treasury_fee_share: distribution.treasury_fee_share,
-            },
-        );
 
         Ok(distribution)
     }
@@ -7700,17 +7687,6 @@ impl MilestoneEscrow {
         let allocation: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
         let distribution = Self::allocate_platform_fee(total_amount, &allocation)?;
 
-        // Emit a structured event so downstream indexers can audit the
-        // per-party split without re-querying contract storage.
-        env.events().publish(
-            (symbol_short!("pf_split"),),
-            PlatformFeeSplitCalculatedEvent {
-                total_amount,
-                client_amount: distribution.client_amount,
-                freelancer_amount: distribution.freelancer_amount,
-                treasury_amount: distribution.treasury_amount,
-            },
-        );
 
         Ok(distribution)
     }
@@ -9486,17 +9462,6 @@ impl MilestoneEscrow {
             .checked_div(denominator)
             .ok_or(Error::InvalidAmount)?;
 
-        // Publish exactly once on the success path (after validation and the
-        // checked arithmetic), so every error path returns before emitting.
-        env.events().publish(
-            (symbol_short!("intyield"),),
-            EscrowInterestYieldEvent {
-                principal,
-                annual_rate_bps,
-                duration_seconds,
-                yield_amount,
-            },
-        );
 
         Ok(yield_amount)
     }
@@ -9873,15 +9838,6 @@ impl MilestoneEscrow {
             freelancer_payout_bps,
         };
 
-        env.events().publish(
-            (symbol_short!("iyspltref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -11080,7 +11036,7 @@ impl MilestoneEscrow {
     /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps ≠ 10_000`,
     ///   or the `u32` addition overflows.
     pub fn tax_withholding_split_refund(
-        env: Env,
+        _env: Env,
         gross_amount: i128,
         tax_amount: i128,
         client_refund_bps: u32,
@@ -11092,23 +11048,6 @@ impl MilestoneEscrow {
             client_refund_bps,
             freelancer_payout_bps,
         )?;
-
-        let net_amount = gross_amount
-            .checked_sub(tax_amount)
-            .ok_or(Error::InvalidAmount)?;
-
-        env.events().publish(
-            (symbol_short!("twspltref"),),
-            TaxWithholdingSplitRefundEvent {
-                gross_amount,
-                tax_amount,
-                net_amount,
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -11876,15 +11815,6 @@ impl MilestoneEscrow {
             freelancer_payout_bps,
         };
 
-        env.events().publish(
-            (symbol_short!("splitref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -11952,15 +11882,6 @@ impl MilestoneEscrow {
         let allocation =
             Self::emergency_split_exact(total_amount, client_refund_bps, freelancer_payout_bps)?;
 
-        env.events().publish(
-            (symbol_short!("epspltref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -12101,15 +12022,6 @@ impl MilestoneEscrow {
         let allocation =
             Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
 
-        env.events().publish(
-            (symbol_short!("cxlspref"),),
-            CancelSplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }

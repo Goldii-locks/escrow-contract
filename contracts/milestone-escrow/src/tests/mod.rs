@@ -35,6 +35,7 @@ mod cancel_escrow_split_refund_guards_tests;
 mod cancel_escrow_test;
 mod cold_config_storage_tests;
 mod arbitration_split_consistency_proptests;
+mod pure_calculation_no_events_tests;
 mod conservation_proptests;
 mod constructor_tests;
 mod cost_tests;
@@ -3665,14 +3666,14 @@ fn test_multisig_lock_does_not_write_persistent_storage() {
     // DataKey::Admin in persistent storage must already be present (written by
     // initialize) and must remain unchanged after multisig_lock.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     client.multisig_lock(&admin_addr);
 
     // Persistent Admin must be unchanged — multisig_lock must not touch it.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -12062,14 +12063,14 @@ fn test_set_escrow_interest_yield_does_not_grow_instance_storage() {
 
     // Snapshot persistent::Admin before the call.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
 
     // persistent::Admin must be unchanged.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -13570,14 +13571,14 @@ fn test_set_platform_fee_allocation_does_not_grow_instance_storage() {
 
     // Snapshot persistent::Admin before the call.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
 
     // persistent::Admin must be unchanged.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -15343,7 +15344,7 @@ fn test_initialize_two_i128_max_amounts_overflow_returns_typed_error() {
             "Version key must not be written after a failed initialize"
         );
         assert!(
-            !env.storage().persistent().has(&DataKey::Admin),
+            !env.storage().instance().has(&DataKey::Admin),
             "persistent Admin key must not be written after a failed initialize"
         );
     });

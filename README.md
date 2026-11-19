@@ -223,6 +223,19 @@ The contract exposes **94 public functions** grouped by category below.
 Events carry party addresses as extra topics for `getEvents` filtering; see
 [EVENTS.md](EVENTS.md#indexed-topics).
 
+### Which events represent state changes
+
+Only endpoints that actually change ledger state publish events. Pure
+calculation endpoints are side-effect free: they return their result and emit
+nothing. This covers `escrow_interest_yield`, `split_refund_net_distribution`,
+`calculate_platform_fee_split`, `dispute_arbitration_split`, and the
+`*_split_refund` calculators (`interest_yield_split_refund`,
+`tax_withholding_split_refund`, `multisig_split_refund`,
+`emergency_pause_split_refund`, `cancel_escrow_split_refund`). Use
+`simulateTransaction` to preview them. Consequently, any event emitted by an
+escrow contract ID reflects a real state change or an explicit administrative
+action — never a caller-supplied calculation.
+
 ## Contract Errors
 
 | Code | Error | Meaning |
