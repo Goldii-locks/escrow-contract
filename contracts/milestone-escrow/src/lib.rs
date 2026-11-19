@@ -933,6 +933,14 @@ pub struct DisputeResolvedEvent {
     pub arbiter_fee_amount: i128,
     pub released_to_freelancer: bool,
     pub status: MilestoneStatus,
+    /// Commitment to the arbiter's written decision (#1015). The contract
+    /// never sees the decision itself, only this 32-byte hash of it; the
+    /// document lives in escrow-backend storage, keyed by this hash. Echoed
+    /// from `resolve_dispute` / `apply_dispute_arbitration_split` so the
+    /// on-chain resolution is cryptographically anchored to the reasoning
+    /// that produced it. The `DisputeInfo` record is deleted when the
+    /// dispute closes, so this event is where the commitment survives.
+    pub decision_hash: BytesN<32>,
 }
 
 /// Immutable record of a successful `apply_dispute_arbitration_split` call.
@@ -968,6 +976,10 @@ pub struct ArbitrationSplitAppliedEvent {
     pub released_amount: i128,
     /// Terminal milestone status after the split.
     pub status: MilestoneStatus,
+    /// Commitment to the arbiter's written decision (#1015). Same value the
+    /// call echoes in the accompanying `resolve` event; the written decision
+    /// itself stays off-chain in escrow-backend storage, keyed by this hash.
+    pub decision_hash: BytesN<32>,
 }
 
 #[contracttype]
@@ -6022,6 +6034,19 @@ impl MilestoneEscrow {
     ///                              the freelancer (milestone → `Released`);
     ///                              `false` refunds it to the client
     ///                              (milestone → `Refunded`).
+    /// * `decision_hash`          – 32-byte commitment to the arbiter's
+    ///                              written decision (#1015). The document
+    ///                              itself stays off-chain (escrow-backend
+    ///                              storage, keyed by this hash); the contract
+    ///                              only stores/echoes the hash in the `resolve`
+    ///                              event. Not validated on-chain — any
+    ///                              32 bytes are accepted, exactly like
+    ///                              `raise_dispute`'s `reason_hash`.
+    ///
+    /// # Notes
+    /// The `DisputeInfo` record is deleted by this call (existing behaviour),
+    /// so the decision hash is anchored by the emitted `resolve` event rather
+    /// than persisted in dispute storage.
     ///
     /// # Errors
     /// * `Paused`           – The contract is emergency-paused.
@@ -6040,6 +6065,7 @@ impl MilestoneEscrow {
         arbiter: Address,
         milestone_index: u32,
         release_to_freelancer: bool,
+        decision_hash: BytesN<32>,
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
@@ -6154,6 +6180,7 @@ impl MilestoneEscrow {
                 arbiter_fee_amount,
                 released_to_freelancer: release_to_freelancer,
                 status: milestone.status.clone(),
+                decision_hash,
             },
         );
 
@@ -6246,11 +6273,20 @@ impl MilestoneEscrow {
     /// Client receives `client_refund_bps` of the remaining balance; freelancer
     /// receives the remainder. Milestones end `Refunded` or `Released` for a
     /// one-sided outcome and `Split` when both parties receive a payout.
+    ///
+    /// `decision_hash` is a 32-byte commitment to the arbiter's written
+    /// decision (#1015). The document itself stays off-chain (escrow-backend
+    /// storage, keyed by this hash); the contract only echoes the hash in the
+    /// `resolve` and `arbsplit` events. It is not validated on-chain — any 32
+    /// bytes are accepted, exactly like `raise_dispute`'s `reason_hash`. The
+    /// `DisputeInfo` record is deleted by this call (existing behaviour), so
+    /// the event is where the commitment survives.
     pub fn apply_dispute_arbitration_split(
         env: Env,
         arbiter: Address,
         milestone_index: u32,
         client_refund_bps: u32,
+        decision_hash: BytesN<32>,
     ) -> Result<RefundAllocation, Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
@@ -6363,6 +6399,7 @@ impl MilestoneEscrow {
                 arbiter_fee_amount,
                 released_to_freelancer: freelancer_payout > 0,
                 status: milestone.status.clone(),
+                decision_hash: decision_hash.clone(),
             },
         );
 
@@ -6384,6 +6421,7 @@ impl MilestoneEscrow {
                 freelancer_payout_bps: allocation.freelancer_payout_bps,
                 released_amount: milestone.released_amount,
                 status: milestone.status.clone(),
+                decision_hash,
             },
         );
 

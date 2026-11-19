@@ -3,7 +3,10 @@
 extern crate std;
 use std::println;
 
-use crate::{test::dispute_reason_hash, MilestoneEscrow, MilestoneEscrowClient};
+use crate::{
+    test::{decision_hash, dispute_reason_hash},
+    MilestoneEscrow, MilestoneEscrowClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, EnvTestConfig, Ledger as _},
     token, vec, Address, Env,
@@ -202,7 +205,9 @@ fn main_entrypoint_cost_baselines() {
     setup
         .escrow
         .raise_dispute(&setup.client_addr, &0, &dispute_reason_hash(&env));
-    setup.escrow.resolve_dispute(&setup.arbiter_addr, &0, &true);
+    setup
+        .escrow
+        .resolve_dispute(&setup.arbiter_addr, &0, &true, &decision_hash(&env));
     let resolve_dispute_cost = measure("resolve_dispute", &env);
 
     let costs = [

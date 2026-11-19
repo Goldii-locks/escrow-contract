@@ -11,7 +11,7 @@
 //! After an intended change, run `cargo test golden_snapshot_tests` and
 //! commit the result.
 
-use crate::test::setup_funded_escrow;
+use crate::test::{decision_hash, setup_funded_escrow};
 use soroban_sdk::testutils::EnvTestConfig;
 use soroban_sdk::{vec, BytesN, Env};
 
@@ -53,7 +53,7 @@ fn golden_dispute_resolve() {
 
     escrow.mark_delivered(&freelancer, &0);
     escrow.raise_dispute(&client, &0, &BytesN::from_array(&env, &[7; 32]));
-    escrow.resolve_dispute(&arbiter, &0, &true);
+    escrow.resolve_dispute(&arbiter, &0, &true, &decision_hash(&env));
 
     write_golden(&env, "golden_dispute_resolve");
 }

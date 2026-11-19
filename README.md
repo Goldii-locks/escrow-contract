@@ -99,9 +99,9 @@ The contract exposes **94 public functions** grouped by category below.
 | `submit_evidence` | Client or Freelancer | Anchor an evidence hash on an open dispute (max 10 per dispute) |
 | `get_dispute_info` | Anyone | Read the dispute reason hash, timestamps and evidence trail |
 | `escalate_dispute` | Client or Freelancer | After timeout, restore milestone to pre-dispute status |
-| `resolve_dispute` | Arbiter | Release to freelancer or refund to client, after any arbiter fee |
+| `resolve_dispute` | Arbiter | Release to freelancer or refund to client, after any arbiter fee, committing a 32-byte `decision_hash` of the written decision |
 | `dispute_arbitration_split` | Arbiter | Propose a split between client/freelancer |
-| `apply_dispute_arbitration_split` | Arbiter | Apply the proposed arbitration split |
+| `apply_dispute_arbitration_split` | Arbiter | Apply the proposed arbitration split, committing a 32-byte `decision_hash` of the written decision |
 
 ### Cancellation
 

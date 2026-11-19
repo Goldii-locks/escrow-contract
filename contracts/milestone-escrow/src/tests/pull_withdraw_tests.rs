@@ -6,7 +6,7 @@
 //! case: the payout is credited to the recipient and claimed later through
 //! `withdraw`, which only succeeds once the account can receive again.
 
-use crate::test::dispute_reason_hash;
+use crate::test::{decision_hash, dispute_reason_hash};
 use crate::{DataKey, Error, MilestoneEscrow, MilestoneEscrowClient};
 use soroban_sdk::testutils::{Address as _, IssuerFlags};
 use soroban_sdk::{token, vec, Address, Env};
@@ -109,7 +109,7 @@ fn test_refund_without_trustline_is_credited_to_client() {
     client.raise_dispute(&client_addr, &0u32, &dispute_reason_hash(&env));
     token_admin.set_authorized(&client_addr, &false);
 
-    client.resolve_dispute(&arbiter_addr, &0u32, &false);
+    client.resolve_dispute(&arbiter_addr, &0u32, &false, &decision_hash(&env));
     assert_eq!(token_client.balance(&client_addr), 0);
 
     token_admin.set_authorized(&client_addr, &true);
@@ -152,7 +152,7 @@ fn test_sweep_excess_does_not_take_credited_balances() {
     client.mark_delivered(&freelancer_addr, &0u32);
     client.raise_dispute(&client_addr, &0u32, &dispute_reason_hash(&env));
     token_admin.set_authorized(&client_addr, &false);
-    client.resolve_dispute(&arbiter_addr, &0u32, &false);
+    client.resolve_dispute(&arbiter_addr, &0u32, &false, &decision_hash(&env));
     token_admin.set_authorized(&client_addr, &true);
 
     // Everything left in the contract is the client's credited refund.

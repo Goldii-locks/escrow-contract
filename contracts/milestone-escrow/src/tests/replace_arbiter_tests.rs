@@ -2,7 +2,7 @@
 //! `replace_arbiter`: the client and the freelancer jointly appoint a new
 //! arbiter when the sitting one is unavailable (issue #731).
 
-use crate::test::setup_funded_escrow;
+use crate::test::{decision_hash, setup_funded_escrow};
 use crate::{ArbiterReplacedEvent, Error, MilestoneStatus};
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{
@@ -37,10 +37,10 @@ fn replacement_moves_arbitration_to_the_new_arbiter_and_emits_event() {
     escrow.mark_delivered(&freelancer, &0);
     escrow.raise_dispute(&client, &0, &BytesN::from_array(&env, &[3; 32]));
     assert_eq!(
-        escrow.try_resolve_dispute(&old_arbiter, &0, &true),
+        escrow.try_resolve_dispute(&old_arbiter, &0, &true, &decision_hash(&env)),
         Err(Ok(Error::Unauthorized))
     );
-    escrow.resolve_dispute(&new_arbiter, &0, &true);
+    escrow.resolve_dispute(&new_arbiter, &0, &true, &decision_hash(&env));
     assert_eq!(
         escrow.get_job().milestones.get(0).unwrap().status,
         MilestoneStatus::Released
@@ -108,7 +108,7 @@ fn replacement_is_refused_while_a_dispute_is_open() {
     assert_eq!(escrow.get_job().arbiter, arbiter);
 
     // Once the dispute is resolved the parties may swap the arbiter.
-    escrow.resolve_dispute(&arbiter, &1, &false);
+    escrow.resolve_dispute(&arbiter, &1, &false, &decision_hash(&env));
     let new_arbiter = Address::generate(&env);
     escrow.replace_arbiter(&new_arbiter);
     assert_eq!(escrow.get_job().arbiter, new_arbiter);

@@ -436,7 +436,8 @@ fn admin_pause_escrow_blocks_resolve_dispute_and_resumes() {
     let freelancer_before = token_client.balance(&f.freelancer);
 
     assert_eq!(
-        f.escrow.try_resolve_dispute(&f.arbiter, &0, &true),
+        f.escrow
+            .try_resolve_dispute(&f.arbiter, &0, &true, &decision_hash(&env)),
         Err(Ok(Error::Paused))
     );
 
@@ -445,7 +446,8 @@ fn admin_pause_escrow_blocks_resolve_dispute_and_resumes() {
 
     f.escrow.admin_resume_escrow(&f.admin);
     assert_eq!(
-        f.escrow.try_resolve_dispute(&f.arbiter, &0, &true),
+        f.escrow
+            .try_resolve_dispute(&f.arbiter, &0, &true, &decision_hash(&env)),
         Ok(Ok(()))
     );
     assert_eq!(token_client.balance(&f.freelancer), 1_000_i128);
@@ -469,7 +471,7 @@ fn admin_pause_escrow_blocks_apply_dispute_arbitration_split_and_resumes() {
 
     assert_eq!(
         f.escrow
-            .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000),
+            .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000, &decision_hash(&env)),
         Err(Ok(Error::Paused))
     );
 
@@ -480,7 +482,7 @@ fn admin_pause_escrow_blocks_apply_dispute_arbitration_split_and_resumes() {
     f.escrow.admin_resume_escrow(&f.admin);
     assert!(f
         .escrow
-        .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000)
+        .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000, &decision_hash(&env))
         .is_ok());
     assert_eq!(token_client.balance(&f.client), client_before + 500_i128);
     assert_eq!(

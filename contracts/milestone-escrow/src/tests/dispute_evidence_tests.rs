@@ -162,7 +162,7 @@ fn submit_evidence_rejects_milestones_that_are_not_disputed() {
     );
 
     escrow.raise_dispute(&client_addr, &0, &dispute_reason_hash(&env));
-    escrow.resolve_dispute(&arbiter_addr, &0, &true);
+    escrow.resolve_dispute(&arbiter_addr, &0, &true, &decision_hash(&env));
 
     // Resolved milestones no longer accept evidence.
     assert_eq!(
@@ -215,7 +215,7 @@ fn dispute_info_is_only_available_while_the_dispute_is_open() {
     let env = Env::default();
     let (_, _, arbiter_addr, escrow) = disputed_escrow(&env);
 
-    escrow.resolve_dispute(&arbiter_addr, &0, &true);
+    escrow.resolve_dispute(&arbiter_addr, &0, &true, &decision_hash(&env));
 
     assert_eq!(
         escrow.try_get_dispute_info(&0),

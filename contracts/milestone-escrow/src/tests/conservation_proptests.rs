@@ -244,7 +244,12 @@ fn execute_operation(
                 parties.arbiter
             };
             client
-                .try_resolve_dispute(caller, milestone_idx, release_to_freelancer)
+                .try_resolve_dispute(
+                    caller,
+                    milestone_idx,
+                    release_to_freelancer,
+                    &decision_hash(env),
+                )
                 .is_ok()
         }
         Operation::Split {
@@ -258,7 +263,12 @@ fn execute_operation(
                 parties.arbiter
             };
             client
-                .try_apply_dispute_arbitration_split(caller, milestone_idx, client_refund_bps)
+                .try_apply_dispute_arbitration_split(
+                    caller,
+                    milestone_idx,
+                    client_refund_bps,
+                    &decision_hash(env),
+                )
                 .is_ok()
         }
         Operation::Cancel { caller_choice } => {
