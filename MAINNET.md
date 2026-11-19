@@ -58,6 +58,12 @@ Review the source constants and configuration in [`contracts/milestone-escrow/sr
 
 Follow the [admin multisig decision and migration plan](ADMIN_MULTISIG_DECISION.md).
 
+**Factory admin pinning:** `create_escrow` pins each deployed escrow to the
+factory's admin address at creation time. Use a classic Stellar M-of-N account
+as the platform admin so that rotating the signer set on that account updates
+all existing escrows without any per-escrow transaction. See the runbook in
+[THREAT_MODEL.md](THREAT_MODEL.md#factory-created-escrow-admin-pinning).
+
 - [ ] Store admin and upgrade keys in hardware-backed custody or an approved multisig; document recovery and rotation. Owner: Security lead. Reference: [admin controls](contracts/milestone-escrow/src/lib.rs).
 - [ ] Assign named custodians and thresholds for contract upgrades, emergency pause/unpause, fee configuration, and routine administration. Owner: Operations lead. Reference: [role requirements](#admin-keys-and-roles).
 - [ ] Verify least privilege, independent approvals for upgrades, and a tested recovery path. Owner: Security lead. Reference: [audit scope](#audit-scope).

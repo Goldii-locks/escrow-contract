@@ -12,6 +12,27 @@ See "Verifying the deployed contract" in the README.
 WASM: build with `scripts/build-reproducible.sh <commit>`; CI publishes the
 hash for every commit in the `reproducible-wasm` job summary.
 
+### Fixed
+
+- `raise_dispute` now performs zero-address check, `require_auth`, and
+  identity validation **before** writing the re-entrancy lock (#566), matching
+  the authorization pattern used by `fund`, `approve_milestone`, and
+  `resolve_dispute`.
+- `lock_escrow_interest_yield` now rejects unauthorized callers with
+  `Unauthorized` and an illegal source state with `InvalidStatus` **before** it
+  reads or writes the ledger entry (#464); authorization runs first via
+  `require_admin_from_instance`, so a non-admin cannot probe whether an escrow
+  is locked.
+- `cancel_escrow` single-party approvals now expire after
+  `CANCEL_APPROVAL_TTL_SECONDS` (7 days, #713): an approval older than that is
+  treated as absent, so the counter-party's call records a fresh first approval
+  instead of locking the escrow. `CancelApprovalRecordedEvent` (`cxlappr`)
+  carries `approved_at` so indexers can track the same window.
+- `__constructor` rejects empty milestone lists, zero/negative amounts, zero
+  addresses, zero auto-release windows, and party collisions (`admin == client`,
+  `admin == freelancer`, `arbiter == client`, `arbiter == freelancer`,
+  `client == freelancer`) with explicit contract errors.
+
 ### Security
 
 - `propose_admin_transfer` and `transfer_admin` reject the contract's own
