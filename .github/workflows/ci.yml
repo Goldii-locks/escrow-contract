@@ -8,28 +8,33 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Default: read-only token for every job. Widened per-job where needed.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
         # Pinned to match rust-toolchain.toml. stellar-cli rejects 1.81, 1.82,
         # 1.83 and 1.91.0 outright, so this cannot float on @stable.
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # toolchain version set via `with:`
         with:
+          toolchain: "1.96.0"
           targets: wasm32v1-none
           components: clippy, rustfmt
 
       - name: Install stellar-cli
         # soroban-sdk 28 refuses to build under a bare `cargo build` and
         # requires stellar-cli v25.2.0+. The action installs a prebuilt binary;
-        # the version comes from the ref, so bump the tag to change it.
-        uses: stellar/stellar-cli@v28.0.0
+        # pin to a commit SHA so a retagged release cannot change CI output.
+        uses: stellar/stellar-cli@c0f4d0da891bbf214c08b8c5035ae6db80e9a3bd # v28.1.0
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -101,7 +106,7 @@ jobs:
           fi
 
       - name: Upload optimized wasm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: milestone_escrow-optimized-${{ github.sha }}
           path: dist/optimized/milestone_escrow.wasm
@@ -125,10 +130,10 @@ jobs:
     # and accepted exceptions live in deny.toml.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
         with:
           command: check
           arguments: --all-features
@@ -146,19 +151,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
         # Pinned to match rust-toolchain.toml; see the note in the test job.
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # toolchain version set via `with:`
         with:
+          toolchain: "1.96.0"
           targets: wasm32v1-none
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@v28.0.0
+        uses: stellar/stellar-cli@c0f4d0da891bbf214c08b8c5035ae6db80e9a3bd # v28.1.0
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -169,7 +175,7 @@ jobs:
       - name: Build WASM
         run: stellar contract build --manifest-path contracts/milestone-escrow/Cargo.toml
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -198,7 +204,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload bindings
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: |
@@ -215,12 +221,12 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: bindings/ts
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           registry-url: https://npm.pkg.github.com
@@ -238,7 +244,7 @@ jobs:
     # can be traced back to the commit that produced it.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Reproducible build
         run: bash scripts/build-reproducible.sh "$GITHUB_SHA"
@@ -255,7 +261,7 @@ jobs:
           cat dist/build-info.json
 
       - name: Upload wasm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: milestone_escrow-wasm-${{ github.sha }}
           path: dist/
