@@ -141,6 +141,16 @@ impl EscrowFactory {
                 .ok_or(Error::InvalidAmount)?;
         }
 
+        // Summed up front for the `created` event; an overflowing total can
+        // never be funded, so it is rejected like any other invalid amount.
+        let milestone_count = milestone_amounts.len();
+        let mut total_amount: i128 = 0;
+        for amount in milestone_amounts.iter() {
+            total_amount = total_amount
+                .checked_add(amount)
+                .ok_or(Error::InvalidAmount)?;
+        }
+
         let tokens = Self::load_tokens(&env)?;
         if !tokens.contains(&token) {
             return Err(Error::TokenNotAllowed);
