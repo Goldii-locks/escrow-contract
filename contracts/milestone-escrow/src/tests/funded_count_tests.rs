@@ -92,11 +92,8 @@ fn funding_a_milestone_twice_does_not_advance_the_counter() {
 #[test]
 fn upfront_fund_sets_the_counter_to_the_milestone_count() {
     let env = Env::default();
-    let (client_addr, _, escrow) = setup(
-        &env,
-        vec![&env, 100_i128, 200_i128],
-        FundingMode::Upfront,
-    );
+    let (client_addr, _, escrow) =
+        setup(&env, vec![&env, 100_i128, 200_i128], FundingMode::Upfront);
     assert_eq!(funded_count(&env, &escrow), Some(0));
     escrow.fund(&client_addr);
     assert_eq!(funded_count(&env, &escrow), Some(2));
@@ -136,7 +133,9 @@ fn escrow_without_a_counter_falls_back_to_counting_once() {
 
     // An escrow created before the counter existed has no entry.
     env.as_contract(&escrow.address, || {
-        env.storage().instance().remove(&crate::DataKey::FundedCount);
+        env.storage()
+            .instance()
+            .remove(&crate::DataKey::FundedCount);
     });
     assert_eq!(funded_count(&env, &escrow), None);
 
