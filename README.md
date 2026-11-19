@@ -114,12 +114,18 @@ The contract exposes **94 public functions** grouped by category below.
 
 ### Emergency Pause
 
+There are two pauses: the **admin pause** (`admin_pause_escrow` /
+`admin_resume_escrow`, flag `Paused`) and the **party pause**
+(`emergency_pause` / `emergency_unpause_parties`, flag `Ep`). Either one blocks
+every pause-guarded endpoint, and `is_emergency_paused` reports `true` while
+either is set. `emergency_unpause` lets the admin lift both.
+
 | Function | Caller | Description |
 |---|---|---|
 | `emergency_pause` | Client & Freelancer | Jointly pause the contract |
-| `emergency_unpause` | Admin | Admin unpause the contract |
+| `emergency_unpause` | Admin | Admin lifts any pause (party or admin) |
 | `emergency_unpause_parties` | Client & Freelancer | Jointly lift a party-initiated pause |
-| `emergency_pause_admin_override` | Admin | Admin override pause state |
+| `emergency_pause_admin_override` | Admin | Deprecated alias of `admin_pause_escrow` |
 | `is_emergency_paused` | Anyone | Check if contract is paused |
 | `emergency_pause_split_refund` | Admin/Client/Freelancer | Compute split while paused (read-only) |
 | `emergency_pause_claim_refund` | Admin | Settle emergency refund (claim) |
@@ -264,7 +270,7 @@ Events carry party addresses as extra topics for `getEvents` filtering; see
 | 35 | `FeeTooHigh` | A platform-fee allocation exceeded its per-party cap: treasury above `MAX_TREASURY_FEE_BPS` or client above `MAX_CLIENT_FEE_BPS` |
 | 36 | `ArithmeticOverflow` | A checked `i128` operation inside a ratio/allocation computation would have overflowed or underflowed |
 | 37 | `InsufficientBalance` | A settlement asked to distribute more than the contract currently holds in the escrowed token |
-| 38 | `InvalidDisputeTimeout` | A dispute timeout must be greater than zero |
+| 38 | `InvalidDisputeTimeout` | The dispute timeout is outside `MIN_DISPUTE_TIMEOUT_SECONDS` (1 day) to `MAX_DISPUTE_TIMEOUT_SECONDS` (180 days) |
 | 39 | `DisputeTimeoutNotReached` | The configured dispute timeout has not elapsed yet |
 | 40 | `InvalidFundingMode` | `fund` was called on a PerMilestone escrow, or `fund_milestone` was called on an Upfront escrow |
 | 41 | `MaxRevisions` | `request_revision` was called after `MAX_REVISIONS` revisions |
@@ -282,6 +288,7 @@ Events carry party addresses as extra topics for `getEvents` filtering; see
 | 53 | `MultiSigConfigPending` | `propose_multisig_config` was called while another signer-set change is pending |
 | 54 | `NoPendingMultiSigConfig` | `execute_multisig_config` / `cancel_multisig_config_proposal` found no pending signer-set change |
 | 55 | `DisputePending` | `replace_arbiter` was called while a milestone is `Disputed` |
+| 56 | `ReviewWindowClosed` | `raise_dispute` or `request_revision` was called on a `Delivered` milestone after its auto-release deadline |
 
 ## Milestone States
 
@@ -358,7 +365,7 @@ cargo test -p milestone-escrow
 - Includes milestone delivery, approval, dispute, and arbitration flows
 - Initialize now rejects empty milestone lists, zero/negative amounts, zero addresses, zero auto-release windows, and **party collisions** (`admin == client`, `admin == freelancer`, `arbiter == client`, `arbiter == freelancer`, `client == freelancer`) with explicit contract errors
 - `raise_dispute` now performs zero-address check, `require_auth`, and identity validation **before** writing the re-entrancy lock (issue #566), matching the authorization pattern used by `fund`, `approve_milestone`, and `resolve_dispute`; includes the five precondition guard assertions present in all other mutating functions
-- Disputes may only be raised on delivered or partially released milestones. The dispute timeout is set by the constructor's `settings.dispute_timeout_seconds` (non-zero; 30 days is the usual value). If neither party gets an arbitration decision by that deadline, either party may call `escalate_dispute` to return the milestone to its pre-dispute status; a restored delivered milestone gets a fresh auto-release window
+- Disputes may only be raised on delivered or partially released milestones. The dispute timeout is set by the constructor's `settings.dispute_timeout_seconds` (between 1 day and 180 days; 30 days is the usual value). If neither party gets an arbitration decision by that deadline, either party may call `escalate_dispute` to return the milestone to its pre-dispute status; a restored delivered milestone keeps its original auto-release deadline. Once that deadline has passed, `raise_dispute` and `request_revision` return `ReviewWindowClosed`
 - `cancel_escrow` is a two-party handshake and a single-party approval now expires after `CANCEL_APPROVAL_TTL_SECONDS` (7 days, issue #713): an approval older than that is treated as absent, so the counter-party's call records a fresh first approval instead of locking the escrow. `CancelApprovalRecordedEvent` (`cxlappr`) carries `approved_at` so indexers can track the same window
 - `lock_escrow_interest_yield` now rejects unauthorized callers with `Unauthorized` and an illegal source state with `InvalidStatus` **before** it reads or writes the ledger entry (issue #464); authorization runs first via `require_admin_from_instance`, so a non-admin cannot probe whether an escrow is locked, and an already-locked configuration is refused rather than silently re-locked
 - Contract tests live under `contracts/milestone-escrow/src/tests`. Soroban's per-test `test_snapshots/` are gitignored; three golden end-to-end snapshots (fund → deliver → approve, dispute → resolve, cancel → override) are committed in `contracts/milestone-escrow/golden_snapshots` and CI fails when a run changes them. After an intended change, rerun `cargo test golden_snapshot_tests` and commit the updated files.

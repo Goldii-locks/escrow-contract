@@ -126,7 +126,7 @@ fn constructor_applies_settings() {
             &amounts,
             EscrowSettings {
                 funding_mode: FundingMode::PerMilestone,
-                dispute_timeout_seconds: 3_600,
+                dispute_timeout_seconds: 2 * 24 * 60 * 60,
                 arbiter_fee_bps: 500,
             },
         ),

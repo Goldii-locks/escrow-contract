@@ -147,8 +147,9 @@ fn test_emergency_pause_admin_override_event_reconciles_with_persisted_state() {
         env.storage().instance().get(&DataKey::EpLk)
     });
     assert_eq!(lock_after, None);
-    let paused_after: Option<bool> =
-        env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::Ep));
+    let paused_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Paused)
+    });
     assert_eq!(paused_after, Some(ev.paused));
 }
 
@@ -406,11 +407,11 @@ fn joint_unpause() {
                 .get(0)
                 .map(|topic| {
                     let t: Symbol = topic.try_into_val(&env).unwrap();
-                    t == symbol_short!("emunpause")
+                    t == symbol_short!("emunpausp")
                 })
                 .unwrap_or(false)
         }),
-        "expected emunpause event"
+        "expected emunpausp event"
     );
     assert!(!client.is_emergency_paused());
 }
