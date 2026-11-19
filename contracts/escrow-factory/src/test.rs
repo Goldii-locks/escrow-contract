@@ -204,7 +204,7 @@ fn two_escrows_independent_lifecycle() {
 }
 
 #[test]
-fn created_event_carries_address_and_parties() {
+fn created_event_carries_party_topics_and_deployment_details() {
     let (env, fid, admin, _default_tok, _wasm_hash) = setup();
     let factory = EscrowFactoryClient::new(&env, &fid);
 
@@ -227,15 +227,24 @@ fn created_event_carries_address_and_parties() {
     );
 
     let (topics, data) = last_event(&env);
+    assert_eq!(topics.len(), 4);
     let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, symbol_short!("created"));
+    let topic_client: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    let topic_freelancer: Address = topics.get(2).unwrap().try_into_val(&env).unwrap();
+    let topic_arbiter: Address = topics.get(3).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic_client, client);
+    assert_eq!(topic_freelancer, freelancer);
+    assert_eq!(topic_arbiter, arbiter);
 
     let event = EscrowCreatedEvent::from_val(&env, &data);
     assert_eq!(event.escrow, escrow);
-    assert_eq!(event.client, client);
-    assert_eq!(event.freelancer, freelancer);
-    assert_eq!(event.arbiter, arbiter);
     assert_eq!(event.token, tok);
+    assert_eq!(event.total_amount, 1_000);
+    assert_eq!(event.milestone_count, 1);
+    assert_eq!(event.auto_release_seconds, 604800);
+    assert_eq!(event.settings, default_settings());
+    assert_eq!(event.wasm_hash, factory.get_wasm_hash());
 }
 
 /// Creating an escrow needs only the client's signature: the platform admin

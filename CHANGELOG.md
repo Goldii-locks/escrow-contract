@@ -24,6 +24,10 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Changed
 
+- `DisputeInfo` gains `raised_by: Address`, the party that called `raise_dispute`; `SCHEMA_VERSION` is now 4 and `migrate` adds the field to open disputes, using the job's client as a placeholder because the raiser was not stored (#997). Run `migrate` after upgrading an existing escrow.
+- `fund_milestone` no longer rescans every milestone: a new `FundedCount` instance counter, kept up to date by `fund`, `fund_milestone` and `add_milestone`, decides when the job is fully funded in O(1). Escrows created before the counter fall back to counting once (#999).
+- Factory `created` event now has topics `created`, `client`, `freelancer`, `arbiter` and data `{ escrow, token, total_amount, milestone_count, auto_release_seconds, settings, wasm_hash }`; party addresses moved out of the data. **Breaking for indexers**; see "Escrow factory events" in `EVENTS.md` (#1007).
+- `context.md` removed; its useful history now lives under "Project history" below (#1005).
 - `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
   `PlatformFeeAllocation` moved from instance storage to persistent keys, so
   calls that do not use them stop loading them. With a 50-token whitelist and a
@@ -100,3 +104,35 @@ hash for every commit in the `reproducible-wasm` job summary.
   - `raise_dispute`: freeze milestone and request arbiter intervention.
   - `resolve_dispute`: arbiter release or refund resolution.
   - `get_job`: view current job state.
+
+## Project history (migrated from `context.md`)
+
+`context.md` was a running session log and has been removed. The facts that are
+still useful are kept here; the per-day frontend and backend notes are in the
+git history of that file.
+
+### Testnet contract ID lineage
+
+| Contract ID | Period | Notes |
+|---|---|---|
+| `CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3` | 0.1.0 (2026-06-13) | First testnet deployment. |
+| `CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH` | 0.2.0 (2026-06-20) | Superseded. Older docs and `escrow-backend/.env.example` may still list it. |
+| `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA` | Current | Confirmed from production `/health` and the frontend `CONTRACT_ID` variable. |
+
+The current deployment record is `deployments/testnet.json`.
+
+### Campaigns
+
+- **Drips Wave (2026-09-21 to 2026-10-03):** about 348 issues across `escrow-contract`, `escrow-backend` and `escrow-frontend`; 1,092 of 1,101 closed by the end.
+- **Stellar Wave (2026-10-15 to 2026-10-27):** audit-based batch of 375 issues (125 per repo). Contract issues #664-#788. Each issue carries a `p1`/`p2`/`p3` priority and the `Stellar Wave` label. By 2026-10-27, 107 of 125 contract issues were closed.
+
+### Platform and infrastructure notes
+
+- **Event indexer:** the SQLite-backed indexer in `escrow-backend` indexes all contract events by ledger sequence (first added 2026-06-22).
+- **Protocol 30 (2026-11-03):** CAP-88 changed the ledger header format and broke the indexer (`unknown StellarValueType member for value 3`). Fixed by upgrading `@stellar/stellar-sdk` in `escrow-backend` from `^15.1.0` to `^16.4.1`.
+- **Production hosting:** milestonepay.app serves HTTPS, CORS is restricted to the `ALLOWED_ORIGINS` allowlist, and deploys run through `deploy.yml`. A deploy failed on 2026-11-09 because the host disk was full of old Docker images; `docker image prune -af` fixed it.
+
+### Known gaps recorded at the time of removal
+
+- The frontend sends CSP reports to `/api/csp-report` and the backend has no handler (frontend #685).
+- The frontend's batched deadline call needs a backend `GET /api/jobs/:id/deadlines` route (frontend #671).

@@ -127,8 +127,9 @@ Notes:
   `submit_evidence(caller, milestone_index, evidence_hash)`. Each hash is
   appended to the dispute record (at most `MAX_DISPUTE_EVIDENCE_ENTRIES` = 10,
   then `EvidenceLimitReached`), timestamped, and published as an `evidence`
-  event. `get_dispute_info` returns the reason hash, `disputed_at`, the
-  pre-dispute status and every evidence entry; the record is deleted when the
+  event. `get_dispute_info` returns the reason hash, `raised_by` (the party
+  that called `raise_dispute`, #997), `disputed_at`, the pre-dispute status
+  and every evidence entry; the record is deleted when the
   dispute closes, so evidence never outlives the dispute it belongs to (#712).
 - If the arbiter has not acted within the escrow's dispute timeout (30 days
   by default, set with `initialize_with_dispute_timeout`), either party may
