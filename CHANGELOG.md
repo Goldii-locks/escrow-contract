@@ -32,6 +32,9 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Changed
 
+- `emergency_unpause_parties` publishes its `EmergencyPartyUnpausedEvent` under
+  the new `emunpausp` topic instead of `emunpause`, which now carries only
+  `EmergencyUnpausedEvent` from the admin unpause (#993).
 - `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
   `PlatformFeeAllocation` moved from instance storage to persistent keys, so
   calls that do not use them stop loading them. With a 50-token whitelist and a

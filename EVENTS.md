@@ -59,6 +59,7 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `resume`   | `EscrowResumedEvent`             | state change      |
 | `empause`  | `EmergencyPausedEvent`           | state change      |
 | `emunpause`| `EmergencyUnpausedEvent`         | state change      |
+| `emunpausp`| `EmergencyPartyUnpausedEvent`    | state change      |
 | `emoverrid`| `EmergencyPauseAdminOverrideEvent` | state change    |
 | `epalloc`  | `EmergencyPauseAllocationEvent`  | calculation       |
 | `epclaim`  | `EmergencyPauseClaimRefundEvent` | state change      |
@@ -117,6 +118,9 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 - Several split-refund paths share the `SplitRefundCalculatedEvent` struct but
   use distinct topics (`arbsplit`, `epspltref`, `iyspltref`, `splitref`) so
   consumers can tell the originating workflow apart.
+- Each topic carries exactly one payload struct, enforced by
+  `event_docs_sync_tests`. The admin unpause publishes `emunpause`; the joint
+  party unpause publishes `emunpausp`.
 - **Cancel approvals expire.** `cxlappr` carries `approved_at`, the ledger
   timestamp at which the approval round started. An approval older than
   `CANCEL_APPROVAL_TTL_SECONDS` (7 days) is treated as absent by

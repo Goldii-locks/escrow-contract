@@ -406,11 +406,11 @@ fn joint_unpause() {
                 .get(0)
                 .map(|topic| {
                     let t: Symbol = topic.try_into_val(&env).unwrap();
-                    t == symbol_short!("emunpause")
+                    t == symbol_short!("emunpausp")
                 })
                 .unwrap_or(false)
         }),
-        "expected emunpause event"
+        "expected emunpausp event"
     );
     assert!(!client.is_emergency_paused());
 }

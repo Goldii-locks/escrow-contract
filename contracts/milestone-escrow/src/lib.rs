@@ -7308,7 +7308,7 @@ impl MilestoneEscrow {
         env.storage().instance().set(&DataKey::EpParty, &false);
 
         env.events().publish(
-            (symbol_short!("emunpause"),),
+            (symbol_short!("emunpausp"),),
             EmergencyPartyUnpausedEvent { client, freelancer },
         );
         Ok(())
