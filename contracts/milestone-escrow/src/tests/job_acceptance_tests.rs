@@ -159,7 +159,7 @@ fn test_accept_job_emits_event() {
         .iter()
         .any(|(addr, topics, _)| {
             *addr == contract_id
-                && topics.len() == 1
+                && topics.len() == 3
                 && topics.get(0).unwrap().get_payload() == topic.get_payload()
         });
     assert!(found, "accept_job must publish an `acceptjob` event");

@@ -123,3 +123,19 @@ fn accounting_invariant() {
     escrow.approve_milestone(&client_addr, &1u32);
     assert_eq!(token::Client::new(&env, &token).balance(&escrow.address), 0);
 }
+
+#[test]
+fn accrued_yield_is_not_swept() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, _, _, admin_addr, token, contract_id, escrow) =
+        setup_funded_escrow(&env, vec![&env, 100_i128]);
+    mint(&env, &token, &admin_addr, &contract_id, 50);
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldAccrued, &20_i128);
+    });
+
+    assert_eq!(escrow.sweep_excess(&client_addr, &token), 30);
+}

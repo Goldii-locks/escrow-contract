@@ -60,9 +60,19 @@ hash for every commit in the `reproducible-wasm` job summary.
   calls that do not use them stop loading them. With a 50-token whitelist and a
   32-signer multisig, the instance entry `approve_milestone` loads shrinks from
   4,212 to 644 bytes and its metered instructions drop by about 15 % (#772).
+- `msfund`, `withdraw`, `sweep`, `overdue`, `unaccref`, `msrev`, `extend`,
+  `ms_add`, `ms_reduce`, `cancel`, `cxlappr`, `cancelrev`, `acceptjob` and
+  `acceptarb` carry the party addresses as topics after the event name, actor
+  first, so `getEvents` can filter them by participant (#1019).
 
 ### Added
 
+- `increase_milestone(client, freelancer, milestone_index, new_amount)`:
+  raise a `Pending` milestone's amount with both parties' consent. On a
+  funded milestone the client deposits the difference in the same call; in
+  per-milestone mode an unfunded milestone only has its amount changed.
+  Updates `total_amount` and emits `ms_incr` with the old and new amounts
+  (#1020).
 - Property-based tests (`proptest`) for conservation of funds, terminal state immutability,
   and failed-call balance isolation across arbitrary operation sequences (#722).
 - `migrate(admin)` moves the configuration above out of instance storage when

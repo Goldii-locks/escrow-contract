@@ -9,7 +9,9 @@ row here, and a row here must correspond to a topic in the source.
 
 `topic[0]` is always the event name below. These events also carry party
 addresses as further topics, so RPC `getEvents` can filter by participant
-(issue #739):
+(issues #739, #1019). The actor comes first, then the counterparty; for
+`withdraw`, `cancel`, `cxlappr` and `cancelrev` the counterparty is the
+freelancer when the client acts and the client otherwise:
 
 | Event      | Topics after the name                 |
 | ---------- | ------------------------------------- |
@@ -20,7 +22,21 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `approve`  | `client`                              |
 | `dispute`  | `caller`                              |
 | `freerot`  | `new_freelancer`                      |
-| `withdraw` | `caller` (`withdraw_to` only)         |
+| `acceptjob`| `freelancer`, `client`                |
+| `acceptarb`| `arbiter`, `client`                   |
+| `msfund`   | `client`, `freelancer`                |
+| `withdraw` | `caller`, counterparty (`recipient` in the body) |
+| `sweep`    | `client`, `freelancer`                |
+| `overdue`  | `client`, `freelancer`                |
+| `unaccref` | `client`, `freelancer`                |
+| `msrev`    | `client`, `freelancer`                |
+| `extend`   | `client`, `freelancer`                |
+| `ms_add`   | `client`, `freelancer`                |
+| `ms_reduce`| `client`, `freelancer`                |
+| `ms_incr`  | `client`, `freelancer`                |
+| `cancel`   | `caller`, counterparty                |
+| `cxlappr`  | `caller`, counterparty                |
+| `cancelrev`| `caller`, counterparty                |
 
 ## Events
 
@@ -39,6 +55,7 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `msfund`   | `MilestoneFundedEvent`           | state change      |
 | `ms_add`   | `MilestoneAddedEvent`            | state change      |
 | `ms_reduce`| `MilestoneReducedEvent`          | state change      |
+| `ms_incr`  | `MilestoneIncreasedEvent`        | state change      |
 | `deliver`  | `DeliveredEvent`                 | state change      |
 | `msrev`    | `RevisionRequestedEvent`         | state change      |
 | `approve`  | `ApprovedEvent`                  | state change      |
