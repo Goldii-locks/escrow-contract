@@ -1020,6 +1020,19 @@ pub struct TaxWithholdingDeductionsEvent {
     pub tax_rate_bps: u32,
 }
 
+/// Emitted whenever a reputation score changes, so indexers can follow score
+/// history without polling `get_reputation` for every address after a release.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReputationChangedEvent {
+    /// Address whose score changed (client or freelancer).
+    pub address: Address,
+    /// Score stored after the increment.
+    pub new_score: u32,
+    /// Milestone whose full release caused the change.
+    pub milestone_index: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformFeeAllocation {
@@ -3110,10 +3123,19 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    fn increment_reputation(env: &Env, address: &Address) {
+    fn increment_reputation(env: &Env, address: &Address, milestone_index: u32) {
         let key = DataKey::Reputation(address.clone());
         let current: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(current + 1));
+        let new_score = current + 1;
+        env.storage().persistent().set(&key, &new_score);
+        env.events().publish(
+            (symbol_short!("rep"),),
+            ReputationChangedEvent {
+                address: address.clone(),
+                new_score,
+                milestone_index,
+            },
+        );
     }
 
     fn checked_add_amount(total: i128, amount: i128) -> Result<i128, Error> {
@@ -5256,8 +5278,8 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(env, milestone_index, &milestone);
         Self::clear_time_ext(env, milestone_index);
-        Self::increment_reputation(env, &meta.client);
-        Self::increment_reputation(env, &meta.freelancer);
+        Self::increment_reputation(env, &meta.client, milestone_index);
+        Self::increment_reputation(env, &meta.freelancer, milestone_index);
 
         // INTERACTION: Token transfer is the sole external call and executes only
         //    after all state mutations have been durably persisted.
@@ -5424,8 +5446,8 @@ impl MilestoneEscrow {
             updated_milestone.status = MilestoneStatus::Released;
             Self::store_milestone_released(&env, milestone_index);
             Self::clear_time_ext(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         } else {
             updated_milestone.status = MilestoneStatus::PartiallyReleased;
         }
@@ -5524,8 +5546,8 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
         Self::clear_time_ext(&env, milestone_index);
-        Self::increment_reputation(&env, &meta.client);
-        Self::increment_reputation(&env, &meta.freelancer);
+        Self::increment_reputation(&env, &meta.client, milestone_index);
+        Self::increment_reputation(&env, &meta.freelancer, milestone_index);
 
         // Write a short-lived completion flag to temporary storage.  This is
         // transient workflow state: the milestone approval window is now
@@ -5710,8 +5732,8 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Released;
             Self::store_milestone(&env, milestone_index, &milestone);
             Self::store_milestone_released(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         // INTERACTION: one transfer for the whole batch.
@@ -6226,8 +6248,8 @@ impl MilestoneEscrow {
             if payout > 0 {
                 Self::pay_or_credit(&env, &token_client, &meta.freelancer, &payout)?;
             }
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         } else {
             milestone.status = MilestoneStatus::Refunded;
             Self::store_milestone(&env, milestone_index, &milestone);
@@ -6463,8 +6485,8 @@ impl MilestoneEscrow {
         } else {
             milestone.status = MilestoneStatus::Released;
             Self::store_milestone_released(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
@@ -7933,8 +7955,8 @@ impl MilestoneEscrow {
             if milestone.released_amount >= milestone.amount {
                 milestone.status = MilestoneStatus::Released;
                 Self::store_milestone_released(&env, milestone_index);
-                Self::increment_reputation(&env, &meta.client);
-                Self::increment_reputation(&env, &meta.freelancer);
+                Self::increment_reputation(&env, &meta.client, milestone_index);
+                Self::increment_reputation(&env, &meta.freelancer, milestone_index);
             } else {
                 milestone.status = MilestoneStatus::PartiallyReleased;
             }
@@ -10541,8 +10563,8 @@ impl MilestoneEscrow {
         } else {
             milestone.status = MilestoneStatus::Released;
             Self::store_milestone_released(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
