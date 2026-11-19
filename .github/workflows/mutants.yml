@@ -1,0 +1,61 @@
+name: Mutants
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 04:00 UTC, after the E2E run.
+    - cron: "0 4 * * *"
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32v1-none
+
+      - name: Install stellar-cli
+        uses: stellar/stellar-cli@v28.0.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-mutants-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+
+      - name: Mutants in math.rs
+        # Split, rounding and weight-allocation code (issue #1022). Every
+        # mutant should be caught; a missed one fails this step and is listed
+        # in mutants-math/mutants.out/missed.txt.
+        run: >
+          cargo mutants --package milestone-escrow
+          --file contracts/milestone-escrow/src/math.rs
+          --output mutants-math
+
+      - name: Mutants in the settlement helpers
+        # pay_or_credit, outstanding_escrow_obligations and arbiter_fee_for in
+        # lib.rs decide who is paid, what is owed and what may be swept.
+        if: ${{ !cancelled() }}
+        run: >
+          cargo mutants --package milestone-escrow
+          --file contracts/milestone-escrow/src/lib.rs
+          --re 'pay_or_credit|outstanding_escrow_obligations|arbiter_fee_for'
+          --output mutants-settlement
+
+      - name: Upload results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants
+          path: |
+            mutants-math/mutants.out
+            mutants-settlement/mutants.out

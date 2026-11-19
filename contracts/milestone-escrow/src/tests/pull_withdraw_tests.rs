@@ -167,3 +167,25 @@ fn test_sweep_excess_does_not_take_credited_balances() {
     assert_eq!(client.sweep_excess(&client_addr, &token_client.address), 50);
     assert_eq!(token_client.balance(&contract_id), 1_000);
 }
+
+/// The credit path must also run when the escrow holds more than the payout,
+/// e.g. after a direct transfer to the contract (#1022).
+#[test]
+fn test_payout_is_credited_while_the_escrow_holds_more_than_it() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, token_admin, token_client, client, contract_id) =
+        setup_revocable_escrow(&env);
+    token_admin.mint(&contract_id, &500);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    token_admin.set_authorized(&freelancer_addr, &false);
+    client.approve_milestone(&client_addr, &0u32);
+    assert_eq!(token_client.balance(&contract_id), 1_500);
+
+    token_admin.set_authorized(&freelancer_addr, &true);
+    client.withdraw(&freelancer_addr);
+    assert_eq!(token_client.balance(&freelancer_addr), 1_000);
+    assert_eq!(token_client.balance(&contract_id), 500);
+}
