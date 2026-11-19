@@ -112,6 +112,10 @@ stateDiagram-v2
 `ensure_not_paused` rejects with `Paused` while `Ep` or the admin `Paused` flag is set and with
 `EscrowLocked` while `CancelLock` is set. `assert_not_paused` rejects with
 `Paused` while the admin `Paused` flag is set.
+User-facing state changes (including `extend_milestone_deadline` and
+`rotate_freelancer`) must use `ensure_not_paused`. The remaining
+`assert_not_paused` callers are recovery paths that intentionally stay
+available during an emergency pause / cancel lock.
 
 ## Payouts
 

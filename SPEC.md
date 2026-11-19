@@ -92,6 +92,11 @@ are not required to settle the escrow.
 - Unpausing a running escrow returns `NotPaused`.
 - Pause state is per contract instance; unpausing one escrow does not affect
   another.
+- All user-facing state changes, including `extend_milestone_deadline` and
+  `rotate_freelancer`, use `ensure_not_paused`: they return `Paused` under an
+  admin or emergency pause and `EscrowLocked` under a mutual cancel lock. Only
+  documented admin recovery / settlement helpers may use the weaker
+  `assert_not_paused` guard and remain callable during an emergency pause.
 
 ## Dispute semantics
 

@@ -2562,6 +2562,8 @@ impl MilestoneEscrow {
         }
 
         // After preconditions pass, check authorization and contract state
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
         let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
         if emergency_paused {
@@ -4573,6 +4575,8 @@ impl MilestoneEscrow {
     /// * `InvalidParties` – `new_freelancer` collides with the client, the
     ///   arbiter or the admin.
     pub fn rotate_freelancer(env: Env, new_freelancer: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::ensure_not_paused(&env)?;
         let mut meta = Self::require_client_and_freelancer_consent(&env)?;
         Self::validate_address(&env, &new_freelancer)?;
         if new_freelancer == meta.freelancer || new_freelancer == env.current_contract_address() {
@@ -5032,7 +5036,7 @@ impl MilestoneEscrow {
         extra_seconds: u32,
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        Self::assert_not_paused(&env)?;
+        Self::ensure_not_paused(&env)?;
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
         Self::assert_emergency_pause_not_locked(&env)?;
@@ -7787,6 +7791,8 @@ impl MilestoneEscrow {
         // paused escrow — before any further ledger access, so a mistaken
         // call never mutates storage.
         Self::assert_payment_streaming_not_locked(&env)?;
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
         let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
         if emergency_paused {
@@ -7864,6 +7870,8 @@ impl MilestoneEscrow {
         Self::ensure_migrated(&env)?;
         // Reject illegal source state before any further ledger access.
         Self::assert_payment_streaming_not_locked(&env)?;
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
         let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
         if emergency_paused {
@@ -8098,6 +8106,8 @@ impl MilestoneEscrow {
         Self::ensure_migrated(&env)?;
         // Reject illegal source state before collecting signatures so a
         // mistaken call never mutates storage.
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
@@ -9864,6 +9874,8 @@ impl MilestoneEscrow {
         freelancer_payout_bps: u32,
     ) -> Result<RefundAllocation, Error> {
         // Precondition: reject illegal source state if contract is paused.
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
         let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
         if emergency_paused {
@@ -10088,6 +10100,8 @@ impl MilestoneEscrow {
         // pause is a separate, stronger freeze recorded under `DataKey::Ep`.
         // Letting a yield-rate change through during an emergency pause would
         // make the weaker of the two freezes the stricter one.
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
         let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
         if emergency_paused {
@@ -10250,6 +10264,8 @@ impl MilestoneEscrow {
 
         // Reject calls while the contract is administratively paused so that
         // a suspended escrow cannot have funds moved through the override path.
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
 
         let meta = Self::load_job_meta(&env)?;
@@ -10371,6 +10387,8 @@ impl MilestoneEscrow {
         Self::require_role(&env, &admin, AdminRole::Resolver)?;
 
         // Reject illegal source state before any job/milestone ledger I/O.
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
 
         let meta = Self::load_job_meta(&env)?;
@@ -12123,6 +12141,8 @@ impl MilestoneEscrow {
         // read only the instance entry, so an illegal source state is rejected
         // without a single ledger write.
         Self::ensure_not_paused(&env)?;
+        // Recovery path: intentionally only checks the admin pause flag, so
+        // this stays callable during an emergency pause / cancel lock.
         Self::assert_not_paused(&env)?;
 
         let allocation =
