@@ -282,6 +282,7 @@ Events carry party addresses as extra topics for `getEvents` filtering; see
 | 53 | `MultiSigConfigPending` | `propose_multisig_config` was called while another signer-set change is pending |
 | 54 | `NoPendingMultiSigConfig` | `execute_multisig_config` / `cancel_multisig_config_proposal` found no pending signer-set change |
 | 55 | `DisputePending` | `replace_arbiter` was called while a milestone is `Disputed` |
+| 56 | `InvalidDeadline` | `set_milestone_due_dates` got a non-zero due date at or before the current ledger timestamp |
 
 ## Milestone States
 

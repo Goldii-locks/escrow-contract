@@ -233,6 +233,9 @@ pub enum Error {
     /// arbiter once every dispute has been resolved, split, or timed out and
     /// escalated.
     DisputePending = 55,
+    /// A non-zero milestone due date was not in the future at the time
+    /// `set_milestone_due_dates` was called.
+    InvalidDeadline = 56,
 }
 
 const MAX_REVISIONS: u32 = 3;
@@ -4699,6 +4702,8 @@ impl MilestoneEscrow {
     /// * `AlreadyFunded`  – The escrow (or any milestone) is already funded.
     /// * `InvalidStatus`  – The freelancer has already accepted the job.
     /// * `InvalidAmount`  – `due_dates.len()` differs from the milestone count.
+    /// * `InvalidDeadline` – A non-zero due date is at or before the current
+    ///                       ledger timestamp (`0` still clears a deadline).
     pub fn set_milestone_due_dates(
         env: Env,
         client: Address,
@@ -4718,6 +4723,14 @@ impl MilestoneEscrow {
         }
         if due_dates.len() != meta.milestone_count {
             return Err(Error::InvalidAmount);
+        }
+        // Validate every date before writing any, so a rejected call cannot
+        // leave a partially updated set of deadlines behind (#924).
+        let now = env.ledger().timestamp();
+        for due_at in due_dates.iter() {
+            if due_at != 0 && due_at <= now {
+                return Err(Error::InvalidDeadline);
+            }
         }
         for (index, due_at) in due_dates.iter().enumerate() {
             let key = DataKey::DueAt(index as u32);

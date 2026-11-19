@@ -126,6 +126,51 @@ fn only_client_can_reclaim() {
 }
 
 #[test]
+fn set_due_dates_rejects_past_dates_but_accepts_zero_and_future() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    let admin = Address::generate(&env);
+    let client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let amounts = vec![&env, 400, 600];
+    let escrow = MilestoneEscrowClient::new(&env, &env.register(MilestoneEscrow, ()));
+    escrow.initialize(
+        &admin,
+        &client,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604_800u64,
+        &amounts,
+        &crate::spec_hashes_for(&amounts),
+    );
+
+    // A past date fails the whole call, with no partial write (#924).
+    assert_eq!(
+        escrow.try_set_milestone_due_dates(&client, &vec![&env, 999, 2_000]),
+        Err(Ok(Error::InvalidDeadline))
+    );
+    assert_eq!(escrow.get_milestone_due_at(&0), 0);
+    assert_eq!(escrow.get_milestone_due_at(&1), 0);
+
+    // A date equal to the current ledger timestamp is already stale.
+    assert_eq!(
+        escrow.try_set_milestone_due_dates(&client, &vec![&env, 1_000, 1]),
+        Err(Ok(Error::InvalidDeadline))
+    );
+
+    // Zero still clears, and a future date is stored.
+    escrow.set_milestone_due_dates(&client, &vec![&env, 0, 2_000]);
+    assert_eq!(escrow.get_milestone_due_at(&0), 0);
+    assert_eq!(escrow.get_milestone_due_at(&1), 2_000);
+}
+
+#[test]
 fn due_dates_cannot_change_after_funding() {
     let env = Env::default();
     let (client, _, _, escrow) = setup(&env);
