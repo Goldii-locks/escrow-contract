@@ -266,6 +266,9 @@
                 },
                 {
                   "bool": true
+                },
+                {
+                  "bytes": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
                 }
               ]
             }
@@ -1407,6 +1410,14 @@
                   },
                   "val": {
                     "i128": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "decision_hash"
+                  },
+                  "val": {
+                    "bytes": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
                   }
                 },
                 {

@@ -17,7 +17,7 @@ fn split_milestone_zero(env: &Env) -> (Address, Address, MilestoneEscrowClient<'
         setup_funded_escrow(env, vec![env, 1_000_i128, 1_000]);
     escrow.mark_delivered(&freelancer, &0);
     escrow.raise_dispute(&client_addr, &0, &BytesN::from_array(env, &[1; 32]));
-    escrow.apply_dispute_arbitration_split(&arbiter, &0, &4_000);
+    escrow.apply_dispute_arbitration_split(&arbiter, &0, &4_000, &decision_hash(env));
     assert_eq!(
         escrow.get_job().milestones.get(0).unwrap().status,
         MilestoneStatus::Split

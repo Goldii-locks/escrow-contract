@@ -96,7 +96,7 @@ fn resolve_dispute_rejects_zero_remaining() {
     let (_, _, arbiter_addr, _, contract_id, client) = disputed_escrow(&env, 1_000);
     zero_remaining(&env, &contract_id);
 
-    let result = client.try_resolve_dispute(&arbiter_addr, &0u32, &true);
+    let result = client.try_resolve_dispute(&arbiter_addr, &0u32, &true, &decision_hash(&env));
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     assert_eq!(milestone_0(&client).status, MilestoneStatus::Disputed);
 }
@@ -109,7 +109,7 @@ fn resolve_dispute_rejects_zero_contract_balance() {
     let (_, _, arbiter_addr, token, contract_id, client) = disputed_escrow(&env, 1_000);
     drain(&env, &token, &contract_id, 1_000);
 
-    let result = client.try_resolve_dispute(&arbiter_addr, &0u32, &false);
+    let result = client.try_resolve_dispute(&arbiter_addr, &0u32, &false, &decision_hash(&env));
     assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
     assert_eq!(milestone_0(&client).status, MilestoneStatus::Disputed);
 }
@@ -126,7 +126,7 @@ fn resolve_dispute_shortfall_release_is_rejected() {
     drain(&env, &token, &contract_id, 700);
 
     assert_eq!(
-        client.try_resolve_dispute(&arbiter_addr, &0u32, &true),
+        client.try_resolve_dispute(&arbiter_addr, &0u32, &true, &decision_hash(&env)),
         Err(Ok(Error::InsufficientBalance))
     );
 
@@ -149,7 +149,7 @@ fn resolve_dispute_shortfall_refund_is_rejected() {
     drain(&env, &token, &contract_id, 700);
 
     assert_eq!(
-        client.try_resolve_dispute(&arbiter_addr, &0u32, &false),
+        client.try_resolve_dispute(&arbiter_addr, &0u32, &false, &decision_hash(&env)),
         Err(Ok(Error::InsufficientBalance))
     );
 
@@ -174,7 +174,12 @@ fn split_rejects_zero_and_self_arbiter_addresses() {
         Address::from_str(&env, ZERO_CONTRACT),
         contract_id.clone(),
     ] {
-        let result = client.try_apply_dispute_arbitration_split(&bad, &0u32, &5_000u32);
+        let result = client.try_apply_dispute_arbitration_split(
+            &bad,
+            &0u32,
+            &5_000u32,
+            &decision_hash(&env),
+        );
         assert_eq!(result, Err(Ok(Error::InvalidAddress)));
     }
     assert_eq!(milestone_0(&client).status, MilestoneStatus::Disputed);
@@ -206,7 +211,12 @@ fn split_rejects_unfunded_escrow() {
         &crate::test_spec_hashes(&env, &vec![&env, 1_000_i128]),
     );
 
-    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &5_000u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &5_000u32,
+        &decision_hash(&env),
+    );
     assert_eq!(result, Err(Ok(Error::NotFunded)));
 }
 
@@ -217,7 +227,12 @@ fn split_rejects_non_disputed_milestone() {
 
     let (_, _, arbiter_addr, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &5_000u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &5_000u32,
+        &decision_hash(&env),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
     assert_eq!(milestone_0(&client).status, MilestoneStatus::Pending);
 }
@@ -230,7 +245,12 @@ fn split_rejects_zero_remaining() {
     let (_, _, arbiter_addr, _, contract_id, client) = disputed_escrow(&env, 1_000);
     zero_remaining(&env, &contract_id);
 
-    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &5_000u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &5_000u32,
+        &decision_hash(&env),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     assert_eq!(milestone_0(&client).status, MilestoneStatus::Disputed);
 }
@@ -243,7 +263,12 @@ fn split_rejects_zero_contract_balance() {
     let (_, _, arbiter_addr, token, contract_id, client) = disputed_escrow(&env, 1_000);
     drain(&env, &token, &contract_id, 1_000);
 
-    let result = client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &5_000u32);
+    let result = client.try_apply_dispute_arbitration_split(
+        &arbiter_addr,
+        &0u32,
+        &5_000u32,
+        &decision_hash(&env),
+    );
     assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
     assert_eq!(milestone_0(&client).status, MilestoneStatus::Disputed);
 }
@@ -260,7 +285,12 @@ fn split_shortfall_is_rejected() {
     drain(&env, &token, &contract_id, 2000);
 
     assert_eq!(
-        client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &7_000u32),
+        client.try_apply_dispute_arbitration_split(
+            &arbiter_addr,
+            &0u32,
+            &7_000u32,
+            &decision_hash(&env)
+        ),
         Err(Ok(Error::InsufficientBalance))
     );
 
@@ -283,7 +313,12 @@ fn split_shortfall_below_client_share_is_rejected() {
     drain(&env, &token, &contract_id, 4000);
 
     assert_eq!(
-        client.try_apply_dispute_arbitration_split(&arbiter_addr, &0u32, &7_000u32),
+        client.try_apply_dispute_arbitration_split(
+            &arbiter_addr,
+            &0u32,
+            &7_000u32,
+            &decision_hash(&env)
+        ),
         Err(Ok(Error::InsufficientBalance))
     );
 

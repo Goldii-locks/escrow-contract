@@ -24,6 +24,14 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Changed
 
+- **Breaking**: `resolve_dispute` and `apply_dispute_arbitration_split` take a
+  trailing `decision_hash: BytesN<32>` — a tamper-evident commitment to the
+  arbiter's written decision (#1015). The hash is echoed verbatim in the
+  `resolve` event and, for a split, also in `arbsplit`. Outcomes, fund
+  distribution, permissions and dispute storage are unchanged; the written
+  decision stays off-chain in escrow-backend storage, keyed by the hash.
+  Clients must pass the new argument (regenerate the TypeScript bindings to
+  pick up the new signatures).
 - `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
   `PlatformFeeAllocation` moved from instance storage to persistent keys, so
   calls that do not use them stop loading them. With a 50-token whitelist and a
