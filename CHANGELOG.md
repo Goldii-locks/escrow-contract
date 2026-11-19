@@ -21,6 +21,10 @@ hash for every commit in the `reproducible-wasm` job summary.
   through `set_interest_yield_consent`, which the client and freelancer must
   sign. `unlock_escrow_interest_yield` now requires the admin, the client and
   the freelancer, so the admin cannot undo its own lock (#776).
+- `raise_dispute` and `request_revision` return the new `ReviewWindowClosed`
+  error on a `Delivered` milestone once its auto-release deadline has passed,
+  and `escalate_dispute` restores the original deadline instead of starting a
+  fresh window, so the client cannot undo an expired review window (#991).
 
 ### Changed
 

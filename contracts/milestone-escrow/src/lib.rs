@@ -233,6 +233,10 @@ pub enum Error {
     /// arbiter once every dispute has been resolved, split, or timed out and
     /// escalated.
     DisputePending = 55,
+    /// `raise_dispute` or `request_revision` was called on a `Delivered`
+    /// milestone whose auto-release deadline has already passed; the
+    /// freelancer is entitled to `claim_auto_release`.
+    ReviewWindowClosed = 56,
 }
 
 const MAX_REVISIONS: u32 = 3;
@@ -3023,6 +3027,28 @@ impl MilestoneEscrow {
             .ok_or(Error::ArithmeticOverflow)
     }
 
+    /// Reject client review actions on a `Delivered` milestone once its
+    /// auto-release deadline has passed, so the expired window cannot be
+    /// undone before the freelancer claims.
+    fn assert_review_window_open(
+        env: &Env,
+        meta: &JobMeta,
+        milestone_index: u32,
+        milestone: &Milestone,
+    ) -> Result<(), Error> {
+        if milestone.status != MilestoneStatus::Delivered {
+            return Ok(());
+        }
+        let delivered_at =
+            Self::load_delivered_at(env, milestone_index).unwrap_or(milestone.delivered_at);
+        let extension = Self::load_time_extension(env, milestone_index);
+        let deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        if env.ledger().timestamp() >= deadline {
+            return Err(Error::ReviewWindowClosed);
+        }
+        Ok(())
+    }
+
     /// Write the terminal approval flag to temporary storage.  This is a
     /// cheap, short-lived signal that the milestone at `index` has been fully
     /// released via `approve_milestone`.  Callers that only need to verify
@@ -4945,7 +4971,8 @@ impl MilestoneEscrow {
     ///
     /// Returns the milestone to `Pending`, clears `delivered_at` so the previous
     /// auto-release clock cannot fire, and increments `revision_count` up to
-    /// `MAX_REVISIONS` (3). Accounting and funding are unchanged.
+    /// `MAX_REVISIONS` (3). Accounting and funding are unchanged. Returns
+    /// `ReviewWindowClosed` once the auto-release deadline has passed.
     pub fn request_revision(
         env: Env,
         client: Address,
@@ -4975,6 +5002,7 @@ impl MilestoneEscrow {
         if milestone.status != MilestoneStatus::Delivered {
             return Err(Error::InvalidStatus);
         }
+        Self::assert_review_window_open(&env, &meta, milestone_index, &milestone)?;
 
         let current: u32 = env
             .storage()
@@ -5755,6 +5783,8 @@ impl MilestoneEscrow {
     ///                        `PartiallyReleased`.
     /// * `NotAccepted`      – The freelancer or arbiter has not accepted the
     ///                        job.
+    /// * `ReviewWindowClosed` – The milestone is `Delivered` and its
+    ///                        auto-release deadline has passed.
     pub fn raise_dispute(
         env: Env,
         caller: Address,
@@ -5854,6 +5884,7 @@ impl MilestoneEscrow {
             MilestoneStatus::Delivered | MilestoneStatus::PartiallyReleased => {}
             _ => return Err(Error::InvalidStatus),
         }
+        Self::assert_review_window_open(env, &meta, milestone_index, &milestone)?;
 
         let disputed_at = env.ledger().timestamp();
         env.storage().persistent().set(
@@ -6003,7 +6034,8 @@ impl MilestoneEscrow {
     /// restoring the milestone to the status it had before the dispute.
     ///
     /// Either escrow party may call this function. A restored Delivered
-    /// milestone receives a fresh auto-release window starting at escalation.
+    /// milestone keeps its original auto-release deadline, so a dispute and
+    /// escalation loop cannot extend the review window.
     ///
     /// # Errors
     /// * [`Error::Paused`] – The contract is emergency-paused.
@@ -6066,10 +6098,6 @@ impl MilestoneEscrow {
         }
 
         milestone.status = dispute_info.previous_status.clone();
-        if milestone.status == MilestoneStatus::Delivered {
-            milestone.delivered_at = escalated_at;
-            Self::store_delivered_at(&env, milestone_index, escalated_at);
-        }
         Self::store_milestone(&env, milestone_index, &milestone);
         env.storage()
             .persistent()

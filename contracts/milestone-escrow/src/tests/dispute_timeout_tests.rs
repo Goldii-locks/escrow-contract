@@ -90,7 +90,7 @@ fn escalation_fails_before_timeout_and_restores_delivered_after_timeout() {
 
     let restored = client.get_job().milestones.get(0).unwrap();
     assert_eq!(restored.status, MilestoneStatus::Delivered);
-    assert_eq!(restored.delivered_at, 1_160);
+    assert_eq!(restored.delivered_at, 1_000);
 }
 
 #[test]

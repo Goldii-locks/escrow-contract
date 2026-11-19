@@ -155,7 +155,7 @@ topic.
 
 | Entry point | Signer(s) | Guards | Source status | Target status | Token movement | Event |
 |---|---|---|---|---|---|---|
-| `raise_dispute` | client or freelancer | `ensure_not_paused`; funded; no dispute lock held; accepted by both | `Pending`, `Delivered`, `PartiallyReleased` | `Disputed` | none | `dispute` |
+| `raise_dispute` | client or freelancer | `ensure_not_paused`; funded; no dispute lock held; accepted by both; a `Delivered` milestone's auto-release deadline has not passed (`ReviewWindowClosed`) | `Pending`, `Delivered`, `PartiallyReleased` | `Disputed` | none | `dispute` |
 | `submit_evidence` | client or freelancer | `ensure_not_paused`; funded; milestone `Disputed`; fewer than `MAX_DISPUTE_EVIDENCE_ENTRIES` hashes recorded | `Disputed` | `Disputed` | none | `evidence` |
 | `resolve_dispute` | arbiter | `ensure_not_paused`; funded; accepted by both | `Disputed` | `Released` (release) or `Refunded` (refund) | → freelancer or → client, remaining capped at available balance | `resolve` |
 | `apply_dispute_arbitration_split` | arbiter | `ensure_not_paused`; funded; accepted by both | `Disputed` | `Refunded`, `Split` or `Released` depending on the shares | → client and → freelancer by `client_refund_bps`, capped at available balance | `resolve`, `arbsplit` |
