@@ -106,3 +106,69 @@ fn every_documented_topic_exists_in_source() {
         "EVENTS.md documents topics the contract does not emit"
     );
 }
+
+/// Every `symbol_short!` topic published by `lib.rs` must carry exactly one
+/// payload struct, so indexers can decode event data by topic alone.
+#[test]
+fn every_event_topic_has_one_payload_type() {
+    let mut payloads: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    let mut rest = SRC;
+    while let Some(pos) = rest.find(".publish(") {
+        rest = &rest[pos + ".publish(".len()..];
+        let call = rest.trim_start();
+        if !call.starts_with('(') {
+            continue;
+        }
+
+        // Find the end of the topic tuple.
+        let mut depth = 0i32;
+        let mut tuple_end = None;
+        for (i, c) in call.char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        tuple_end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let tuple_end = tuple_end.expect("unterminated publish topic tuple");
+        let tuple = &call[..tuple_end];
+        let needle = "symbol_short!(\"";
+        let topic = match tuple.find(needle) {
+            Some(t) => {
+                let after = &tuple[t + needle.len()..];
+                &after[..after.find('"').expect("unterminated topic")]
+            }
+            None => continue,
+        };
+
+        let payload = call[tuple_end + 1..]
+            .trim_start()
+            .strip_prefix(',')
+            .expect("publish call is missing a payload")
+            .trim_start();
+        let name_end = payload
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(payload.len());
+        let name = &payload[..name_end];
+        assert!(
+            payload[name_end..].trim_start().starts_with('{'),
+            "payload of topic `{}` is not a struct literal",
+            topic
+        );
+
+        if let Some(existing) = payloads.insert(topic, name) {
+            assert_eq!(
+                existing, name,
+                "topic `{}` is published with two payload types",
+                topic
+            );
+        }
+    }
+    assert!(!payloads.is_empty(), "no published topics found in lib.rs");
+}

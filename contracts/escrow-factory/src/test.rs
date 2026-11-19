@@ -142,6 +142,34 @@ fn create_escrow_empty_milestones_rejected() {
     );
 }
 
+#[test]
+fn create_escrow_rejects_out_of_range_dispute_timeout() {
+    let (env, fid, _admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    for timeout in [
+        crate::MIN_DISPUTE_TIMEOUT_SECONDS - 1,
+        crate::MAX_DISPUTE_TIMEOUT_SECONDS + 1,
+    ] {
+        assert_eq!(
+            factory.try_create_escrow(
+                &Address::generate(&env),
+                &Address::generate(&env),
+                &Address::generate(&env),
+                &token,
+                &604800u64,
+                &vec![&env, 1_000_i128],
+                &zero_hashes(&env, 1),
+                &EscrowSettings {
+                    dispute_timeout_seconds: timeout,
+                    ..default_settings()
+                },
+                &BytesN::from_array(&env, &[3u8; 32]),
+            ),
+            Err(Ok(Error::InvalidDisputeTimeout))
+        );
+    }
+}
+
 /// Deploy two escrows for the same client; verify they are independent by
 /// running fund -> deliver -> approve on both.
 #[test]

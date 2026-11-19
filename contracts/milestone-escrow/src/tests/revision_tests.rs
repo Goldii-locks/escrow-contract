@@ -28,8 +28,9 @@ fn delivery_clock_reset() {
     let (client_addr, freelancer_addr, _, _, _, _, escrow) =
         setup_funded_escrow(&env, vec![&env, 100_i128]);
     escrow.mark_delivered(&freelancer_addr, &0u32);
-    env.ledger().with_mut(|l| l.timestamp += 604800 + 1);
+    env.ledger().with_mut(|l| l.timestamp += 604800 - 1);
     escrow.request_revision(&client_addr, &0u32, &note(&env));
+    env.ledger().with_mut(|l| l.timestamp += 2);
     assert_eq!(
         escrow.try_claim_auto_release(&freelancer_addr, &0u32),
         Err(Ok(Error::InvalidStatus))

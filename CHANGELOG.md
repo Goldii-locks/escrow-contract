@@ -21,6 +21,14 @@ hash for every commit in the `reproducible-wasm` job summary.
   through `set_interest_yield_consent`, which the client and freelancer must
   sign. `unlock_escrow_interest_yield` now requires the admin, the client and
   the freelancer, so the admin cannot undo its own lock (#776).
+- `raise_dispute` and `request_revision` return the new `ReviewWindowClosed`
+  error on a `Delivered` milestone once its auto-release deadline has passed,
+  and `escalate_dispute` restores the original deadline instead of starting a
+  fresh window, so the client cannot undo an expired review window (#991).
+- `dispute_timeout_seconds` is bounded to `MIN_DISPUTE_TIMEOUT_SECONDS` (1 day)
+  through `MAX_DISPUTE_TIMEOUT_SECONDS` (180 days); the escrow constructor and
+  the factory's `create_escrow` return `InvalidDisputeTimeout` outside that
+  range, so disputed funds cannot be locked by an unbounded timeout (#992).
 
 ### Changed
 
@@ -36,6 +44,17 @@ hash for every commit in the `reproducible-wasm` job summary.
 - `fund_milestone` no longer rescans every milestone: a new `FundedCount` instance counter, kept up to date by `fund`, `fund_milestone` and `add_milestone`, decides when the job is fully funded in O(1). Escrows created before the counter fall back to counting once (#999).
 - Factory `created` event now has topics `created`, `client`, `freelancer`, `arbiter` and data `{ escrow, token, total_amount, milestone_count, auto_release_seconds, settings, wasm_hash }`; party addresses moved out of the data. **Breaking for indexers**; see "Escrow factory events" in `EVENTS.md` (#1007).
 - `context.md` removed; its useful history now lives under "Project history" below (#1005).
+- `emergency_unpause_parties` publishes its `EmergencyPartyUnpausedEvent` under
+  the new `emunpausp` topic instead of `emunpause`, which now carries only
+  `EmergencyUnpausedEvent` from the admin unpause (#993).
+- One admin pause flag (`Paused`) and the party emergency pause (`Ep`), both
+  checked through one `is_paused` helper (#994).
+  `emergency_pause_admin_override` is a deprecated alias that sets `Paused`;
+  `emergency_unpause` lifts either pause; `is_emergency_paused`,
+  `get_yield_info` and the emergency refund endpoints see both pauses;
+  `cancel_escrow`, `extend_milestone_deadline` and the admin overrides are
+  blocked by either pause. `SCHEMA_VERSION` is 5: `migrate` moves an
+  admin-set `Ep` to `Paused`.
 - `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
   `PlatformFeeAllocation` moved from instance storage to persistent keys, so
   calls that do not use them stop loading them. With a 50-token whitelist and a

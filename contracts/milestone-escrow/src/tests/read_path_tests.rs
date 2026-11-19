@@ -161,7 +161,7 @@ fn is_emergency_paused_emits_no_events() {
 // ── #502: single read, identical results ─────────────────────────────────────
 
 /// `is_emergency_paused` and the internal `ensure_not_paused` guard now share
-/// `read_emergency_paused`; both must agree in every state.
+/// `is_paused`; both must agree in every state.
 #[test]
 fn is_emergency_paused_matches_stored_flag_in_every_state() {
     let env = Env::default();
@@ -180,9 +180,7 @@ fn is_emergency_paused_matches_stored_flag_in_every_state() {
             None => assert_eq!(public, Err(Ok(Error::NotInitialized))),
             Some(_) => assert_eq!(public, Ok(Ok(expected))),
         }
-        let helper = env.as_contract(&contract_id, || {
-            MilestoneEscrow::read_emergency_paused(&env)
-        });
+        let helper = env.as_contract(&contract_id, || MilestoneEscrow::is_paused(&env));
         assert_eq!(helper, expected);
         let guard = env.as_contract(&contract_id, || MilestoneEscrow::ensure_not_paused(&env));
         if expected {
