@@ -80,13 +80,13 @@ stateDiagram-v2
     Funded --> Accepted: accept_job and accept_arbiter
     Funded --> Refunded: withdraw_unaccepted (window passed)
 
-    state "Emergency paused (Ep)" as EP
+    state "Party paused (Ep)" as EP
     Funded --> EP: emergency_pause
-    EP --> Funded: emergency_unpause, emergency_pause_admin_override
+    EP --> Funded: emergency_unpause_parties, emergency_unpause
 
     state "Admin paused (Paused)" as AP
-    Funded --> AP: admin_pause_escrow
-    AP --> Funded: admin_resume_escrow
+    Funded --> AP: admin_pause_escrow, emergency_pause_admin_override (deprecated)
+    AP --> Funded: admin_resume_escrow, emergency_unpause
 
     state "Cancel locked (CancelLock)" as CL
     Funded --> CL: cancel_escrow (second party)
@@ -101,17 +101,20 @@ stateDiagram-v2
 |---|---|---|---|---|
 | Funded | `JobMeta.funded`, `DataKey::FundedAt` | `fund` | never | most settlement entry points (`NotFunded`) |
 | Acceptance | `DataKey::Acceptance` (bit 1 freelancer, bit 2 arbiter) | `accept_job`, `accept_arbiter` | never | `mark_delivered`, `raise_dispute`, `resolve_dispute`, `apply_dispute_arbitration_split` (`NotAccepted`), `withdraw_unaccepted` |
-| Emergency pause | `DataKey::Ep` | `emergency_pause`, `emergency_pause_admin_override` | `emergency_unpause`, `emergency_pause_admin_override` | `ensure_not_paused` and the calculators listed below |
-| Admin pause | `DataKey::Paused` | `admin_pause_escrow` | `admin_resume_escrow` | `ensure_not_paused`, `assert_not_paused` |
+| Party pause | `DataKey::Ep` (with `DataKey::EpParty`) | `emergency_pause` | `emergency_unpause_parties`, `emergency_unpause` | `is_paused` |
+| Admin pause | `DataKey::Paused` | `admin_pause_escrow`, `emergency_pause_admin_override` (deprecated alias) | `admin_resume_escrow`, `emergency_unpause` | `is_paused` |
 | Cancel approval | `DataKey::CancelApproval` (`CancelApprovalRecord`: `mask` + `approved_at`) | `cancel_escrow` (first party) | `revoke_cancel_approval`, `cancel_escrow` (second party), expiry after `CANCEL_APPROVAL_TTL_SECONDS` | `cancel_escrow`, `revoke_cancel_approval` |
 | Cancel lock | `DataKey::CancelLock` | `cancel_escrow` (second party) | `admin_override_cancel_release`, `admin_override_cancel_refund` | `ensure_not_paused` |
 | Multisig lock | `DataKey::MultisigLocked` | `multisig_lock` | `multisig_admin_override_release`, `multisig_admin_override_refund` | the multisig override and split endpoints |
 | Tax record | `DataKey::TaxWithholdingLock(i)` | `tax_withholding_deductions` | `admin_override_tax_release`, `admin_override_tax_refund`, `admin_override_tax_split_refund` | the tax override endpoints |
 | Owed balance | `DataKey::Owed(address)`, `DataKey::TotalOwed` | any payout whose transfer fails | `withdraw` | `withdraw`, settlement balance caps |
 
-`ensure_not_paused` rejects with `Paused` while `Ep` or the admin `Paused` flag is set and with
-`EscrowLocked` while `CancelLock` is set. `assert_not_paused` rejects with
-`Paused` while the admin `Paused` flag is set.
+There are two pauses: the admin pause (`Paused`) and the party pause (`Ep`).
+Every entry point reads pause state through one helper, `is_paused`, which is
+true while either is set. `assert_not_paused` rejects with `Paused` while
+`is_paused` holds; `ensure_not_paused` does the same and also rejects with
+`EscrowLocked` while `CancelLock` is set. The emergency refund endpoints
+require `is_paused` instead (`NotPaused` otherwise).
 
 ## Payouts
 
@@ -173,7 +176,7 @@ outlives the dispute it belongs to.
 
 | Entry point | Signer(s) | Guards | Source status | Target status | Token movement | Event |
 |---|---|---|---|---|---|---|
-| `cancel_escrow` | client or freelancer | not emergency paused; not cancel locked; funded; positive balance; caller has not already approved an unexpired round | n/a | records (or refreshes) a first approval with `approved_at`; second approval inside the TTL sets `CancelLock` | none | `cxlappr` (mask + `approved_at`), or `cancel` when locked |
+| `cancel_escrow` | client or freelancer | `assert_not_paused`; not cancel locked; funded; positive balance; caller has not already approved an unexpired round | n/a | records (or refreshes) a first approval with `approved_at`; second approval inside the TTL sets `CancelLock` | none | `cxlappr` (mask + `approved_at`), or `cancel` when locked |
 | `revoke_cancel_approval` | client or freelancer | not cancel locked; caller has approved | n/a | clears caller's approval | none | `cancelrev` |
 | `admin_override_cancel_release` | admin | `CancelLock` set; funded | every milestone except `Released`, `Refunded` | `Released`; clears `CancelLock`; resets `YieldAccrued` | → freelancer, sum of remaining | `adcovls` |
 | `admin_override_cancel_refund` | admin | `CancelLock` set; funded | every milestone except `Released`, `Refunded` | `Refunded`; clears `CancelLock` and `YieldAccrued` | → client, sum of remaining | `adcovrf` |
@@ -205,9 +208,10 @@ overwritten, so the original approver must opt in again. `cxlappr` carries
 
 | Entry point | Signer(s) | Guards | Effect | Token movement | Event |
 |---|---|---|---|---|---|
-| `emergency_pause` | client and freelancer | not already paused | sets `Ep` | none | `empause` |
-| `emergency_unpause` | admin | paused | clears `Ep` | none | `emunpause` |
-| `emergency_pause_admin_override` | admin | `paused` differs from current value | sets `Ep` to `paused` | none | `emoverrid` |
+| `emergency_pause` | client and freelancer | not already paused | sets `Ep` and `EpParty` | none | `empause` |
+| `emergency_unpause_parties` | client and freelancer | party pause set | clears `Ep` and `EpParty` | none | `emunpausp` |
+| `emergency_unpause` | admin | paused | clears `Ep`, `EpParty` and `Paused` | none | `emunpause` |
+| `emergency_pause_admin_override` | admin | not already paused | deprecated alias: sets `Paused` | none | `emoverrid` |
 | `admin_pause_escrow` | admin | none (no-op when already paused) | sets `Paused` | none | `pause` |
 | `admin_resume_escrow` | admin | paused | clears `Paused` | none | `resume` |
 | `multisig_lock` | admin | not already locked | sets `MultisigLocked` | none | `mslock` |

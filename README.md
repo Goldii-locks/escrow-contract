@@ -114,12 +114,18 @@ The contract exposes **94 public functions** grouped by category below.
 
 ### Emergency Pause
 
+There are two pauses: the **admin pause** (`admin_pause_escrow` /
+`admin_resume_escrow`, flag `Paused`) and the **party pause**
+(`emergency_pause` / `emergency_unpause_parties`, flag `Ep`). Either one blocks
+every pause-guarded endpoint, and `is_emergency_paused` reports `true` while
+either is set. `emergency_unpause` lets the admin lift both.
+
 | Function | Caller | Description |
 |---|---|---|
 | `emergency_pause` | Client & Freelancer | Jointly pause the contract |
-| `emergency_unpause` | Admin | Admin unpause the contract |
+| `emergency_unpause` | Admin | Admin lifts any pause (party or admin) |
 | `emergency_unpause_parties` | Client & Freelancer | Jointly lift a party-initiated pause |
-| `emergency_pause_admin_override` | Admin | Admin override pause state |
+| `emergency_pause_admin_override` | Admin | Deprecated alias of `admin_pause_escrow` |
 | `is_emergency_paused` | Anyone | Check if contract is paused |
 | `emergency_pause_split_refund` | Admin/Client/Freelancer | Compute split while paused (read-only) |
 | `emergency_pause_claim_refund` | Admin | Settle emergency refund (claim) |

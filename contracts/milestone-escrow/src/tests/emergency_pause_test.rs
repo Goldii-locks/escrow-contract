@@ -147,8 +147,9 @@ fn test_emergency_pause_admin_override_event_reconciles_with_persisted_state() {
         env.storage().instance().get(&DataKey::EpLk)
     });
     assert_eq!(lock_after, None);
-    let paused_after: Option<bool> =
-        env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::Ep));
+    let paused_after: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Paused)
+    });
     assert_eq!(paused_after, Some(ev.paused));
 }
 

@@ -297,7 +297,9 @@ const BPS_DENOMINATOR: i128 = 10_000;
 ///   storage (#772).
 /// * `3` – `Milestone::deliverable`, the hash recorded by
 ///   `mark_delivered_with_hash`.
-pub const SCHEMA_VERSION: u32 = 3;
+/// * `4` – one admin pause flag: `DataKey::Paused`. `DataKey::Ep` holds only
+///   the party emergency pause.
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -399,9 +401,9 @@ pub struct Job {
     pub auto_release_seconds: u64,
 }
 
-/// Both pause switches. `emergency` is `DataKey::Ep` (`emergency_pause`);
-/// `admin` is `DataKey::Paused` (the admin pause also reported by
-/// `get_yield_info`).
+/// Both pauses. `emergency` is the party pause, `DataKey::Ep`
+/// (`emergency_pause`); `admin` is the single admin pause, `DataKey::Paused`
+/// (`admin_pause_escrow`).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowPausedState {
@@ -1344,14 +1346,14 @@ pub struct EmergencyPauseClaimRefundEvent {
 
 /// Emitted by `emergency_pause_admin_override` when the admin overrides the
 /// pause state. Every field reconciles with the state the call persisted:
-/// `paused` is the new value written to `DataKey::Ep` and `previous` is the
-/// value it replaced. Emitted only on the success path.
+/// `paused` is the new value written to `DataKey::Paused` and `previous` is
+/// whether any pause was in effect before. Emitted only on the success path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyPauseAdminOverrideEvent {
     /// Admin that authorised and applied the override (the acting address).
     pub admin: Address,
-    /// Pause flag persisted by this call (`DataKey::Ep`).
+    /// Pause flag persisted by this call (`DataKey::Paused`).
     pub paused: bool,
     /// Pause flag that was in effect immediately before this call.
     pub previous: bool,
@@ -2217,14 +2219,7 @@ impl MilestoneEscrow {
     }
 
     fn ensure_not_paused(env: &Env) -> Result<(), Error> {
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
-        if paused || Self::read_emergency_paused(env) {
-            return Err(Error::Paused);
-        }
+        Self::assert_not_paused(env)?;
         let cancel_locked = env
             .storage()
             .instance()
@@ -2574,10 +2569,6 @@ impl MilestoneEscrow {
 
         // After preconditions pass, check authorization and contract state
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // 1. Calculate gross split with explicit round-to-nearest arithmetic.
         // Client receives the nearest stroop; freelancer payout receives the exact
@@ -3114,15 +3105,11 @@ impl MilestoneEscrow {
 
     // ── pause guard ──────────────────────────────────────────────────────────
 
-    /// Return `Err(Error::EscrowPaused)` when an admin pause is active so that
-    /// every user-facing endpoint can call this as its first operation.
+    /// Return `Err(Error::Paused)` when the admin pause or the party
+    /// emergency pause is active (see `is_paused`) so that every user-facing
+    /// endpoint can call this as its first operation.
     fn assert_not_paused(env: &Env) -> Result<(), Error> {
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
-        if paused {
+        if Self::is_paused(env) {
             return Err(Error::Paused);
         }
         Ok(())
@@ -6596,15 +6583,8 @@ impl MilestoneEscrow {
             return Err(Error::InvalidAddress);
         }
 
-        // Reject if the contract is emergency-paused.
-        let emergency_paused = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Ep)
-            .unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
+        // Reject if the contract is paused.
+        Self::assert_not_paused(&env)?;
 
         // Reject a duplicate cancel — CancelLock already active.
         let already_locked = env
@@ -7060,6 +7040,8 @@ impl MilestoneEscrow {
     ///   left as they are.
     /// * `2 → 3`: every `Milestone` stored without `deliverable` gains a zero
     ///   `deliverable`.
+    /// * `3 → 4`: an admin-set emergency pause (`DataKey::Ep` without
+    ///   `DataKey::EpParty`) becomes the admin pause `DataKey::Paused`.
     ///
     /// Returns the new schema version and emits `("migrate",)` with a
     /// `MigratedEvent`.
@@ -7081,6 +7063,9 @@ impl MilestoneEscrow {
         if from_version < 2 {
             Self::move_cold_config(&env);
         }
+        if from_version < 4 {
+            Self::migrate_admin_pause_to_v4(&env);
+        }
 
         env.storage()
             .instance()
@@ -7094,6 +7079,18 @@ impl MilestoneEscrow {
             },
         );
         Ok(SCHEMA_VERSION)
+    }
+
+    /// Schema 3 → 4: move an admin-set emergency pause (`Ep` set while
+    /// `EpParty` is not) onto the single admin pause flag, `Paused`.
+    fn migrate_admin_pause_to_v4(env: &Env) {
+        let instance = env.storage().instance();
+        let ep: bool = instance.get(&DataKey::Ep).unwrap_or(false);
+        let ep_party: bool = instance.get(&DataKey::EpParty).unwrap_or(false);
+        if ep && !ep_party {
+            instance.set(&DataKey::Paused, &true);
+            instance.set(&DataKey::Ep, &false);
+        }
     }
 
     /// Schema 1/2 → 3 for milestones: add a zero `spec_hash` (#767) and a
@@ -7190,7 +7187,7 @@ impl MilestoneEscrow {
     ///    stored `client` and `freelancer` (`Unauthorized`), and each must
     ///    authorise the call (`require_auth`).  Neither party -- nor the admin
     ///    -- can freeze the escrow alone; the admin's unilateral path is
-    ///    `emergency_pause_admin_override`.
+    ///    `admin_pause_escrow`.
     /// 3. No pause transition may already be mid-execution
     ///    (`EmergencyPauseInProgress`).
     /// 4. The contract must not already be paused (`AlreadyPaused`).  A
@@ -7234,7 +7231,8 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Lift an emergency freeze, restoring normal operation.
+    /// Lift any pause (the party emergency pause and the admin pause),
+    /// restoring normal operation.
     ///
     /// # Business rules
     /// Mirrors `emergency_pause`: the contract must be initialised, the
@@ -7266,6 +7264,7 @@ impl MilestoneEscrow {
         // reentrancy lock is needed (mirrors emergency_pause_admin_override).
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().instance().set(&DataKey::EpParty, &false);
+        env.storage().instance().set(&DataKey::Paused, &false);
 
         env.events().publish(
             (symbol_short!("emunpause"),),
@@ -7314,10 +7313,12 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Override the emergency pause status to paused.
+    /// Deprecated alias for the admin pause; use `admin_pause_escrow`.
     ///
     /// # Effects
-    /// Sets the `DataKey::Ep` to `true`. Emits an `EmergencyPauseAdminOverrideEvent`.
+    /// Sets the single admin pause flag `DataKey::Paused` to `true`; lift it
+    /// with `admin_resume_escrow` or `emergency_unpause`. Emits an
+    /// `EmergencyPauseAdminOverrideEvent`.
     ///
     /// # Returns
     /// * `Ok(())` on a successful override of the emergency pause state.
@@ -7331,19 +7332,14 @@ impl MilestoneEscrow {
 
         // Read the current state once; reject no-op transitions so the caller
         // can distinguish a successful override from a mistaken duplicate call.
-        let current = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Ep)
-            .unwrap_or(false);
+        let current = Self::is_paused(&env);
 
         if current {
             return Err(Error::AlreadyPaused);
         }
 
         // Single write — no external call, no EmergencyPauseLock needed.
-        env.storage().instance().set(&DataKey::Ep, &true);
-        env.storage().instance().set(&DataKey::EpParty, &false);
+        env.storage().instance().set(&DataKey::Paused, &true);
 
         env.events().publish(
             (symbol_short!("emoverrid"),),
@@ -7357,7 +7353,8 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Report whether the emergency-pause flag (`DataKey::Ep`) is set.
+    /// Report whether the escrow is paused: the party emergency pause
+    /// (`DataKey::Ep`) or the admin pause (`DataKey::Paused`).
     ///
     /// This is a **pure read**: it never writes to instance, persistent, or
     /// temporary storage, emits no events, and requires no authorisation, so
@@ -7366,8 +7363,8 @@ impl MilestoneEscrow {
     ///
     /// `initialize` writes `DataKey::Ep = false` as part of its state commit
     /// (see its rustdoc), so the key is present for every initialized contract
-    /// and the reported flag is always the value last written by
-    /// `emergency_pause`, `emergency_unpause`, or
+    /// and the reported value always reflects the last `emergency_pause`,
+    /// `emergency_unpause`, `admin_pause_escrow`, `admin_resume_escrow` or
     /// `emergency_pause_admin_override`.
     ///
     /// # Return values
@@ -7376,7 +7373,7 @@ impl MilestoneEscrow {
     /// |------------------------------------------------|--------------|
     /// | `initialize` never completed successfully       | `Err(Error::NotInitialized)` |
     /// | Initialized, never paused                       | `Ok(false)` |
-    /// | Initialized, frozen by `emergency_pause` / `emergency_pause_admin_override` | `Ok(true)` |
+    /// | Initialized, frozen by `emergency_pause` / `admin_pause_escrow` / `emergency_pause_admin_override` | `Ok(true)` |
     /// | Initialized, released by `emergency_unpause`    | `Ok(false)` |
     ///
     /// # Errors
@@ -7393,8 +7390,8 @@ impl MilestoneEscrow {
     /// same transaction is still reported by whatever value is currently
     /// stored.
     ///
-    /// Read-only: exactly one instance-storage `get` on `DataKey::Ep`; the
-    /// whole ledger is byte-identical before and after the call (enforced by
+    /// Read-only: it reads only the instance entry; the whole ledger is
+    /// byte-identical before and after the call (enforced by
     /// `read_path_tests`).
     pub fn is_emergency_paused(env: Env) -> Result<bool, Error> {
         Self::load_emergency_paused(&env)
@@ -7409,29 +7406,29 @@ impl MilestoneEscrow {
     ///   `emergency_pause_claim_refund`) can share the same read path without
     ///   re-spelling the storage key or cloning `Env`.
     ///
-    /// Returns `Err(Error::NotInitialized)` when the pause flag has never been
-    /// written.  A single instance-storage read serves as both the
-    /// initialization guard and the value lookup, so the function touches
-    /// exactly one ledger entry.
+    /// Returns `Err(Error::NotInitialized)` when the emergency-pause flag has
+    /// never been written; otherwise the pause state from `is_paused`.  Both
+    /// reads land on the instance entry, so the function touches exactly one
+    /// ledger entry.
     ///
     /// **This function must contain only read operations.**
     fn load_emergency_paused(env: &Env) -> Result<bool, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Ep)
-            .ok_or(Error::NotInitialized)
+        if !env.storage().instance().has(&DataKey::Ep) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(Self::is_paused(env))
     }
 
-    /// Infallible read of the emergency-pause flag for internal guards
-    /// (`ensure_not_paused`): absent → `false`, so a guard on an
-    /// uninitialized contract falls through to its own initialization check.
+    /// The one pause-state check: `true` while the admin pause
+    /// (`DataKey::Paused`) or the party emergency pause (`DataKey::Ep`) is
+    /// active.  Absent flags read as `false`, so a guard on an uninitialized
+    /// contract falls through to its own initialization check.
     ///
     /// **This function must contain only read operations.**
-    fn read_emergency_paused(env: &Env) -> bool {
-        env.storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Ep)
-            .unwrap_or(false)
+    fn is_paused(env: &Env) -> bool {
+        let instance = env.storage().instance();
+        instance.get::<_, bool>(&DataKey::Paused).unwrap_or(false)
+            || instance.get::<_, bool>(&DataKey::Ep).unwrap_or(false)
     }
 
     /// Sets the global platform fee allocation in basis points (BPS).
@@ -7827,10 +7824,6 @@ impl MilestoneEscrow {
         // call never mutates storage.
         Self::assert_payment_streaming_not_locked(&env)?;
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Authorization and precondition checks run BEFORE any ledger entry is
         // written. Both the client and the freelancer must have signed the
@@ -7904,10 +7897,6 @@ impl MilestoneEscrow {
         // Reject illegal source state before any further ledger access.
         Self::assert_payment_streaming_not_locked(&env)?;
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Collect both signatures; returns NotInitialized before any
         // lock write if Job metadata is missing.
@@ -8140,10 +8129,6 @@ impl MilestoneEscrow {
         Self::assert_not_paused(&env)?;
         Self::assert_time_ext_not_locked(&env)?;
         Self::assert_payment_streaming_not_locked(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Collect both signatures; returns NotInitialized before any
         // lock write if Job metadata is missing.
@@ -9904,10 +9889,6 @@ impl MilestoneEscrow {
     ) -> Result<RefundAllocation, Error> {
         // Precondition: reject illegal source state if contract is paused.
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Precondition: reject illegal source state if interest yield state is locked.
         if Self::cold_has(&env, &DataKey::InterestYieldState) {
@@ -10121,17 +10102,7 @@ impl MilestoneEscrow {
         // yield-rate is part of the active financial configuration; mutating
         // it while operations are suspended could silently affect the next
         // accrual cycle once the pause is lifted.
-        //
-        // Both pause flags count. `assert_not_paused` only reads
-        // `DataKey::Paused`, which `admin_pause_escrow` sets; the emergency
-        // pause is a separate, stronger freeze recorded under `DataKey::Ep`.
-        // Letting a yield-rate change through during an emergency pause would
-        // make the weaker of the two freezes the stricter one.
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Authorization: `require_admin` performs `admin.require_auth()` plus
         // the stored-key equality check.  Placed after the stateless
@@ -11498,8 +11469,7 @@ impl MilestoneEscrow {
     ///
     /// # Read-only
     /// This is a pure query: it only *reads* the persistent `DataKey::YieldConfig`
-    /// and `DataKey::YieldAccrued` entries and the instance `DataKey::Paused`
-    /// entry. It must never `set`, `remove`, or `extend_ttl` any instance,
+    /// and `DataKey::YieldAccrued` entries and the instance pause flags. It must never `set`, `remove`, or `extend_ttl` any instance,
     /// persistent, or temporary entry, and must never publish an event — a
     /// read that wrote state could silently rewrite the ledger or shorten the
     /// TTL of the entries it inspects. `get_yield_info_no_mutation_tests` pins
@@ -11533,11 +11503,7 @@ impl MilestoneEscrow {
             .get(&DataKey::YieldAccrued)
             .unwrap_or(0);
 
-        let is_paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
+        let is_paused = Self::is_paused(&env);
 
         Ok((rate_bps, total_accrued, is_paused))
     }
@@ -12011,7 +11977,7 @@ impl MilestoneEscrow {
 
         // ── source state: a settled emergency pause, not a transition
         Self::assert_emergency_pause_not_locked(&env)?;
-        if !Self::read_emergency_paused(&env) {
+        if !Self::is_paused(&env) {
             return Err(Error::NotPaused);
         }
 
@@ -12109,8 +12075,8 @@ impl MilestoneEscrow {
     /// entry and mutates nothing:
     /// 1. `EscrowLocked` – a cancellation is already in flight
     ///   (`DataKey::CancelLock`), so the refund split it will settle is not yet
-    ///   knowable; also covers an emergency pause (`DataKey::Ep`).
-    /// 2. `Paused` – an `admin_pause_escrow` pause (`DataKey::Paused`) is in
+    ///   knowable.
+    /// 2. `Paused` – the admin pause or the party emergency pause is in
     ///   force, so no cancellation-path figure should be produced.
     ///
     /// Both guards read a missing key as "not set", so an uninitialised
@@ -12522,7 +12488,7 @@ impl MilestoneEscrow {
 
         // ── source state: a settled emergency pause, not a transition
         Self::assert_emergency_pause_not_locked(&env)?;
-        if !Self::read_emergency_paused(&env) {
+        if !Self::is_paused(&env) {
             return Err(Error::NotPaused);
         }
 

@@ -35,6 +35,14 @@ hash for every commit in the `reproducible-wasm` job summary.
 - `emergency_unpause_parties` publishes its `EmergencyPartyUnpausedEvent` under
   the new `emunpausp` topic instead of `emunpause`, which now carries only
   `EmergencyUnpausedEvent` from the admin unpause (#993).
+- One admin pause flag (`Paused`) and the party emergency pause (`Ep`), both
+  checked through one `is_paused` helper (#994).
+  `emergency_pause_admin_override` is a deprecated alias that sets `Paused`;
+  `emergency_unpause` lifts either pause; `is_emergency_paused`,
+  `get_yield_info` and the emergency refund endpoints see both pauses;
+  `cancel_escrow`, `extend_milestone_deadline` and the admin overrides are
+  blocked by either pause. `SCHEMA_VERSION` is 4: `migrate` moves an
+  admin-set `Ep` to `Paused`.
 - `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
   `PlatformFeeAllocation` moved from instance storage to persistent keys, so
   calls that do not use them stop loading them. With a 50-token whitelist and a

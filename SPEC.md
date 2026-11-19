@@ -89,8 +89,12 @@ are not required to settle the escrow.
   to lift a pause **they jointly created**. One party acting alone is
   `Unauthorized`. This path cannot lift an admin pause.
 - `emergency_unpause(admin)`: admin recovery for any pause.
-- `emergency_pause_admin_override(admin, paused)`: admin-only force pause or
-  unpause. Clears `EpParty` so a later party unpause cannot undo an admin freeze.
+- `admin_pause_escrow(admin)` / `admin_resume_escrow(admin)`: the single admin
+  pause (`Paused`). A party unpause cannot lift it.
+- `emergency_pause_admin_override(admin)`: deprecated alias that sets the admin
+  pause (`Paused`).
+- There are two pauses, admin and party, and every entry point checks them
+  through one helper; either one blocks the guarded endpoints.
 - Unpausing a running escrow returns `NotPaused`.
 - Pause state is per contract instance; unpausing one escrow does not affect
   another.
