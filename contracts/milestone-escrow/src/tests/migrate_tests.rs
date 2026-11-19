@@ -206,7 +206,10 @@ fn reads_and_pause_controls_work_before_migrate() {
     let e = setup(&env);
     revert_to_schema_1(&env, &e.contract_id);
 
-    assert_eq!(e.escrow.version(), 1);
+    assert_eq!(
+        e.escrow.version(),
+        soroban_sdk::String::from_str(&env, crate::CONTRACT_VERSION)
+    );
     assert!(!e.escrow.is_emergency_paused());
     // An incident during the upgrade window can still be contained.
     e.escrow.emergency_pause(&e.client, &e.freelancer);

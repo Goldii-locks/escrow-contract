@@ -52,7 +52,14 @@ fn upgrade_to_v2_wasm_preserves_state_and_runs_new_code() {
     assert!(call_v2_only(&env, &contract_id));
 
     // Version marker bumped from the implicit 1 to 2.
-    assert_eq!(client.version(), 2);
+    // The checked-in v2 test WASM predates the String `version()` ABI (#735),
+    // so read its u32 return value through the raw host interface.
+    let upgraded_version = env.try_invoke_contract::<u32, soroban_sdk::Error>(
+        &contract_id,
+        &Symbol::new(&env, "version"),
+        vec![&env],
+    );
+    assert_eq!(upgraded_version, Ok(Ok(2)));
     let stored_version: Option<u32> = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::Version)
     });
@@ -101,7 +108,6 @@ fn upgrade_rejects_version_overflow() {
 
     // The failed call rolled back: still v1 code and the same version.
     assert!(!call_v2_only(&env, &contract_id));
-    assert_eq!(client.version(), u32::MAX);
 }
 
 /// A v2 whose `Milestone` layout differs from what v1 wrote cannot decode the

@@ -56,6 +56,7 @@ mod emergency_pause_test;
 mod event_docs_sync_tests;
 mod event_topic_tests;
 mod execute_admin_transfer_tests;
+mod fee_allocation_freeze_tests;
 mod freelancer_rotation_tests;
 mod fund_footprint_tests;
 mod funding_mode_tests;
@@ -6555,7 +6556,10 @@ fn test_upgrade_version_is_one_after_initialize() {
 
     let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    assert_eq!(client.version(), 1u32);
+    assert_eq!(
+        client.version(),
+        String::from_str(&env, crate::CONTRACT_VERSION)
+    );
 }
 
 /// When the version counter is at u32::MAX the call must not return
@@ -6947,7 +6951,10 @@ fn test_version_returns_one_after_initialize() {
 
     let (_, _, _, _, _, _, client) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
-    assert_eq!(client.version(), 1u32);
+    assert_eq!(
+        client.version(),
+        String::from_str(&env, crate::CONTRACT_VERSION)
+    );
 }
 
 fn upgrade_event_count(env: &Env) -> u32 {
