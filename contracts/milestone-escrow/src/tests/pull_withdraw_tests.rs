@@ -7,7 +7,7 @@
 //! `withdraw`, which only succeeds once the account can receive again.
 
 use crate::test::dispute_reason_hash;
-use crate::{Error, MilestoneEscrow, MilestoneEscrowClient};
+use crate::{DataKey, Error, MilestoneEscrow, MilestoneEscrowClient};
 use soroban_sdk::testutils::{Address as _, IssuerFlags};
 use soroban_sdk::{token, vec, Address, Env};
 
@@ -166,4 +166,64 @@ fn test_sweep_excess_does_not_take_credited_balances() {
     token_admin.mint(&contract_id, &50);
     assert_eq!(client.sweep_excess(&client_addr, &token_client.address), 50);
     assert_eq!(token_client.balance(&contract_id), 1_000);
+}
+
+/// A recipient that can never receive at its own address sends the credit to
+/// a working one with `withdraw_to` (#1012).
+#[test]
+fn test_withdraw_to_pays_owed_credit_to_another_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, token_admin, token_client, client, contract_id) =
+        setup_revocable_escrow(&env);
+    let new_addr = Address::generate(&env);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    token_admin.set_authorized(&freelancer_addr, &false);
+    client.approve_milestone(&client_addr, &0u32);
+    assert_eq!(token_client.balance(&freelancer_addr), 0);
+
+    // The freelancer stays deauthorized; the credit goes to another address.
+    client.withdraw_to(&freelancer_addr, &new_addr);
+    assert_eq!(token_client.balance(&new_addr), 1_000);
+    assert_eq!(token_client.balance(&freelancer_addr), 0);
+    assert_eq!(token_client.balance(&contract_id), 0);
+
+    env.as_contract(&contract_id, || {
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&DataKey::Owed(freelancer_addr.clone())));
+        assert_eq!(
+            env.storage()
+                .instance()
+                .get::<_, i128>(&DataKey::TotalOwed)
+                .unwrap_or(0),
+            0
+        );
+    });
+
+    assert_eq!(
+        client.try_withdraw_to(&freelancer_addr, &new_addr),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn test_withdraw_to_rejects_contract_as_recipient() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, token_admin, _token_client, client, contract_id) =
+        setup_revocable_escrow(&env);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    token_admin.set_authorized(&freelancer_addr, &false);
+    client.approve_milestone(&client_addr, &0u32);
+
+    assert_eq!(
+        client.try_withdraw_to(&freelancer_addr, &contract_id),
+        Err(Ok(Error::InvalidAddress))
+    );
 }

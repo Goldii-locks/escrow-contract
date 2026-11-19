@@ -107,7 +107,7 @@ stateDiagram-v2
 | Cancel lock | `DataKey::CancelLock` | `cancel_escrow` (second party) | `admin_override_cancel_release`, `admin_override_cancel_refund` | `ensure_not_paused` |
 | Multisig lock | `DataKey::MultisigLocked` | `multisig_lock` | `multisig_admin_override_release`, `multisig_admin_override_refund` | the multisig override and split endpoints |
 | Tax record | `DataKey::TaxWithholdingLock(i)` | `tax_withholding_deductions` | `admin_override_tax_release`, `admin_override_tax_refund`, `admin_override_tax_split_refund` | the tax override endpoints |
-| Owed balance | `DataKey::Owed(address)`, `DataKey::TotalOwed` | any payout whose transfer fails | `withdraw` | `withdraw`, settlement balance caps |
+| Owed balance | `DataKey::Owed(address)`, `DataKey::TotalOwed` | any payout whose transfer fails | `withdraw`, `withdraw_to` | `withdraw`, `withdraw_to`, settlement balance caps |
 
 `ensure_not_paused` rejects with `Paused` while `Ep` or the admin `Paused` flag is set and with
 `EscrowLocked` while `CancelLock` is set. `assert_not_paused` rejects with
@@ -150,6 +150,7 @@ topic.
 | `approve_milestone` | client | `ensure_not_paused`; funded | `Delivered` | `Released` | → freelancer, remaining | `approve` |
 | `claim_auto_release` | freelancer | `ensure_not_paused`; auto-release deadline passed | `Delivered` | `Released` | → freelancer, remaining | `claim` |
 | `withdraw` | recipient | owed balance > 0 | n/a | n/a | contract → caller, owed balance | `withdraw` |
+| `withdraw_to` | recipient | owed balance > 0; `recipient` not zero or the contract | n/a | n/a | contract → `recipient`, caller's owed balance | `withdraw` |
 
 ### Disputes
 
