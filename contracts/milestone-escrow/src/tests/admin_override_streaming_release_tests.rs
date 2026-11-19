@@ -9,6 +9,7 @@
 use super::*;
 use crate::test::setup_funded_escrow;
 use crate::{AdminOverrideStreamingReleaseEvent, Error, MilestoneStatus};
+use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
 use soroban_sdk::{symbol_short, token, vec, Address, Env, FromVal, IntoVal, Val};
 
 fn admstrm_event_count(env: &Env) -> u32 {
@@ -201,5 +202,48 @@ fn test_admin_override_streaming_release_invalid_milestone_fails() {
     assert_eq!(
         client.try_admin_override_streaming_release(&admin_addr, &5u32, &50_i128, &100_i128),
         Err(Ok(Error::InvalidMilestone))
+    );
+}
+
+/// An override must be an override: only the admin signs. The client and the
+/// freelancer are disputing and must not be required to co-sign it (issue #684).
+#[test]
+fn test_admin_override_streaming_release_needs_only_admin_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, admin_addr, token_id, client) =
+        setup_disputed(&env, 1_000_i128);
+
+    let invoke = MockAuthInvoke {
+        contract: &client.address,
+        fn_name: "admin_override_streaming_release",
+        args: (&admin_addr, 0u32, 50i128, 100i128).into_val(&env),
+        sub_invokes: &[],
+    };
+
+    let split = client
+        .mock_auths(&[MockAuth {
+            address: &admin_addr,
+            invoke: &invoke,
+        }])
+        .admin_override_streaming_release(&admin_addr, &0u32, &50_i128, &100_i128);
+
+    assert_eq!(split.first, 500);
+    assert_eq!(split.second, 500);
+    let token_client = token::Client::new(&env, &token_id);
+    assert_eq!(token_client.balance(&freelancer_addr), 500);
+    assert_eq!(token_client.balance(&client_addr), 500);
+}
+
+#[test]
+fn test_admin_override_streaming_release_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, _, _, _, client) = setup_disputed(&env, 1_000_i128);
+    let intruder = Address::generate(&env);
+
+    assert_eq!(
+        client.try_admin_override_streaming_release(&intruder, &0u32, &50_i128, &100_i128),
+        Err(Ok(Error::Unauthorized))
     );
 }
