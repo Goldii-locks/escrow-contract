@@ -5898,6 +5898,7 @@ impl MilestoneEscrow {
         milestone_index: u32,
         evidence_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
         Self::assert_tax_withholding_not_locked(&env)?;
         Self::assert_platform_fee_allocation_not_locked(&env)?;
