@@ -4,26 +4,28 @@ Mainnet is **not ready** until every gate below is checked and its evidence is a
 
 | Done | Gate | Accountable owner | Evidence / tracking |
 |---|---|---|---|
-| [ ] | Close and verify every P1 contract issue in this launch-blocker batch. | Contract lead | [P1 issue gate](#p1-contract-issue-gate) |
-| [ ] | Schedule an external audit or complete it; document scope, auditor, status, and report location. | Security lead | [Audit scope](#audit-scope) |
-| [ ] | Merge `THREAT_MODEL.md` and `SPEC.md`; verify both describe the shipped contract. | Contract lead | [Required design documents](#required-design-documents) |
-| [ ] | Review fee caps, TTLs, timeouts, and maximum milestone count against launch requirements. | Protocol owner | [Constants review](#constants-review) |
-| [ ] | Assign and verify admin key custody and the authority for each operational role. | Security lead | [Admin keys and roles](#admin-keys-and-roles) |
-| [ ] | Dry-run deployment on testnet using the exact WASM artifact intended for mainnet; record its hash. | Release manager | [Deployment evidence](#deployment-evidence) and [testnet deploy procedure](README.md#deploy-testnet) |
-| [ ] | Publish and rehearse the incident runbook for pausing, communicating, and upgrading. | Operations lead | [Incident runbook](#incident-runbook) |
+| [ ] | Close and verify every P1 contract issue in this launch-blocker batch. | Contract lead | [P1 issue gate](#p1-contract-issue-gate): [#674](https://github.com/Goldii-locks/escrow-contract/issues/674), [#694](https://github.com/Goldii-locks/escrow-contract/issues/694), [#989](https://github.com/Goldii-locks/escrow-contract/issues/989), [#956](https://github.com/Goldii-locks/escrow-contract/issues/956), [#929](https://github.com/Goldii-locks/escrow-contract/issues/929), [#923](https://github.com/Goldii-locks/escrow-contract/issues/923), [#972](https://github.com/Goldii-locks/escrow-contract/issues/972), [#994](https://github.com/Goldii-locks/escrow-contract/issues/994), [#973](https://github.com/Goldii-locks/escrow-contract/issues/973) |
+| [ ] | Schedule an external audit or complete it; document scope, auditor, status, and report location. | Security lead | [Audit scope](#audit-scope); no audit tracking issue exists yet |
+| [ ] | Verify `THREAT_MODEL.md`, `SPEC.md` and `contracts/milestone-escrow/SPEC.md` describe the shipped contract. | Contract lead | [Required design documents](#required-design-documents) |
+| [ ] | Review fee caps, TTLs, timeouts, and maximum milestone count against launch requirements. | Protocol owner | [Constants review](#constants-review): [#674](https://github.com/Goldii-locks/escrow-contract/issues/674), [#956](https://github.com/Goldii-locks/escrow-contract/issues/956), [#972](https://github.com/Goldii-locks/escrow-contract/issues/972) |
+| [ ] | Assign and verify admin key custody and the authority for each operational role. | Security lead | [Admin keys and roles](#admin-keys-and-roles): [#761](https://github.com/Goldii-locks/escrow-contract/issues/761), [#668](https://github.com/Goldii-locks/escrow-contract/issues/668) |
+| [ ] | Dry-run deployment on testnet using the exact WASM artifact intended for mainnet; record its hash. | Release manager | [Deployment evidence](#deployment-evidence) and [testnet deploy procedure](README.md#deploy-testnet): [#942](https://github.com/Goldii-locks/escrow-contract/issues/942) |
+| [ ] | Publish and rehearse the incident runbook for pausing, communicating, and upgrading. | Operations lead | [Incident runbook](#incident-runbook): [#973](https://github.com/Goldii-locks/escrow-contract/issues/973), [#994](https://github.com/Goldii-locks/escrow-contract/issues/994), [#932](https://github.com/Goldii-locks/escrow-contract/issues/932) |
 
 ## P1 Contract Issue Gate
 
-Close each applicable P1 issue, merge its fix, and link passing regression tests before launch. These are the blocker areas identified for this release; confirm the authoritative P1 list in the project's issue tracker rather than treating search results as complete.
+Close each applicable P1 issue, merge its fix, and link passing regression tests before launch. Each row links the specific issues it depends on; check their state in the issue tracker before marking a row done.
 
 | Done | Blocker | Owner | Issue tracking |
 |---|---|---|---|
-| [ ] | Apply the announced fee to settlement and verify the configured 1% fee is correctly allocated. | Contract lead | [Search issues for fees](https://github.com/search?q=is%3Aissue+%22fees+are+never+applied%22&type=issues) |
-| [ ] | Extend required storage TTLs and test entries near their expiry boundary. | Contract lead | [Search issues for TTL](https://github.com/search?q=is%3Aissue+milestone+escrow+TTL&type=issues) |
-| [ ] | Remove instant unilateral admin upgrades; require the approved delay or multisig control. | Contract lead | [Search issues for upgrades](https://github.com/search?q=is%3Aissue+milestone+escrow+admin+upgrade&type=issues) |
-| [ ] | Resolve the one-job-per-contract limitation or explicitly approve and document that launch constraint. | Contract lead | [Search issues for multiple jobs](https://github.com/search?q=is%3Aissue+milestone+escrow+multiple+jobs&type=issues) |
-| [ ] | Replace the release-candidate Soroban SDK with a supported stable release and rerun validation. | Release manager | [Search issues for SDK](https://github.com/search?q=is%3Aissue+milestone+escrow+Soroban+SDK&type=issues) |
-| [ ] | Ensure pause state blocks every settlement path, including approval, release, refund, and dispute resolution. | Contract lead | [Search issues for pause and settlement](https://github.com/search?q=is%3Aissue+milestone+escrow+pause+settlement&type=issues) |
+| [ ] | Apply the platform fee allocation at settlement and give it a treasury address; stop the admin changing the allocation after funding or undoing its lock. | Contract lead | [#674](https://github.com/Goldii-locks/escrow-contract/issues/674) (open), [#694](https://github.com/Goldii-locks/escrow-contract/issues/694) (open) |
+| [ ] | Make admin tax settlements after a partial release pay only from the settled milestone. [#689](https://github.com/Goldii-locks/escrow-contract/issues/689) was closed without fixing this. | Contract lead | [#989](https://github.com/Goldii-locks/escrow-contract/issues/989) (open) |
+| [ ] | Extend the TTL of every stored entry, not only `Milestone` and the escrow instance, and test entries near their expiry boundary. Milestone and instance TTL extension landed in [#669](https://github.com/Goldii-locks/escrow-contract/issues/669). | Contract lead | [#956](https://github.com/Goldii-locks/escrow-contract/issues/956) (open), [#929](https://github.com/Goldii-locks/escrow-contract/issues/929) (open, factory instance) |
+| [ ] | Remove instant unilateral admin upgrades; require the approved delay or multisig control. [#668](https://github.com/Goldii-locks/escrow-contract/issues/668) is closed; `upgrade` is gated by the `Upgrader` role ([#761](https://github.com/Goldii-locks/escrow-contract/issues/761)) and takes effect in the same call, with no delay. | Contract lead | [#668](https://github.com/Goldii-locks/escrow-contract/issues/668) (closed), [#761](https://github.com/Goldii-locks/escrow-contract/issues/761) (closed) |
+| [x] | Resolve the one-job-per-contract limitation or explicitly approve and document that launch constraint. | Contract lead | [#666](https://github.com/Goldii-locks/escrow-contract/issues/666) (closed): [`contracts/escrow-factory`](contracts/escrow-factory) deploys one escrow per job |
+| [x] | Replace the release-candidate Soroban SDK with a supported stable release and rerun validation. | Release manager | [#703](https://github.com/Goldii-locks/escrow-contract/issues/703) (closed): the workspace pins `soroban-sdk = "28.0.0"` in [`Cargo.toml`](Cargo.toml) |
+| [ ] | Ensure pause state blocks every settlement path, including approval, release, refund, and dispute resolution. `admin_pause_escrow` blocks fund, approve, claim and dispute since [#664](https://github.com/Goldii-locks/escrow-contract/issues/664). | Contract lead | [#923](https://github.com/Goldii-locks/escrow-contract/issues/923) (open), [#972](https://github.com/Goldii-locks/escrow-contract/issues/972) (open), [#994](https://github.com/Goldii-locks/escrow-contract/issues/994) (open) |
+| [ ] | Allow `upgrade` while the escrow is paused, so an incident can be paused and then patched. | Contract lead | [#973](https://github.com/Goldii-locks/escrow-contract/issues/973) (open) |
 
 ## Audit Scope
 
@@ -40,18 +42,20 @@ Record the auditor, scope version, scheduled/completed dates, findings, and reme
 
 ## Required Design Documents
 
-- [ ] Merge `THREAT_MODEL.md` with assets, trust boundaries, actors, attack surfaces, and mitigations. Owner: Security lead. Reference: [audit scope](#audit-scope).
-- [ ] Merge `SPEC.md` with the deployed interface, state machine, fee behavior, limits, and admin controls. Owner: Contract lead. Reference: [documented contract functions](README.md#contract-functions).
+- [x] Merge `THREAT_MODEL.md`. Owner: Security lead. Evidence: [`THREAT_MODEL.md`](THREAT_MODEL.md).
+- [x] Merge a contract specification. Owner: Contract lead. Evidence: [`SPEC.md`](SPEC.md) (observable behaviour) and [`contracts/milestone-escrow/SPEC.md`](contracts/milestone-escrow/SPEC.md) (state transitions, signers and events).
+- [ ] Verify `THREAT_MODEL.md` covers assets, trust boundaries, actors, attack surfaces, and mitigations for the release commit. Owner: Security lead. Reference: [audit scope](#audit-scope).
+- [ ] Verify both specifications cover the deployed interface, state machine, fee behavior, limits, and admin controls for the release commit. Owner: Contract lead. Reference: [documented contract functions](README.md#contract-functions).
 
-Both documents must match the release commit and be linked from the release record. They do not exist in this repository yet; do not mark this gate complete until the documents are added and merged.
+All three documents must match the release commit and be linked from the release record.
 
 ## Constants Review
 
 Review the source constants and configuration in [`contracts/milestone-escrow/src/lib.rs`](contracts/milestone-escrow/src/lib.rs) against `SPEC.md`. Record the decision and reviewer for each:
 
-- [ ] Fee rate and fee caps, including confirmation that the advertised 1% fee is enforceable and correctly allocated. Owner: Protocol owner. Reference: [contract configuration](contracts/milestone-escrow/src/lib.rs).
-- [ ] Persistent and temporary storage TTLs, renewal triggers, and expiry behavior. Owner: Contract lead. Reference: [contract storage and TTL logic](contracts/milestone-escrow/src/lib.rs).
-- [ ] Auto-release and other configured timeouts, including boundary and overflow behavior. Owner: Contract lead. Reference: [contract timeout logic](contracts/milestone-escrow/src/lib.rs).
+- [ ] Fee rate and fee caps, including confirmation that the fee allocation is applied and correctly allocated at settlement. Owner: Protocol owner. Reference: [contract configuration](contracts/milestone-escrow/src/lib.rs), [#674](https://github.com/Goldii-locks/escrow-contract/issues/674).
+- [ ] Persistent and temporary storage TTLs, renewal triggers, and expiry behavior. Owner: Contract lead. Reference: [contract storage and TTL logic](contracts/milestone-escrow/src/lib.rs), [#956](https://github.com/Goldii-locks/escrow-contract/issues/956).
+- [ ] Auto-release and other configured timeouts, including boundary and overflow behavior. Owner: Contract lead. Reference: [contract timeout logic](contracts/milestone-escrow/src/lib.rs), [#972](https://github.com/Goldii-locks/escrow-contract/issues/972).
 - [ ] Maximum milestone count and the resource cost at that limit. Owner: Protocol owner. Reference: [contract limits](contracts/milestone-escrow/src/lib.rs).
 
 ## Admin Keys and Roles
@@ -59,7 +63,7 @@ Review the source constants and configuration in [`contracts/milestone-escrow/sr
 Follow the [admin multisig decision and migration plan](ADMIN_MULTISIG_DECISION.md).
 
 - [ ] Store admin and upgrade keys in hardware-backed custody or an approved multisig; document recovery and rotation. Owner: Security lead. Reference: [admin controls](contracts/milestone-escrow/src/lib.rs).
-- [ ] Assign named custodians and thresholds for contract upgrades, emergency pause/unpause, fee configuration, and routine administration. Owner: Operations lead. Reference: [role requirements](#admin-keys-and-roles).
+- [ ] Assign named custodians and thresholds for contract upgrades, emergency pause/unpause, fee configuration, and routine administration. The `Upgrader`, `Operator`, `FeeManager` and `Resolver` roles from [#761](https://github.com/Goldii-locks/escrow-contract/issues/761) can each be assigned with `set_admin_role`. Owner: Operations lead. Reference: [administrative roles](README.md#administrative-roles), [`AUTH.md`](contracts/milestone-escrow/AUTH.md).
 - [ ] Verify least privilege, independent approvals for upgrades, and a tested recovery path. Owner: Security lead. Reference: [audit scope](#audit-scope).
 
 Keep key material out of this repository and the release record. Record role assignments and verification evidence in the organization’s access-controlled operations document.
@@ -69,7 +73,7 @@ Keep key material out of this repository and the release record. Record role ass
 Use the [testnet deployment procedure](README.md#deploy-testnet) to rehearse the release. The dry-run evidence must include:
 
 - [ ] Release commit and the SHA-256 hash of the exact WASM bytes proposed for mainnet. Owner: Release manager. Reference: [testnet deploy procedure](README.md#deploy-testnet).
-- [ ] Testnet deployment transaction, resulting contract ID, deployer identity, and verification that the deployed WASM hash matches. Owner: Release manager. Reference: [current testnet deployment record](README.md#deployed-contract).
+- [ ] Testnet deployment transaction, resulting contract ID, deployer identity, and verification that the deployed WASM hash matches. Owner: Release manager. Reference: [current testnet deployment record](README.md#deployed-contract), [#942](https://github.com/Goldii-locks/escrow-contract/issues/942). Reproducible builds landed in [#773](https://github.com/Goldii-locks/escrow-contract/issues/773).
 - [ ] Confirmation that the mainnet release will use the same reviewed artifact, with no rebuild or unreviewed configuration changes. Owner: Contract lead. Reference: [deployment evidence](#deployment-evidence).
 
 Attach the evidence to the release record and have a second person verify the hash before mainnet submission.
@@ -78,9 +82,9 @@ Attach the evidence to the release record and have a second person verify the ha
 
 Publish the full operational runbook in the organization’s operations documentation and link it from the release record. It must include these rehearsed steps:
 
-1. **Pause:** identify the authorized pause signers, pause all affected settlement paths, verify the on-chain state, and document conditions for resuming.
+1. **Pause:** identify the authorized pause signers, pause all affected settlement paths, verify the on-chain state, and document conditions for resuming. The escrow has two independent admin pause switches ([#994](https://github.com/Goldii-locks/escrow-contract/issues/994)); the factory has none ([#932](https://github.com/Goldii-locks/escrow-contract/issues/932)).
 2. **Communicate:** notify affected users and internal responders through approved channels; state impact, current safeguards, and the next update time without exposing secrets.
-3. **Upgrade:** assess and review a fix, obtain required multisig or delayed approvals, deploy the verified artifact, validate behavior on testnet, and record the mainnet transaction and WASM hash.
+3. **Upgrade:** assess and review a fix, obtain required multisig or delayed approvals, deploy the verified artifact, validate behavior on testnet, and record the mainnet transaction and WASM hash. Then call `migrate` if the new code raises `SCHEMA_VERSION`. `upgrade` currently refuses to run while the escrow is paused ([#973](https://github.com/Goldii-locks/escrow-contract/issues/973)).
 
 - [ ] Record responder contacts, escalation thresholds, communication templates, and pause/upgrade authority. Owner: Operations lead. Reference: [incident runbook](#incident-runbook).
 - [ ] Rehearse pause, communication, and upgrade procedures and record results. Owner: Operations lead. Reference: [incident runbook](#incident-runbook).

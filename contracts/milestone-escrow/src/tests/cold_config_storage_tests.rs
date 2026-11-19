@@ -4,9 +4,9 @@
 //! The contract-instance ledger entry is loaded in full on every invocation.
 //! `WhitelistedTokens` (up to 50 addresses), `MultiSigConfig` (up to 32
 //! signers), `InterestYieldState` and `PlatformFeeAllocation` now live under
-//! persistent keys read only by the functions that use them, and
-//! `migrate_cold_config` moves them out of instance storage on a deployment
-//! upgraded from the old layout.
+//! persistent keys read only by the functions that use them, and `migrate`
+//! moves them out of instance storage on a deployment upgraded from the old
+//! layout.
 //!
 //! The cost test compares `approve_milestone` — which needs only `Job` and one
 //! `Milestone` — on two identically configured escrows (50-token whitelist,
@@ -17,7 +17,7 @@
 use crate::test::setup_funded_escrow;
 use crate::{
     DataKey, Error, EscrowInterestYieldState, MilestoneEscrowClient, MultiSigConfig,
-    PlatformFeeAllocation,
+    PlatformFeeAllocation, SCHEMA_VERSION,
 };
 use soroban_sdk::testutils::{Address as _, EnvTestConfig};
 use soroban_sdk::xdr::{LedgerEntryData, Limits, ScAddress, ScVal, WriteXdr};
@@ -87,6 +87,14 @@ fn revert_to_legacy_layout(env: &Env, contract_id: &Address) {
         instance.set(&DataKey::WhitelistedTokens, &whitelist);
         instance.set(&DataKey::MultiSigConfig, &multisig);
         instance.set(&DataKey::PlatformFeeAllocation, &fee);
+    });
+}
+
+/// Drop the `SchemaVersion` marker, as a deployment from before #772 has none,
+/// so `migrate` runs the `1 → 2` cold-config move.
+fn revert_to_schema_1(env: &Env, contract_id: &Address) {
+    env.as_contract(contract_id, || {
+        env.storage().instance().remove(&DataKey::SchemaVersion);
     });
 }
 
@@ -183,7 +191,7 @@ fn cold_config_is_written_to_persistent_storage_only() {
     }
 }
 
-// ── migrate_cold_config ──────────────────────────────────────────────────────
+// ── migrate: cold-config move ────────────────────────────────────────────────
 
 #[test]
 fn legacy_layout_keeps_working_before_migration() {
@@ -222,9 +230,10 @@ fn migrate_moves_cold_config_out_of_instance_storage() {
             },
         );
     });
+    revert_to_schema_1(&env, &e.contract_id);
     let bytes_before = instance_entry_bytes(&env, &e.contract_id);
 
-    assert_eq!(e.escrow.migrate_cold_config(&e.admin), 4);
+    assert_eq!(e.escrow.migrate(&e.admin), SCHEMA_VERSION);
 
     for (name, key) in [
         ("WhitelistedTokens", DataKey::WhitelistedTokens),
@@ -242,8 +251,11 @@ fn migrate_moves_cold_config_out_of_instance_storage() {
     assert_eq!(e.escrow.get_platform_fee_allocation(), fee);
     assert_eq!(e.escrow.get_escrow_interest_yield().client_share_bps, 4_000);
 
-    // Idempotent: nothing left to move.
-    assert_eq!(e.escrow.migrate_cold_config(&e.admin), 0);
+    // A second call is refused: storage is already at `SCHEMA_VERSION`.
+    assert_eq!(
+        e.escrow.try_migrate(&e.admin),
+        Err(Ok(Error::AlreadyMigrated))
+    );
 }
 
 #[test]
@@ -257,8 +269,9 @@ fn migrate_keeps_a_newer_persistent_value() {
             .instance()
             .set(&DataKey::WhitelistedTokens, &stale);
     });
+    revert_to_schema_1(&env, &e.contract_id);
 
-    assert_eq!(e.escrow.migrate_cold_config(&e.admin), 1);
+    assert_eq!(e.escrow.migrate(&e.admin), SCHEMA_VERSION);
     assert_eq!(e.escrow.get_whitelisted_tokens(), current);
     assert!(!instance_has(
         &env,
@@ -279,9 +292,9 @@ fn migrate_folds_the_pre_456_multisig_keys() {
         instance.set(&DataKey::MultiSigSigners, &signers);
         instance.set(&DataKey::MultiSigThreshold, &2u32);
     });
+    revert_to_schema_1(&env, &contract_id);
 
-    // whitelist + fee allocation from initialize are already persistent.
-    assert_eq!(escrow.migrate_cold_config(&admin), 1);
+    assert_eq!(escrow.migrate(&admin), SCHEMA_VERSION);
 
     let config: Option<MultiSigConfig> = env.as_contract(&contract_id, || {
         env.storage().persistent().get(&DataKey::MultiSigConfig)
@@ -304,10 +317,11 @@ fn migrate_is_admin_only() {
     let env = test_env();
     let e = setup(&env);
     revert_to_legacy_layout(&env, &e.contract_id);
+    revert_to_schema_1(&env, &e.contract_id);
 
     let outsider = Address::generate(&env);
     assert_eq!(
-        e.escrow.try_migrate_cold_config(&outsider),
+        e.escrow.try_migrate(&outsider),
         Err(Ok(Error::Unauthorized))
     );
     assert!(instance_has(

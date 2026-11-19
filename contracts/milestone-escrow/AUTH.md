@@ -25,7 +25,6 @@ are listed at the bottom as **No auth required**.
 | `add_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `remove_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `upgrade` | `Upgrader` role (root `admin` by default) | `require_role(AdminRole::Upgrader)` |
-| `migrate_cold_config` | `Upgrader` role (root `admin` by default) | `require_role(AdminRole::Upgrader)` |
 | `fund` | `client` | `client.require_auth()` |
 | `fund_milestone` | `client` | `client.require_auth()` |
 | `accept_job` | `freelancer` | `freelancer.require_auth()` |
