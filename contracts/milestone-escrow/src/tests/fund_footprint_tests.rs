@@ -25,7 +25,7 @@ use soroban_sdk::{vec, Address, Env, Map, Val};
 /// storage. It only reads the instance `Job` entry (which contains the cached
 /// `total_amount`) and writes the instance `FundedAt` key.
 ///
-/// This test creates an escrow with 100 milestones and verifies that funding
+/// This test creates an escrow with 50 milestones and verifies that funding
 /// it does not touch any `Milestone(i)` persistent entries.
 #[test]
 fn test_fund_does_not_load_milestones_from_storage() {
@@ -45,7 +45,7 @@ fn test_fund_does_not_load_milestones_from_storage() {
 
     let mut milestone_amounts = vec![&env];
     let mut total = 0_i128;
-    for _ in 0..100u32 {
+    for _ in 0..50u32 {
         milestone_amounts.push_back(1_i128);
         total += 1;
     }

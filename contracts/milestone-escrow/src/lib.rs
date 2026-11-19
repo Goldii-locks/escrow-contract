@@ -3539,6 +3539,9 @@ impl MilestoneEscrow {
         // milestone_count is u32 (Soroban Vec::len() returns u32) so no cast
         // is needed and there is no overflow risk on the count itself.
         let milestone_count = milestone_amounts.len();
+        if milestone_count > MAX_MILESTONES {
+            return Err(Error::InvalidMilestone);
+        }
         // All per-amount and running-total arithmetic is performed inside
         // checked_initialize_total via i128::checked_add (see its rustdoc).
         // Non-positive amounts and sum overflow both return Err(InvalidAmount).

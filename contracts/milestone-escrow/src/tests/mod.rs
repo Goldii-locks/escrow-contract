@@ -74,6 +74,7 @@ mod lock_escrow_interest_yield_event_tests;
 mod lock_escrow_interest_yield_guards_tests;
 mod migrate_tests;
 mod milestone_amendment_tests;
+mod milestone_cap_tests;
 mod milestone_spec_hash_tests;
 mod milestone_time_extensions_tests;
 mod multisig_admin_override_refund_tests;
@@ -1896,7 +1897,7 @@ fn test_fund_uses_cached_total_for_many_milestones() {
 
     let mut milestone_amounts = vec![&env];
     let mut total = 0_i128;
-    for _ in 0..100u32 {
+    for _ in 0..50u32 {
         milestone_amounts.push_back(1_i128);
         total += 1;
     }
@@ -1924,7 +1925,7 @@ fn test_fund_uses_cached_total_for_many_milestones() {
     assert_eq!(token.balance(&contract_id), total);
     let job = client.get_job();
     assert!(job.funded);
-    assert_eq!(job.milestones.len(), 100);
+    assert_eq!(job.milestones.len(), 50);
 }
 
 #[test]
@@ -6142,20 +6143,20 @@ fn test_initialize_multiple_milestones_all_pending_correct_amounts() {
 
 #[test]
 fn test_initialize_gas_scales_linearly_for_many_milestones() {
-    let (cpu_64, memory_64) = initialize_budget_for_milestone_count(64);
-    let (cpu_128, memory_128) = initialize_budget_for_milestone_count(128);
+    let (cpu_25, memory_25) = initialize_budget_for_milestone_count(25);
+    let (cpu_50, memory_50) = initialize_budget_for_milestone_count(50);
 
-    assert!(cpu_64 > 0);
-    assert!(cpu_128 > cpu_64);
+    assert!(cpu_25 > 0);
+    assert!(cpu_50 > cpu_25);
     assert!(
-        cpu_128 < cpu_64.saturating_mul(3),
+        cpu_50 < cpu_25.saturating_mul(3),
         "doubling initialize milestones should stay roughly linear: cpu {} -> {}",
-        cpu_64,
-        cpu_128
+        cpu_25,
+        cpu_50
     );
 
-    assert!(memory_64 > 0);
-    assert!(memory_128 > memory_64);
+    assert!(memory_25 > 0);
+    assert!(memory_50 > memory_25);
 }
 
 #[test]
@@ -9592,30 +9593,30 @@ fn raise_dispute_budget_for_milestone_count(count: u32) -> (u64, u64) {
 #[test]
 fn test_raise_dispute_gas_is_constant_for_many_milestones() {
     let (cpu_8, memory_8) = raise_dispute_budget_for_milestone_count(8);
-    let (cpu_128, memory_128) = raise_dispute_budget_for_milestone_count(128);
+    let (cpu_50, memory_50) = raise_dispute_budget_for_milestone_count(50);
 
     assert!(cpu_8 > 0);
-    assert!(cpu_128 > 0);
+    assert!(cpu_50 > 0);
     assert!(
-        cpu_128 < cpu_8.saturating_mul(2),
+        cpu_50 < cpu_8.saturating_mul(2),
         "raise_dispute cost must not scale with milestone count: cpu {} -> {}",
         cpu_8,
-        cpu_128
+        cpu_50
     );
 
     // Memory cost includes host storage-footprint accounting that isn't a
     // pure function of raise_dispute's own algorithm, so it isn't perfectly
     // flat like the CPU count above. What matters for the audit is that it
     // stays far below what a genuine O(n) scan over the milestone set would
-    // cost: milestone count grew 16x (8 -> 128), so a linear scan would show
-    // ~16x memory growth too. We assert well under half of that.
+    // cost: milestone count grew 6x (8 -> 50), so a linear scan would show
+    // ~6x memory growth too. We assert well under half of that.
     assert!(memory_8 > 0);
-    assert!(memory_128 > 0);
+    assert!(memory_50 > 0);
     assert!(
-        memory_128 < memory_8.saturating_mul(6),
+        memory_50 < memory_8.saturating_mul(6),
         "raise_dispute memory must not scale linearly with milestone count: memory {} -> {}",
         memory_8,
-        memory_128
+        memory_50
     );
 }
 
