@@ -34,7 +34,10 @@ fn get_job_and_cancel_override_at_cap_fit_budget() {
     env.mock_all_auths();
     let repeated = std::vec![1_i128; MAX_MILESTONES as usize];
     let amounts = &repeated;
-    let fx = EscrowFixture::new(&env).milestones(&amounts).funded().build();
+    let fx = EscrowFixture::new(&env)
+        .milestones(&amounts)
+        .funded()
+        .build();
 
     assert_eq!(fx.escrow.get_job().milestones.len(), MAX_MILESTONES);
 

@@ -4045,6 +4045,16 @@ impl MilestoneEscrow {
         Self::read_whitelist(&env).ok_or(Error::NotInitialized)
     }
 
+    /// The single settlement token fixed for this escrow at creation (issue #680).
+    ///
+    /// Read-only replacement for the legacy per-escrow whitelist: token
+    /// admission is enforced platform-wide by the factory's allow-list, not by
+    /// the escrow's whitelist, so callers should use this getter when they need
+    /// the currency a job actually settles in.
+    pub fn token(env: Env) -> Result<Address, Error> {
+        Ok(Self::load_job_meta(&env)?.token)
+    }
+
     /// Read-only accessor for `DataKey::WhitelistedTokens`.
     fn read_whitelist(env: &Env) -> Option<Vec<Address>> {
         Self::cold_get(env, &DataKey::WhitelistedTokens)

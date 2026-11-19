@@ -107,6 +107,7 @@ mod revoke_cancel_approval_tests;
 mod set_escrow_interest_yield_event_tests;
 mod set_escrow_interest_yield_guards_tests;
 mod set_platform_fee_allocation_auth_tests;
+mod settlement_token_tests;
 mod split_is_terminal_tests;
 mod split_refund_net_distribution_precondition_tests;
 mod split_refund_net_distribution_tests;
