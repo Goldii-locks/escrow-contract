@@ -33,3 +33,17 @@ Before removing the legacy system:
 5. Remove the obsolete contract configuration, approval/proposal/lock paths, and events in a separately reviewed breaking change, with migration and regression tests.
 
 If the chosen admin is instead a smart-wallet contract, add a test wallet whose `__check_auth` rejects one signature and accepts a valid two-signature authorization, and exercise it against `admin_override_release` before removing the in-contract multisig.
+
+## Removal Tracking Plan
+
+Tracking issue: [#1014](https://github.com/Goldii-locks/escrow-contract/issues/1014). Each step below gets its own issue, linked here when it is opened, and is done only when that issue is closed. The legacy surface in scope is `multisig_approval_init`, `multisig_approve`, `is_multisig_approved`, the proposal and config rotation functions, `multisig_lock`, `is_multisig_locked`, and the `multisig_*` overrides that do not consult the multisig (#691), together with their events, error variants, tests, docs and bindings.
+
+| Step | Work | Owner | Issue |
+|---|---|---|---|
+| 1 | Confirm with the backend and frontend owners that no client calls the legacy functions. The frontend has no multisig flow today. | Backend and frontend owners | To be opened under #1014 |
+| 2 | Document a classic M-of-N admin account setup and a signing runbook. | Contract lead | To be opened under #1014 |
+| 3 | Deploy testnet with such an account as admin and exercise every admin call. | Release manager | To be opened under #1014 |
+| 4 | Enumerate the storage keys that live deployments hold, and decide how `migrate` handles them. | Contract lead | To be opened under #1014 |
+| 5 | Remove the functions, events and error variants in one breaking release, keeping `DataKey` discriminants stable. | Contract lead | To be opened under #1014 |
+
+Steps 1-4 are prerequisites for step 5.
