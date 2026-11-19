@@ -5490,7 +5490,12 @@ impl MilestoneEscrow {
 
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
         Self::require_milestone_is_funded(&env, &meta, &milestone)?;
-        if milestone.status != MilestoneStatus::Delivered {
+        // #673: a partial approval leaves the milestone PartiallyReleased;
+        // the client must still be able to approve the remaining balance in
+        // one call. Other statuses remain invalid here.
+        if milestone.status != MilestoneStatus::Delivered
+            && milestone.status != MilestoneStatus::PartiallyReleased
+        {
             return Err(Error::InvalidStatus);
         }
 
