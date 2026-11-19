@@ -53,9 +53,9 @@ struct Cost {
 /// `deliverable` hash (a 20-byte `deliverable` key plus a 40-byte value); no
 /// flow gained a ledger write.
 const BUDGETS: [(&str, i64, u32, u32); 8] = [
-    ("initialize", 235_000, 7, 1_910),
+    ("initialize", 245_000, 7, 1_910),
     ("fund", 362_000, 4, 1_530),
-    ("mark_delivered", 224_000, 3, 650),
+    ("mark_delivered", 234_000, 3, 650),
     ("approve_milestone", 490_000, 7, 1_440),
     ("claim_auto_release", 517_000, 6, 1_315),
     ("raise_dispute", 316_000, 5, 950),

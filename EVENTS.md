@@ -75,6 +75,7 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `adtxrfd`  | `AdminOverrideTaxRefundEvent`    | state change      |
 | `adtwsplt` | `AdminOverrideTaxSplitRefundEvent` | calculation     |
 | `arbsplit` | `ArbitrationSplitAppliedEvent`   | calculation       |
+| `rep`      | `ReputationChangedEvent`         | state change      |
 | `msiginit` | `MultisigApprovalInitEvent`      | state change      |
 | `msigcfgp` | `MultiSigConfigProposedEvent`    | state change      |
 | `msigcfg`  | `MultiSigConfigChangedEvent`     | state change      |

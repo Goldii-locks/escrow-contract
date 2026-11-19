@@ -9542,6 +9542,9 @@ impl MilestoneEscrow {
     /// * `InvalidAmount`   – Zero/negative principal, rate, or duration, or an
     ///                       intermediate checked multiplication overflows.
     /// * `InvalidRatio`   – `annual_rate_bps` exceeds 10_000 (unsupported).
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn escrow_interest_yield(
         env: Env,
         admin: Address,
@@ -9646,6 +9649,9 @@ impl MilestoneEscrow {
     ///   `set_interest_yield_consent` instead.
     /// * `EscrowLocked`   – Configuration is locked for execution.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10_000 bps.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn set_escrow_interest_yield(
         env: Env,
         admin: Address,
@@ -9720,6 +9726,9 @@ impl MilestoneEscrow {
     /// * `Unauthorized`   – `admin` does not match the stored admin.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10 000 bps.
     /// * `EscrowLocked`   – Configuration is locked for execution.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn set_interest_yield_consent(
         env: Env,
         admin: Address,
@@ -9823,6 +9832,9 @@ impl MilestoneEscrow {
     /// * `NotInitialized` – Contract admin key or interest/yield state missing.
     /// * `Unauthorized`    – `admin` does not match the stored admin.
     /// * `InvalidStatus`   – The interest/yield configuration is already locked.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn lock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         // Guard 1 — authorization. `admin.require_auth()` inside the helper makes
@@ -9869,6 +9881,9 @@ impl MilestoneEscrow {
     ///   state missing.
     /// * `Unauthorized` - Caller is not the stored admin.
     /// * `InvalidStatus` - Interest/yield lock is not active (already unlocked).
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
@@ -9894,6 +9909,9 @@ impl MilestoneEscrow {
     }
 
     /// Return whether the interest/yield share configuration is locked.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn is_escrow_interest_yield_locked(env: Env) -> Result<bool, Error> {
         Ok(Self::load_interest_yield_state(&env)?.locked)
     }
@@ -9921,6 +9939,9 @@ impl MilestoneEscrow {
     /// * `EscrowLocked`  – Interest yield state is locked.
     /// * `InvalidRatio`  – Ratios do not sum to `BPS_SCALE`.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn interest_yield_split_refund(
         env: Env,
         total_amount: i128,
@@ -10006,6 +10027,9 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Configuration has never been set.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn get_escrow_interest_yield(env: Env) -> Result<EscrowInterestYieldState, Error> {
         Self::load_interest_yield_state(&env)
     }
@@ -10134,6 +10158,9 @@ impl MilestoneEscrow {
     ///                      are rejected while operations are suspended.
     /// * `Unauthorized`   – `admin` does not match the stored admin key.
     /// * `InvalidRatio`   – `rate_bps` exceeds 10 000.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn admin_set_yield_rate(env: Env, admin: Address, rate_bps: u32) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         // Precondition 1: contract must be fully initialised (job metadata
@@ -10226,6 +10253,9 @@ impl MilestoneEscrow {
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidAmount`   – `accrued_amount` ≤ 0 or the running total would
     ///                       overflow `i128`.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn admin_accrue_yield(
         env: Env,
         admin: Address,
@@ -11541,6 +11571,9 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn get_yield_info(env: Env) -> Result<(u32, i128, bool), Error> {
         // Verify the contract is initialized before returning state.
         Self::load_job_meta(&env)?;
