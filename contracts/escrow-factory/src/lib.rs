@@ -72,11 +72,29 @@ impl EscrowFactory {
         Self::require_admin(&env, &admin)?;
         let mut tokens = Self::load_tokens(&env)?;
         if !tokens.contains(&token) {
-            tokens.push_back(token);
+            tokens.push_back(token.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::AllowedTokens, &tokens);
+            env.events().publish((symbol_short!("allowed"), token), ());
+        }
+        Ok(())
+    }
+
+    /// Remove a token from the factory's allowlist. Removing an absent token
+    /// is a no-op. Existing escrows are unaffected: each escrow stores its own
+    /// token, so only future `create_escrow` calls are restricted.
+    pub fn disallow_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        let mut tokens = Self::load_tokens(&env)?;
+        if let Some(index) = tokens.first_index_of(&token) {
+            tokens.remove(index);
             env.storage()
                 .instance()
                 .set(&DataKey::AllowedTokens, &tokens);
         }
+        env.events()
+            .publish((symbol_short!("disallowd"), token), ());
         Ok(())
     }
 

@@ -238,6 +238,50 @@ fn created_event_carries_address_and_parties() {
     assert_eq!(event.token, tok);
 }
 
+#[test]
+fn disallow_token_removes_allowed_token_and_blocks_new_escrows() {
+    let (env, fid, admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+
+    // Only the stored admin may change the allowlist.
+    assert_eq!(
+        factory.try_disallow_token(&Address::generate(&env), &token),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(factory.get_allowed_tokens().len(), 1);
+
+    // Removing a token that was never allowed is a defined no-op.
+    factory.disallow_token(&admin, &Address::generate(&env));
+    assert_eq!(factory.get_allowed_tokens().len(), 1);
+
+    factory.disallow_token(&admin, &token);
+    let (topics, _) = last_event(&env);
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("disallowd"));
+    let event_token: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(event_token, token);
+    assert_eq!(factory.get_allowed_tokens().len(), 0);
+
+    // A second removal is also a no-op.
+    factory.disallow_token(&admin, &token);
+    assert_eq!(factory.get_allowed_tokens().len(), 0);
+
+    assert_eq!(
+        factory.try_create_escrow(
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &token,
+            &604800u64,
+            &vec![&env, 1_000_i128],
+            &zero_hashes(&env, 1),
+            &default_settings(),
+            &BytesN::from_array(&env, &[5u8; 32]),
+        ),
+        Err(Ok(Error::TokenNotAllowed))
+    );
+}
+
 /// Creating an escrow needs only the client's signature: the platform admin
 /// is named as the escrow admin without having to co-sign every job.
 #[test]

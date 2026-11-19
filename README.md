@@ -367,8 +367,11 @@ cargo test -p milestone-escrow
 
 `contracts/escrow-factory` deploys one escrow per job (issue #666). It is
 deployed with `--admin <platform-admin> --wasm_hash <escrow-wasm-hash>`
-constructor arguments. The admin allows tokens with `allow_token` and can
-point the factory at a new escrow build with `set_wasm_hash`.
+constructor arguments. The admin allows tokens with `allow_token`, removes
+them again with `disallow_token`, and can point the factory at a new escrow
+build with `set_wasm_hash`. Token allow/deny changes emit `allowed` and
+`disallowd` events (the token address is the second topic); removing an absent
+token is a no-op. Existing escrows keep their own token and are unaffected.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
