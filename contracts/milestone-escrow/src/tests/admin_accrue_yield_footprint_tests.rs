@@ -36,7 +36,7 @@ fn admin_in(client_tier_instance: bool, contract_id: &Address, env: &Env) -> Opt
         if client_tier_instance {
             env.storage().instance().get(&DataKey::Admin)
         } else {
-            env.storage().persistent().get(&DataKey::Admin)
+            env.storage().instance().get(&DataKey::Admin)
         }
     })
 }

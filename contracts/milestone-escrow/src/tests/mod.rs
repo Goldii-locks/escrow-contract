@@ -41,6 +41,8 @@ mod cancel_approval_ttl_tests;
 mod cancel_escrow_split_refund_guards_tests;
 mod cancel_escrow_test;
 mod cold_config_storage_tests;
+mod arbitration_split_consistency_proptests;
+mod pure_calculation_no_events_tests;
 mod conservation_proptests;
 mod constructor_tests;
 mod cost_tests;
@@ -3720,14 +3722,14 @@ fn test_multisig_lock_does_not_write_persistent_storage() {
     // DataKey::Admin in persistent storage must already be present (written by
     // initialize) and must remain unchanged after multisig_lock.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     client.multisig_lock(&admin_addr);
 
     // Persistent Admin must be unchanged — multisig_lock must not touch it.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -10579,7 +10581,7 @@ fn test_milestone_time_extensions_overflow_fails() {
 // dispute_arbitration_split — validation test suite (#186)
 // ============================================================================
 
-/// Happy path — 50/50 split: freelancer_bps=5000, total=10_000.
+/// Happy path — 50/50 split: client_refund_bps=5000, total=10_000.
 /// freelancer_payout=5_000, client_refund=5_000, bps echo correct.
 #[test]
 fn test_dispute_arbitration_split_50_50() {
@@ -10596,7 +10598,7 @@ fn test_dispute_arbitration_split_50_50() {
     assert_eq!(result.freelancer_payout + result.client_refund, 10_000);
 }
 
-/// Full release — freelancer_bps=10_000: freelancer gets everything.
+/// Full release — client_refund_bps=0: freelancer gets everything.
 #[test]
 fn test_dispute_arbitration_split_full_freelancer() {
     let env = Env::default();
@@ -10604,14 +10606,14 @@ fn test_dispute_arbitration_split_full_freelancer() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let result = client.dispute_arbitration_split(&50_000_i128, &10_000u32);
+    let result = client.dispute_arbitration_split(&50_000_i128, &0u32);
     assert_eq!(result.freelancer_payout, 50_000);
     assert_eq!(result.client_refund, 0);
     assert_eq!(result.freelancer_payout_bps, 10_000);
     assert_eq!(result.client_refund_bps, 0);
 }
 
-/// Full refund — freelancer_bps=0: client gets everything back.
+/// Full refund — client_refund_bps=10_000: client gets everything back.
 #[test]
 fn test_dispute_arbitration_split_full_client_refund() {
     let env = Env::default();
@@ -10619,15 +10621,15 @@ fn test_dispute_arbitration_split_full_client_refund() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let result = client.dispute_arbitration_split(&50_000_i128, &0u32);
+    let result = client.dispute_arbitration_split(&50_000_i128, &10_000u32);
     assert_eq!(result.freelancer_payout, 0);
     assert_eq!(result.client_refund, 50_000);
     assert_eq!(result.freelancer_payout_bps, 0);
     assert_eq!(result.client_refund_bps, 10_000);
 }
 
-/// Round-nearest: odd amount 101 at 5000 bps → round_nearest(101 × 5000/10000)
-/// = round_nearest(50.5) = 51 freelancer, 50 client.
+/// Floor rounding: odd amount 101 at 5000 bps → client = floor(101 × 5000/10000)
+/// = 50, freelancer receives the 51 remainder — matching the payout path.
 #[test]
 fn test_dispute_arbitration_split_rounding_nearest() {
     let env = Env::default();
@@ -10721,7 +10723,7 @@ fn test_dispute_arbitration_split_total_always_preserved() {
     }
 }
 
-/// Exact 1 bps on 10_000 total: round_nearest(10_000 × 1 / 10_000) = 1.
+/// Freelancer receives 1 stroop when the client refund is 9_999 bps.
 #[test]
 fn test_dispute_arbitration_split_one_bps() {
     let env = Env::default();
@@ -10729,7 +10731,7 @@ fn test_dispute_arbitration_split_one_bps() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let result = client.dispute_arbitration_split(&10_000_i128, &1u32);
+    let result = client.dispute_arbitration_split(&10_000_i128, &9_999u32);
     assert_eq!(result.freelancer_payout, 1);
     assert_eq!(result.client_refund, 9_999);
 }
@@ -12084,14 +12086,14 @@ fn test_set_escrow_interest_yield_does_not_grow_instance_storage() {
 
     // Snapshot persistent::Admin before the call.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
 
     // persistent::Admin must be unchanged.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -13592,14 +13594,14 @@ fn test_set_platform_fee_allocation_does_not_grow_instance_storage() {
 
     // Snapshot persistent::Admin before the call.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
 
     // persistent::Admin must be unchanged.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -15365,7 +15367,7 @@ fn test_initialize_two_i128_max_amounts_overflow_returns_typed_error() {
             "Version key must not be written after a failed initialize"
         );
         assert!(
-            !env.storage().persistent().has(&DataKey::Admin),
+            !env.storage().instance().has(&DataKey::Admin),
             "persistent Admin key must not be written after a failed initialize"
         );
     });

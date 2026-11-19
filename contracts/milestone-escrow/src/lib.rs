@@ -2065,9 +2065,14 @@ impl MilestoneEscrow {
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 
+    /// Load the single source of truth for the admin: the **instance** entry.
+    ///
+    /// Pre-#679 deployments also carry a legacy persistent `DataKey::Admin`
+    /// copy. It is deliberately ignored here; see the migration note on
+    /// `migrate`.
     fn load_admin(env: &Env) -> Result<Address, Error> {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
     }
@@ -2075,32 +2080,6 @@ impl MilestoneEscrow {
     fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = Self::load_admin(env)?;
-        if stored_admin != *admin {
-            return Err(Error::Unauthorized);
-        }
-        Ok(())
-    }
-
-    /// Variant of `require_admin` that reads `DataKey::Admin` from **instance**
-    /// storage instead of persistent storage.
-    ///
-    /// During `initialize` the admin address is written to both
-    /// `instance()` and `persistent()` storage (see `initialize`).  Callers
-    /// that also write other instance-storage keys in the same call can use
-    /// this helper so that both the admin read and the subsequent instance write
-    /// touch a **single** ledger entry rather than two.
-    ///
-    /// # Errors
-    /// * `NotInitialized` – The instance `Admin` key is absent (contract has
-    ///   not been initialised).
-    /// * `Unauthorized`   – `admin` does not match the stored admin.
-    fn require_admin_from_instance(env: &Env, admin: &Address) -> Result<(), Error> {
-        admin.require_auth();
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
         if stored_admin != *admin {
             return Err(Error::Unauthorized);
         }
@@ -2673,19 +2652,6 @@ impl MilestoneEscrow {
             treasury_fee_share,
         };
 
-        // 4. Emit a structured event carrying the inputs and the resulting state.
-        env.events().publish(
-            (symbol_short!("sprefnet"),),
-            SplitRefundNetDistributionEvent {
-                total_amount,
-                client_refund_bps,
-                freelancer_payout_bps,
-                client_net_refund: distribution.client_net_refund,
-                client_fee_share: distribution.client_fee_share,
-                freelancer_net_payout: distribution.freelancer_net_payout,
-                treasury_fee_share: distribution.treasury_fee_share,
-            },
-        );
 
         Ok(distribution)
     }
@@ -3320,7 +3286,7 @@ impl MilestoneEscrow {
     ///   `MilestoneStatus::Pending` with `released_amount = 0`.
     /// * Each `Milestone.spec_hash` – the corresponding hash from
     ///   `milestone_spec_hashes`.
-    /// * `DataKey::Admin` (instance **and** persistent storage) – the `admin`
+    /// * `DataKey::Admin` (instance storage only) – the `admin`
     ///   address.
     /// * `DataKey::Version` (instance storage) – version marker `1u32`.
     /// * `DataKey::Ep` (instance storage) – emergency-pause flag set to
@@ -3640,8 +3606,8 @@ impl MilestoneEscrow {
             },
         );
 
+        // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().persistent().set(
             &DataKey::PlatformFeeAllocation,
@@ -3901,10 +3867,7 @@ impl MilestoneEscrow {
             return Err(Error::AdminTransferPending);
         }
 
-        env.storage().persistent().set(&DataKey::Admin, &new_admin);
-        // Keep the instance copy in sync: `require_admin_from_instance`
-        // authorizes against it, so a stale value would leave the old admin
-        // in control of those endpoints.
+        // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
         env.events().publish(
@@ -3943,7 +3906,7 @@ impl MilestoneEscrow {
     ///
     /// * [`Error::NotInitialized`] – Returned from any of three call sites
     ///   inside the function:
-    ///   1. `require_admin` fails to load `DataKey::Admin` from persistent
+    ///   1. `require_admin` fails to load `DataKey::Admin` from instance
     ///      storage (the contract was never initialized).
     ///   2. `load_job_meta` fails to load `DataKey::JobMeta` from instance
     ///      storage (initialize was never called or storage was cleared).
@@ -5457,17 +5420,32 @@ impl MilestoneEscrow {
     ///   - The timestamp conversion to i64 fails.
     ///   - The subtraction overflows (current > deadline, rare in i64).
     ///   - The job metadata is missing (`NotInitialized`).
-    ///   - The milestone is missing (`InvalidMilestone`).
+    ///   - The milestone index is out of range or the milestone is missing
+    ///     (`InvalidMilestone`).
+    ///   - The milestone is not `Delivered` or `PartiallyReleased`
+    ///     (`InvalidStatus`).
     ///
     /// # Behavior in Edge Cases
     ///
-    /// - Empty state (no milestone): Returns `InvalidMilestone`.
+    /// - Out-of-range index: Returns `InvalidMilestone`.
+    /// - Undelivered / settled milestone: Returns `InvalidStatus` instead of a
+    ///   huge negative "overdue" value.
     /// - Boundary state (large extensions/timestamps): Returns error on overflow.
     /// - Expired milestone: Returns 0 or negative value (seconds past deadline).
     /// - Just-delivered (delivered_at = current): Returns approximately `auto_release_seconds + extension_seconds`.
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> Result<i64, Error> {
         let meta = Self::load_job_meta(&env)?;
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
         let milestone = Self::load_milestone(&env, milestone_index)?;
+        // Only a claimable delivery has an auto-release deadline. Pending,
+        // Released, Refunded and Disputed milestones have delivered_at == 0 or
+        // a stale value, which would otherwise yield a nonsense overdue result.
+        match milestone.status {
+            MilestoneStatus::Delivered | MilestoneStatus::PartiallyReleased => {}
+            _ => return Err(Error::InvalidStatus),
+        }
         // Read delivery timestamp from temporary storage (optimised path) and
         // fall back to the persistent Milestone field for pre-migration entries.
         let delivered_at = milestone.delivered_at;
@@ -6422,9 +6400,11 @@ impl MilestoneEscrow {
 
     /// Allocate a disputed amount into client refund vs freelancer payout by BPS.
     ///
-    /// Uses floor division for the client share and assigns the remainder to the
-    /// freelancer so the two legs always sum exactly to `total_amount` (no value
-    /// is lost to rounding).
+    /// This is the single allocation helper for arbitration splits. Rounding is
+    /// defined once here: the **client leg is rounded down** (floor) and the
+    /// **freelancer receives the exact remainder**, so the two legs always sum
+    /// to `total_amount` (no value is lost to rounding). Both the read-only
+    /// preview and the payout path call this helper, so they cannot disagree.
     fn allocate_refund_by_bps(
         total_amount: i128,
         client_refund_bps: u32,
@@ -6443,62 +6423,36 @@ impl MilestoneEscrow {
     /// Pure refund-allocation algorithm for split-refund dispute claims.
     ///
     /// Split a disputed milestone amount between client and freelancer using
-    /// arbiter-specified basis points.
-    ///
-    /// The arbiter decides how much of the escrowed `total_amount` the
-    /// freelancer receives, expressed in basis points (1 bp = 0.01 %).
-    /// The client receives the remainder.  Both values are guaranteed to sum
-    /// exactly to `total_amount` because the client share is computed as
-    /// `total_amount - freelancer_share` rather than independently.
+    /// the arbiter-specified `client_refund_bps`. This is the exact same
+    /// allocation (same parameter, same floor rounding) used by
+    /// `apply_dispute_arbitration_split`, so a UI can preview here and execute
+    /// there without a one-stroop surprise.
     ///
     /// # Parameters
-    /// * `total_amount`         – Total escrowed balance to distribute. Must be ≥ 0.
-    /// * `freelancer_bps`       – Basis points awarded to the freelancer. Range: 0 – 10_000.
-    ///                            0 → full refund to client, 10_000 → full release to freelancer.
+    /// * `total_amount`      – Total escrowed balance to distribute. Must be ≥ 0.
+    /// * `client_refund_bps` – Basis points awarded to the client (0 – 10_000).
+    ///                         The freelancer receives the remainder.
     ///
     /// # Returns
-    /// A [`RefundAllocation`] with:
-    /// * `freelancer_payout`      = round_nearest(`total_amount` × `freelancer_bps` / 10_000)
-    /// * `client_refund`          = `total_amount` − `freelancer_payout`
-    /// * `freelancer_payout_bps`  = `freelancer_bps` (echoed for auditability)
-    /// * `client_refund_bps`      = 10_000 − `freelancer_bps`
+    /// A [`RefundAllocation`]. Rounding direction is documented once on
+    /// [`Self::allocate_refund_by_bps`].
     ///
     /// # Errors
     /// * `InvalidAmount` – `total_amount` is negative, or an intermediate
     ///                     multiplication overflows `i128`.
-    /// * `InvalidRatio`  – `freelancer_bps` exceeds 10_000.
+    /// * `InvalidRatio`  – `client_refund_bps` exceeds 10_000.
     pub fn dispute_arbitration_split(
         _env: Env,
         total_amount: i128,
-        freelancer_bps: u32,
+        client_refund_bps: u32,
     ) -> Result<RefundAllocation, Error> {
-        // Guard: total must be non-negative.
         if total_amount < 0 {
             return Err(Error::InvalidAmount);
         }
-        // Guard: basis points must be within [0, 10_000].
-        if freelancer_bps > BPS_SCALE {
+        if client_refund_bps > BPS_SCALE {
             return Err(Error::InvalidRatio);
         }
-
-        // Use the shared split_round_nearest primitive for consistent rounding.
-        // numerator   = freelancer_bps
-        // denominator = BPS_SCALE (10_000)
-        let split =
-            Self::split_round_nearest(total_amount, freelancer_bps as i128, BPS_SCALE as i128)?;
-
-        let freelancer_payout = split.first;
-        let client_refund = split.second;
-        let client_refund_bps = BPS_SCALE
-            .checked_sub(freelancer_bps)
-            .ok_or(Error::InvalidRatio)?;
-
-        Ok(RefundAllocation {
-            client_refund,
-            freelancer_payout,
-            client_refund_bps,
-            freelancer_payout_bps: freelancer_bps,
-        })
+        Self::allocate_refund_by_bps(total_amount, client_refund_bps)
     }
 
     /// Apply a BPS split-refund to a disputed milestone and transfer funds.
@@ -7109,6 +7063,14 @@ impl MilestoneEscrow {
     ///    or misread them.  Read-only getters and `upgrade` itself still work.
     /// 2. `migrate(admin)` rewrites the stored entries one schema step at a
     ///    time and records `SCHEMA_VERSION`.  Normal operation resumes.
+    ///
+    /// Migration note (#679): before this change the admin was written to both
+    /// instance and persistent storage. The persistent `DataKey::Admin` copy is
+    /// no longer read or written by any code path; the instance copy is the
+    /// single source of truth. Contracts deployed with both copies need no
+    /// state rewrite: a stale persistent value is inert and cannot grant or
+    /// revoke authority, and every admin-changing path now updates exactly one
+    /// entry, so no stale-authority window remains.
     ///
     /// Steps:
     /// * `1 → 2`: every `Milestone` stored without `spec_hash` gains a zero
@@ -7892,17 +7854,6 @@ impl MilestoneEscrow {
         let allocation: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
         let distribution = Self::allocate_platform_fee(total_amount, &allocation)?;
 
-        // Emit a structured event so downstream indexers can audit the
-        // per-party split without re-querying contract storage.
-        env.events().publish(
-            (symbol_short!("pf_split"),),
-            PlatformFeeSplitCalculatedEvent {
-                total_amount,
-                client_amount: distribution.client_amount,
-                freelancer_amount: distribution.freelancer_amount,
-                treasury_amount: distribution.treasury_amount,
-            },
-        );
 
         Ok(distribution)
     }
@@ -8804,7 +8755,7 @@ impl MilestoneEscrow {
         new_address: Address,
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        Self::require_admin_from_instance(&env, &admin)?;
+        Self::require_admin(&env, &admin)?;
         Self::validate_address(&env, &new_address)?;
 
         let instance = env.storage().instance();
@@ -8866,10 +8817,10 @@ impl MilestoneEscrow {
         new_admin: Address,
     ) -> Result<u32, Error> {
         Self::ensure_migrated(&env)?;
-        // Storage-footprint note: `DataKey::Version` (instance) and
-        // `DataKey::Admin` (persistent) are only ever written together, in a
-        // single atomic `initialize` call — a failed `initialize` reverts the
-        // whole invocation, so one can never be present without the other.
+        // Storage-footprint note: `DataKey::Version` and `DataKey::Admin`
+        // (both instance) are only ever written together in a single atomic
+        // `initialize` call — a failed `initialize` reverts the whole
+        // invocation, so one can never be present without the other.
         // `load_admin` alone is therefore a complete "is this contract
         // initialised" check (it already backs this same guarantee in
         // `execute_admin_transfer`), so a separate `require_initialized`
@@ -9006,11 +8957,7 @@ impl MilestoneEscrow {
         // rewrite the Admin ledger entry; it still emits the event and clears
         // the pending proposal.
         if old_admin != pending.new_admin {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Admin, &pending.new_admin);
-            // Keep the instance copy read by `require_admin_from_instance`
-            // in sync with the persistent one.
+            // Single source of truth: instance storage only (#679).
             env.storage()
                 .instance()
                 .set(&DataKey::Admin, &pending.new_admin);
@@ -9667,17 +9614,6 @@ impl MilestoneEscrow {
             .checked_div(denominator)
             .ok_or(Error::InvalidAmount)?;
 
-        // Publish exactly once on the success path (after validation and the
-        // checked arithmetic), so every error path returns before emitting.
-        env.events().publish(
-            (symbol_short!("intyield"),),
-            EscrowInterestYieldEvent {
-                principal,
-                annual_rate_bps,
-                duration_seconds,
-                yield_amount,
-            },
-        );
 
         Ok(yield_amount)
     }
@@ -10072,15 +10008,6 @@ impl MilestoneEscrow {
             freelancer_payout_bps,
         };
 
-        env.events().publish(
-            (symbol_short!("iyspltref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -11274,7 +11201,7 @@ impl MilestoneEscrow {
     /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps ≠ 10_000`,
     ///   or the `u32` addition overflows.
     pub fn tax_withholding_split_refund(
-        env: Env,
+        _env: Env,
         gross_amount: i128,
         tax_amount: i128,
         client_refund_bps: u32,
@@ -11286,23 +11213,6 @@ impl MilestoneEscrow {
             client_refund_bps,
             freelancer_payout_bps,
         )?;
-
-        let net_amount = gross_amount
-            .checked_sub(tax_amount)
-            .ok_or(Error::InvalidAmount)?;
-
-        env.events().publish(
-            (symbol_short!("twspltref"),),
-            TaxWithholdingSplitRefundEvent {
-                gross_amount,
-                tax_amount,
-                net_amount,
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -12070,15 +11980,6 @@ impl MilestoneEscrow {
             freelancer_payout_bps,
         };
 
-        env.events().publish(
-            (symbol_short!("splitref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -12146,15 +12047,6 @@ impl MilestoneEscrow {
         let allocation =
             Self::emergency_split_exact(total_amount, client_refund_bps, freelancer_payout_bps)?;
 
-        env.events().publish(
-            (symbol_short!("epspltref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -12295,15 +12187,6 @@ impl MilestoneEscrow {
         let allocation =
             Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
 
-        env.events().publish(
-            (symbol_short!("cxlspref"),),
-            CancelSplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }

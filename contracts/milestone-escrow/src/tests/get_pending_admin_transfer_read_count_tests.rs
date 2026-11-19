@@ -53,7 +53,7 @@ fn seeded<'a>(
     let contract_id = env.register(MilestoneEscrow, ());
     let admin = Address::generate(env);
     env.as_contract(&contract_id, || {
-        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admin, &admin);
         // `Job` is the shared initialisation marker (`is_initialized`).
         env.storage().instance().set(
             &DataKey::Job,

@@ -1204,7 +1204,7 @@ fn claim_state(
     env.as_contract(&escrow.address, || {
         (
             env.storage().instance().get(&DataKey::Admin),
-            env.storage().persistent().get(&DataKey::Admin),
+            env.storage().instance().get(&DataKey::Admin),
             env.storage().instance().get(&DataKey::Ep),
             env.storage().instance().get(&DataKey::EpLk),
         )
@@ -1469,7 +1469,7 @@ fn test_claim_refund_does_not_read_the_persistent_admin_entry() {
     // claim still succeeds it cannot have touched the persistent entry — its
     // footprint is the contract instance plus the token balance only.
     env.as_contract(&escrow.address, || {
-        env.storage().persistent().remove(&DataKey::Admin);
+        env.storage().instance().remove(&DataKey::Admin);
     });
 
     let allocation =

@@ -169,7 +169,7 @@ fn test_cancel_admin_transfer_footprint_is_single_key_write() {
     client.propose_admin_transfer(&admin_addr, &new_admin);
 
     let admin_before: Address = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin).unwrap()
+        env.storage().instance().get(&DataKey::Admin).unwrap()
     });
     let pending_present_before: bool = env.as_contract(&contract_id, || {
         env.storage()
@@ -191,7 +191,7 @@ fn test_cancel_admin_transfer_footprint_is_single_key_write() {
     // The only other key it touches (Admin, for auth) must be read-only:
     // still present, still the same value.
     let admin_after: Address = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin).unwrap()
+        env.storage().instance().get(&DataKey::Admin).unwrap()
     });
     assert_eq!(admin_after, admin_before);
     assert_eq!(admin_after, admin_addr);
