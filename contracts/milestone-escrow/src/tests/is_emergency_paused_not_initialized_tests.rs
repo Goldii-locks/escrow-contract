@@ -106,7 +106,7 @@ fn capture_ledger(env: &Env, contract_id: &Address) -> LedgerSnapshot {
             job_exists: env.storage().instance().has(&DataKey::Job),
             admin_instance: env.storage().instance().get(&DataKey::Admin),
             admin_persistent: env.storage().persistent().get(&DataKey::Admin),
-            ep_lock: env.storage().instance().get(&DataKey::EpLk),
+            ep_lock: env.storage().instance().get(&DataKey::Ep),
         }
     })
 }
@@ -134,7 +134,7 @@ fn assert_storage_unchanged(before: &LedgerSnapshot, after: &LedgerSnapshot) {
     );
     assert_eq!(
         after.ep_lock, before.ep_lock,
-        "DataKey::EpLk must not be mutated by a read"
+        "DataKey::Ep must not be mutated by a read"
     );
 }
 

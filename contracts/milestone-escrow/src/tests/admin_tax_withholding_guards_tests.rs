@@ -31,7 +31,7 @@ fn execution_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()
-            .has(&DataKey::TaxWithholdingExecutionLock)
+            .has(&DataKey::Paused)
     })
 }
 

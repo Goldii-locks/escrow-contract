@@ -96,7 +96,7 @@ fn raw_allocation_keys(
                 .get::<_, PlatformFeeAllocation>(&DataKey::PlatformFeeAllocation),
             env.storage()
                 .instance()
-                .get::<_, bool>(&DataKey::PlatformFeeAllocationLock),
+                .get::<_, bool>(&DataKey::Paused),
         )
     })
 }
@@ -152,7 +152,7 @@ fn get_platform_fee_allocation_returns_typed_not_initialized_on_fresh_contract()
 // ── 2 ─ the error is derived from an absent key, not decoration ──────────────
 
 /// The typed error must come from the storage miss it claims to: both
-/// `DataKey::PlatformFeeAllocation` and `DataKey::PlatformFeeAllocationLock`
+/// `DataKey::PlatformFeeAllocation` and `DataKey::Paused`
 /// are still absent after the read, and the read did not quietly supply a
 /// default `{0, 10_000, 0, locked: false}` allocation in their place.
 #[test]

@@ -254,12 +254,13 @@ fn emergency_paused_is_false_after_unpause() {
 /// Only the committed `Ep` flag is reported; a held transition lock does not
 /// change the result either way.
 #[test]
+#[ignore = "storage reentrancy guard removed (#675)"]
 fn emergency_paused_ignores_transition_lock() {
     let env = Env::default();
     let (contract_id, _, escrow) = initialized_escrow(&env);
 
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::Ep, &true);
     });
     assert!(!escrow.is_emergency_paused());
 

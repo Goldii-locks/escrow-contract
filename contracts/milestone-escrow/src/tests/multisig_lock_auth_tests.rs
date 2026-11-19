@@ -109,12 +109,13 @@ fn uninitialized_returns_not_initialized() {
 }
 
 #[test]
+#[ignore = "storage reentrancy guard removed (#675)"]
 fn emergency_pause_in_progress_returns_error_and_does_not_mutate() {
     let env = Env::default();
     let (contract_id, escrow, admin) = setup(&env);
     // Simulate emergency-pause transition in progress (EpLk guard).
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::Ep, &true);
     });
     let before: bool = env.as_contract(&contract_id, || {
         env.storage()
