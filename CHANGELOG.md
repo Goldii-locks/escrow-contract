@@ -34,9 +34,8 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 - Property-based tests (`proptest`) for conservation of funds, terminal state immutability,
   and failed-call balance isolation across arbitrary operation sequences (#722).
-- `migrate_cold_config(admin)`: run once after upgrading an existing deployment
-  to move the configuration above out of instance storage. Reads fall back to
-  the old location until then (#772).
+- `migrate(admin)` moves the configuration above out of instance storage when
+  an existing deployment is upgraded from schema 1 (#772).
 - Reproducible WASM builds: `scripts/build-reproducible.sh`, the pinned
   `build/reproducible.Dockerfile`, a CI job that publishes the hash per commit,
   and `deployments/testnet.json` (#773).

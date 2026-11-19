@@ -3904,11 +3904,8 @@ fn test_multisig_override_refund_clears_locked_flag() {
 ///   * `Milestone(index)`  (persistent) — terminal `Released` status
 ///   * `MultisigLocked`    (instance)   — cleared once the deadlock is resolved
 ///
-/// In particular it must NOT write the `MilestoneReleased(index)` temporary
-/// flag that the normal `approve_milestone` path uses as a cheap completion
-/// signal. That flag is dead-on-this-path (`is_milestone_released_flag` has no
-/// callers) and the persisted `Released` status is authoritative, so writing it
-/// would only enlarge the ledger footprint of the call unnecessarily.
+/// In particular it must NOT write the retired `MilestoneReleased(index)`
+/// temporary flag; the persisted `Released` status is authoritative.
 #[test]
 fn test_multisig_admin_override_release_reduced_storage_footprint() {
     let env = Env::default();
@@ -5176,18 +5173,11 @@ fn test_time_until_auto_release_reads_temporary_storage() {
     assert!(remaining3 < 0);
 }
 
-/// Storage-layout optimisation test for `approve_milestone`: verify that after
-/// a full approval, the `MilestoneReleased(u32)` temporary flag is written and
-/// readable via the contract's internal storage tier, and that the milestone
-/// state on persistent storage is correctly set to `Released`.
-///
-/// This exercises the optimised code path end-to-end:
-///   mark_delivered  ΓåÆ persists Milestone(0) with status=Delivered
-///   approve_milestone ΓåÆ transfers tokens, persists Milestone(0) with
-///                       status=Released, writes MilestoneReleased(0) to
-///                       temporary storage as a cheap completion signal
+/// Storage-layout test for `approve_milestone`: verify that a full approval
+/// persists the milestone as `Released` and does not write the retired
+/// `MilestoneReleased(u32)` temporary flag (#1001).
 #[test]
-fn test_approve_milestone_writes_temporary_released_flag() {
+fn test_approve_milestone_does_not_write_temporary_released_flag() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -5233,13 +5223,13 @@ fn test_approve_milestone_writes_temporary_released_flag() {
     // Execute the full approval.
     client.approve_milestone(&client_addr, &0u32);
 
-    // After approval the temporary released flag must be true.
+    // After approval the retired temporary released flag must still be absent.
     let flag_after: Option<bool> = env.as_contract(&contract_id, || {
         env.storage()
             .temporary()
             .get(&DataKey::MilestoneReleased(0u32))
     });
-    assert_eq!(flag_after, Some(true));
+    assert_eq!(flag_after, None);
 
     // Persistent Milestone state must be Released with full released_amount.
     let job = client.get_job();
@@ -7708,9 +7698,9 @@ fn test_raise_dispute_by_client_succeeds() {
 // TASK 3 TESTS: Temporary storage DisputeFlag optimization
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Verify that raise_dispute writes the DisputeFlag to temporary storage.
+/// Verify that raise_dispute does not write the retired DisputeFlag (#1001).
 #[test]
-fn test_raise_dispute_writes_dispute_flag() {
+fn test_raise_dispute_does_not_write_dispute_flag() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -7727,7 +7717,7 @@ fn test_raise_dispute_writes_dispute_flag() {
             .get::<_, bool>(&DataKey::DisputeFlag(0u32))
             .unwrap_or(false)
     });
-    assert!(flag_set, "DisputeFlag should be set in temporary storage");
+    assert!(!flag_set, "DisputeFlag should not be written");
 }
 
 /// Verify that DisputeFlag is NOT set before raise_dispute is called.
@@ -7748,35 +7738,6 @@ fn test_dispute_flag_not_set_before_raise_dispute() {
         !flag_set,
         "DisputeFlag should NOT be set before raise_dispute"
     );
-}
-
-/// Verify that only the disputed milestone's flag is set, not other indices.
-#[test]
-fn test_dispute_flag_only_sets_targeted_milestone() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (client_addr, freelancer_addr, _, _, _, contract_id, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128, 1_000_i128]);
-
-    client.mark_delivered(&freelancer_addr, &0u32);
-    client.raise_dispute(&client_addr, &0u32, &dispute_reason_hash(&env));
-
-    let flag_0 = env.as_contract(&contract_id, || {
-        env.storage()
-            .temporary()
-            .get::<_, bool>(&DataKey::DisputeFlag(0u32))
-            .unwrap_or(false)
-    });
-    let flag_1 = env.as_contract(&contract_id, || {
-        env.storage()
-            .temporary()
-            .get::<_, bool>(&DataKey::DisputeFlag(1u32))
-            .unwrap_or(false)
-    });
-
-    assert!(flag_0, "DisputeFlag(0) should be set");
-    assert!(!flag_1, "DisputeFlag(1) should NOT be set");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -15770,75 +15731,6 @@ fn test_raise_dispute_by_freelancer_on_delivered_milestone_succeeds() {
         MilestoneStatus::Disputed,
         "freelancer should be able to raise a dispute on a Delivered milestone"
     );
-}
-
-/// Regression guard — helper functions in impl block
-#[test]
-fn test_helper_functions_are_accessible() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_, _, _, _, _, contract_id, _) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-
-    // Test is_dispute_flag returns false when never written
-    let flag = env.as_contract(&contract_id, || MilestoneEscrow::is_dispute_flag(&env, 0));
-    assert!(!flag, "dispute flag should be false when never written");
-
-    // Write a dispute flag for milestone 0
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .temporary()
-            .set(&DataKey::DisputeFlag(0), &true);
-    });
-
-    let flag = env.as_contract(&contract_id, || MilestoneEscrow::is_dispute_flag(&env, 0));
-    assert!(flag, "dispute flag should be true when written");
-}
-
-#[test]
-fn test_helper_functions_returns_true_when_written() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_, _, _, _, _, contract_id, _) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-
-    // Write a released flag for milestone 0
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .temporary()
-            .set(&DataKey::MilestoneReleased(0), &true);
-    });
-
-    let flag = env.as_contract(&contract_id, || {
-        MilestoneEscrow::is_milestone_released_flag(&env, 0)
-    });
-    assert!(flag, "released flag should be true when written");
-}
-
-#[test]
-fn test_helper_functions_split_applied_flag() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_, _, _, _, _, contract_id, _) = setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-
-    // Split should not be applied initially
-    let split_applied = env.as_contract(&contract_id, || {
-        MilestoneEscrow::is_arbitration_split_applied(&env, 0)
-    });
-    assert!(!split_applied, "split should not be applied initially");
-
-    // Apply an arbitration split for milestone 0
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .temporary()
-            .set(&DataKey::ArbitrationSplitBps(0), &5000u32);
-    });
-
-    let split_applied = env.as_contract(&contract_id, || {
-        MilestoneEscrow::is_arbitration_split_applied(&env, 0)
-    });
-    assert!(split_applied, "split should be true when applied");
 }
 
 #[test]

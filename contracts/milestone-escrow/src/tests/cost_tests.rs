@@ -51,14 +51,17 @@ struct Cost {
 /// costs instructions but no extra ledger write. Write bytes raised by 60 for
 /// every flow that stores a milestone once milestones carry their 32-byte
 /// `deliverable` hash (a 20-byte `deliverable` key plus a 40-byte value); no
-/// flow gained a ledger write.
+/// flow gained a ledger write. Write entries lowered by one for
+/// `mark_delivered`, `approve_milestone` and `raise_dispute` once the
+/// write-only `DeliveredAt`, `MilestoneReleased` and `DisputeFlag` temporary
+/// keys were retired (#1001).
 const BUDGETS: [(&str, i64, u32, u32); 8] = [
     ("initialize", 235_000, 7, 1_910),
     ("fund", 362_000, 4, 1_530),
-    ("mark_delivered", 224_000, 3, 650),
-    ("approve_milestone", 490_000, 7, 1_440),
+    ("mark_delivered", 224_000, 2, 650),
+    ("approve_milestone", 490_000, 6, 1_440),
     ("claim_auto_release", 517_000, 6, 1_315),
-    ("raise_dispute", 316_000, 5, 950),
+    ("raise_dispute", 316_000, 4, 950),
     ("submit_evidence", 201_000, 2, 580),
     ("resolve_dispute", 558_000, 7, 1_315),
 ];

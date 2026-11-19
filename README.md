@@ -28,7 +28,7 @@ role each function requires.
 
 | Role | Permissions |
 |---|---|
-| `Upgrader` | `upgrade`, `migrate`, `migrate_cold_config`. Use a cold key. |
+| `Upgrader` | `upgrade`, `migrate`. Use a cold key. |
 | `Operator` | Pause and resume, including the emergency pause controls. |
 | `FeeManager` | Fees, yield, tax settings and the token whitelist. |
 | `Resolver` | Admin overrides of stuck payouts, and multisig lock and setup. A cancel override (`admin_override_cancel_release` / `_refund`) is refused with `DisputeTimeoutNotReached` while any milestone's dispute is younger than the dispute timeout. |
@@ -137,7 +137,7 @@ The contract exposes **94 public functions** grouped by category below.
 | `is_token_whitelisted` | Anyone | Check if token is whitelisted |
 | `get_whitelisted_tokens` | Anyone | List all whitelisted tokens |
 | `upgrade` | Admin | Upgrade contract WASM |
-| `migrate_cold_config` | Admin | Migrate config out of instance storage |
+| `migrate` | Admin | Bring storage up to `SCHEMA_VERSION` after an upgrade |
 | `admin_pause_escrow` | Admin | Admin pause (blocks user endpoints) |
 | `admin_resume_escrow` | Admin | Admin resume |
 | `propose_admin_transfer` | Admin | Propose multisig admin transfer |
@@ -465,7 +465,6 @@ Schema 2 adds `spec_hash` to every stored `Milestone` (#767; old milestones
 get a zero hash) and moves the whitelist, multisig, yield and fee
 configuration out of instance storage (#772). A release that changes a stored
 type must bump `SCHEMA_VERSION` and add the step to `migrate`.
-`migrate_cold_config` remains for deployments that only need the #772 move.
 
 ## Verifying the deployed contract
 
