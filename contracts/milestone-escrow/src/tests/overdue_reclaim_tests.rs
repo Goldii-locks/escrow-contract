@@ -1,7 +1,8 @@
 //! Per-milestone delivery deadlines and `reclaim_overdue`.
 
 use crate::{
-    Error, MilestoneEscrow, MilestoneEscrowClient, MilestoneStatus, OVERDUE_GRACE_SECONDS,
+    Error, FundingMode, MilestoneEscrow, MilestoneEscrowClient, MilestoneStatus,
+    OVERDUE_GRACE_SECONDS,
 };
 use soroban_sdk::{testutils::Address as _, testutils::Ledger, token, vec, Address, Env, Vec};
 
@@ -37,6 +38,50 @@ fn setup(env: &Env) -> (Address, Address, Address, MilestoneEscrowClient<'_>) {
     escrow.accept_job(&freelancer);
     escrow.accept_arbiter(&arbiter);
     escrow.fund(&client);
+    (client, freelancer, token, escrow)
+}
+
+fn setup_single_milestone(
+    env: &Env,
+    due_at: u64,
+    funding_mode: FundingMode,
+    funded: bool,
+    accepted: bool,
+) -> (Address, Address, Address, MilestoneEscrowClient<'_>) {
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    let admin = Address::generate(env);
+    let client = Address::generate(env);
+    let freelancer = Address::generate(env);
+    let arbiter = Address::generate(env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    token::StellarAssetClient::new(env, &token).mint(&client, &400);
+    let amounts = vec![env, 400_i128];
+    let escrow = MilestoneEscrowClient::new(env, &env.register(MilestoneEscrow, ()));
+    escrow.initialize_with_funding_mode(
+        &admin,
+        &client,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604_800u64,
+        &amounts,
+        &crate::spec_hashes_for(&amounts),
+        &funding_mode,
+    );
+    escrow.set_milestone_due_dates(&client, &vec![env, due_at]);
+    if accepted {
+        escrow.accept_job(&freelancer);
+        escrow.accept_arbiter(&arbiter);
+    }
+    if funded {
+        match funding_mode {
+            FundingMode::Upfront => escrow.fund(&client),
+            FundingMode::PerMilestone => escrow.fund_milestone(&client, &0),
+        }
+    }
     (client, freelancer, token, escrow)
 }
 
@@ -177,5 +222,103 @@ fn due_dates_cannot_change_after_funding() {
     assert_eq!(
         escrow.try_set_milestone_due_dates(&client, &vec![&env, 1, 1]),
         Err(Ok(Error::AlreadyFunded))
+    );
+}
+
+#[test]
+fn reclaim_rejects_delivered_disputed_and_partially_released_milestones() {
+    let env = Env::default();
+    let (client, freelancer, _, escrow) =
+        setup_single_milestone(&env, DUE_AT, FundingMode::Upfront, true, true);
+
+    escrow.mark_delivered(&freelancer, &0);
+    env.ledger()
+        .set_timestamp(DUE_AT + OVERDUE_GRACE_SECONDS + 1);
+    assert_eq!(
+        escrow.try_reclaim_overdue(&client, &0),
+        Err(Ok(Error::InvalidStatus))
+    );
+
+    let env = Env::default();
+    let (client, freelancer, _, escrow) =
+        setup_single_milestone(&env, DUE_AT, FundingMode::Upfront, true, true);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.raise_dispute(&client, &0, &crate::tests::dispute_reason_hash(&env));
+    env.ledger()
+        .set_timestamp(DUE_AT + OVERDUE_GRACE_SECONDS + 1);
+    assert_eq!(
+        escrow.try_reclaim_overdue(&client, &0),
+        Err(Ok(Error::InvalidStatus))
+    );
+
+    let env = Env::default();
+    let (client, freelancer, _, escrow) =
+        setup_single_milestone(&env, DUE_AT, FundingMode::Upfront, true, true);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.approve_partial(&client, &0, &100);
+    env.ledger()
+        .set_timestamp(DUE_AT + OVERDUE_GRACE_SECONDS + 1);
+    assert_eq!(
+        escrow.try_reclaim_overdue(&client, &0),
+        Err(Ok(Error::InvalidStatus))
+    );
+}
+
+#[test]
+fn reclaim_is_available_after_revision_returns_milestone_to_pending() {
+    let env = Env::default();
+    let (client, freelancer, _, escrow) =
+        setup_single_milestone(&env, DUE_AT, FundingMode::Upfront, true, true);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.request_revision(&client, &0, &crate::tests::dispute_reason_hash(&env));
+    assert_eq!(escrow.get_milestone(&0).status, MilestoneStatus::Pending);
+
+    env.ledger()
+        .set_timestamp(DUE_AT + OVERDUE_GRACE_SECONDS + 1);
+    escrow.reclaim_overdue(&client, &0);
+    assert_eq!(escrow.get_milestone(&0).status, MilestoneStatus::Refunded);
+}
+
+#[test]
+fn reclaim_rejects_an_unfunded_per_milestone_escrow() {
+    let env = Env::default();
+    let (client, _, _, escrow) =
+        setup_single_milestone(&env, DUE_AT, FundingMode::PerMilestone, false, true);
+    env.ledger()
+        .set_timestamp(DUE_AT + OVERDUE_GRACE_SECONDS + 1);
+    assert_eq!(
+        escrow.try_reclaim_overdue(&client, &0),
+        Err(Ok(Error::NotFunded))
+    );
+}
+
+#[test]
+fn reclaim_reports_overflow_when_deadline_plus_grace_exceeds_u64() {
+    let env = Env::default();
+    let due_at = u64::MAX - OVERDUE_GRACE_SECONDS + 1;
+    let (client, _, _, escrow) =
+        setup_single_milestone(&env, due_at, FundingMode::Upfront, true, true);
+    assert_eq!(
+        escrow.try_reclaim_overdue(&client, &0),
+        Err(Ok(Error::ArithmeticOverflow))
+    );
+}
+
+#[test]
+fn set_due_dates_rejects_wrong_length_and_changes_after_acceptance() {
+    let env = Env::default();
+    let (client, _, _, escrow) =
+        setup_single_milestone(&env, DUE_AT, FundingMode::Upfront, false, false);
+    assert_eq!(
+        escrow.try_set_milestone_due_dates(&client, &Vec::new(&env)),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    let env = Env::default();
+    let (client, _, _, escrow) =
+        setup_single_milestone(&env, DUE_AT, FundingMode::Upfront, false, true);
+    assert_eq!(
+        escrow.try_set_milestone_due_dates(&client, &vec![&env, DUE_AT + 1]),
+        Err(Ok(Error::InvalidStatus))
     );
 }
