@@ -52,7 +52,8 @@ The constructor's `settings.arbiter_fee_bps` sets an arbiter fee (basis points, 
 
 ## Contract Functions
 
-The contract exposes **94 public functions** grouped by category below.
+The contract exposes **111 production public functions** grouped by category below.
+Deployed escrows are initialized only through `__constructor` (directly, or via the factory's `create_escrow`).
 
 ### Core Escrow (Initialization & Funding)
 
@@ -66,6 +67,8 @@ The contract exposes **94 public functions** grouped by category below.
 | `accept_job` | Freelancer | Freelancer accepts the job |
 | `accept_arbiter` | Arbiter | Arbiter accepts the job |
 | `withdraw_unaccepted` | Client | Reclaim funds if job not accepted within 7 days |
+| `set_milestone_due_dates` | Client | Set per-milestone delivery deadlines (`due_dates: Vec<u64>`, `0` clears) before funding and acceptance |
+| `get_milestone_due_at` | Anyone | View delivery deadline for a milestone (`0` when none) |
 | `add_milestone` | Client + Freelancer | Append a new Pending milestone to a funded job; the client deposits its amount in the same call (capped at `MAX_MILESTONES` = 50) |
 | `reduce_milestone` | Client + Freelancer | Lower a Pending milestone's amount and refund the difference to the client |
 | `increase_milestone` | Client + Freelancer | Raise a Pending milestone's amount; the client deposits the difference if the milestone is funded |
@@ -73,17 +76,22 @@ The contract exposes **94 public functions** grouped by category below.
 | `replace_arbiter` | Client + Freelancer | Appoint a new arbiter when the sitting one is unavailable; refused while a dispute is open |
 | `get_job` | Anyone | View current job state |
 | `get_milestone` | Anyone | View one milestone without loading the whole job |
+| `get_escrow_state` | Anyone | Read composite escrow summary (job, pause state, cancel state, milestone timings) |
 | `milestone_count` | Anyone | Number of milestones |
+| `token` | Anyone | Read the settlement token address |
 | `version` | Anyone | Get contract version |
+| `schema_version` | Anyone | Get on-chain storage schema version |
 
 ### Milestone Lifecycle
 
 | Function | Caller | Description |
 |---|---|---|
-| `mark_delivered` | Freelancer | Mark a milestone as delivered |
+| `mark_delivered` | Freelancer | Mark a milestone as delivered (zero deliverable hash) |
+| `mark_delivered_with_hash` | Freelancer | Mark a milestone as delivered and record a 32-byte `deliverable` hash |
 | `request_revision` | Client | Return a delivered milestone to Pending (max 3 revisions) |
 | `get_revision_count` | Anyone | Get revision count for a milestone |
-| `extend_milestone_deadline` | Client | Extend auto-release deadline for a delivered milestone |
+| `extend_milestone_deadline` | Client + Freelancer | Extend auto-release deadline for a delivered milestone |
+| `reclaim_overdue` | Client | Refund a Pending milestone after its `due_at` + `OVERDUE_GRACE_SECONDS` deadline passes without delivery |
 | `claim_auto_release` | Freelancer | Auto-release a delivered milestone after deadline |
 | `trigger_auto_release` | Anyone | Same release as `claim_auto_release`, callable by anyone; pays the freelancer |
 | `time_until_auto_release` | Anyone | Time remaining until auto-release |
@@ -91,6 +99,7 @@ The contract exposes **94 public functions** grouped by category below.
 | `approve_milestone` | Client | Release funds for a delivered milestone |
 | `approve_milestones` | Client | Approve up to 10 milestones in one call |
 | `withdraw` | Freelancer/Client | Withdraw released funds or refunds |
+| `withdraw_to` | Freelancer/Client | Withdraw owed credit to a different `recipient` address |
 
 ### Disputes & Arbitration
 
@@ -110,6 +119,8 @@ The contract exposes **94 public functions** grouped by category below.
 |---|---|---|
 | `cancel_escrow` | Client or Freelancer | Initiate escrow cancellation |
 | `revoke_cancel_approval` | Client or Freelancer | Revoke cancellation approval |
+| `cancel_escrow_split_refund` | Admin/Client/Freelancer | Compute split refund allocation under active cancel lock (read-only) |
+| `cancel_escrow_claim_refund` | Admin | Settle and refund all remaining milestones under active cancel lock |
 | `admin_override_cancel_release` | Admin | Admin override: release to freelancer |
 | `admin_override_cancel_refund` | Admin | Admin override: refund to client |
 
@@ -145,6 +156,9 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `get_whitelisted_tokens` | Anyone | List all whitelisted tokens |
 | `upgrade` | Admin | Upgrade contract WASM |
 | `migrate` | Admin | Bring storage up to `SCHEMA_VERSION` after an upgrade |
+| `admin_override_release` | Admin (`Resolver`) | Force-release a Disputed or cancel-locked milestone to the freelancer |
+| `admin_override_refund` | Admin (`Resolver`) | Force-refund a Disputed or cancel-locked milestone to the client |
+| `admin_override_streaming_release` | Admin (`Resolver`) | Force-split a Disputed milestone's remaining balance by basis points |
 | `admin_pause_escrow` | Admin | Admin pause (blocks user endpoints) |
 | `admin_resume_escrow` | Admin | Admin resume |
 | `propose_admin_transfer` | Admin | Propose multisig admin transfer |
@@ -156,11 +170,14 @@ either is set. `emergency_unpause` lets the admin lift both.
 
 | Function | Caller | Description |
 |---|---|---|
+| `propose_treasury_update` | Admin (`FeeManager`) | Propose a new treasury address (subject to timelock delay) |
+| `apply_treasury_update` | Admin (`FeeManager`) | Apply a pending treasury update after the timelock elapses |
 | `set_platform_fee_allocation` | Admin | Set fee split (client/freelancer/treasury) |
 | `lock_platform_fee_allocation` | Admin | Lock fee allocation |
 | `pf_alloc_admin_override` | Admin | Admin override for fee allocation |
 | `get_platform_fee_allocation` | Anyone | View current fee allocation |
 | `calculate_platform_fee_split` | Anyone | Calculate fee split for an amount |
+| `split_refund_net_distribution` | Anyone | Compute net client/freelancer refund and fee breakdown for a split (read-only) |
 
 ### Payment Streaming
 
@@ -183,13 +200,19 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `multisig_approval_init` | Admin | Initialize multisig signers & threshold |
 | `multisig_approve` | Signer | Approve a multisig proposal |
 | `is_multisig_approved` | Anyone | Check if proposal is approved |
+| `propose_multisig_config` | Admin | Propose a signer-set / threshold rotation (requires existing multisig approval) |
+| `execute_multisig_config` | Multisig | Apply an approved multisig configuration proposal |
+| `cancel_multisig_config_proposal` | Admin | Cancel a pending multisig configuration proposal |
+| `get_pending_multisig_config` | Anyone | View pending multisig configuration proposal |
 | `multisig_lock` | Admin | Lock multisig (require admin intervention) |
 | `is_multisig_locked` | Anyone | Check if multisig is locked |
 | `multisig_admin_override_release` | Admin | Override locked multisig: release |
 | `multisig_admin_override_refund` | Admin | Override locked multisig: refund |
 | `multisig_split_refund` | Signers | Split refund via multisig |
 
-### Interest Yield
+### Interest Yield (`#[cfg(test)]`-only)
+
+> These endpoints are gated behind `#[cfg(test)]` and are not exposed in production builds.
 
 | Function | Caller | Description |
 |---|---|---|
@@ -203,6 +226,7 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `get_escrow_interest_yield` | Anyone | View yield state |
 | `admin_set_yield_rate` | Admin | Set annual yield rate (bps) |
 | `admin_accrue_yield` | Admin | Accrue yield to admin |
+| `get_yield_info` | Anyone | View yield rate, accrued, paused |
 
 ### Tax Withholding
 
@@ -215,7 +239,6 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `admin_override_tax_release` | Admin | Override tax: release |
 | `admin_override_tax_refund` | Admin | Override tax: refund |
 | `admin_override_tax_split_refund` | Admin | Override tax: split refund |
-| `get_yield_info` | Anyone | View yield rate, accrued, paused |
 | `admin_tax_withholding_deductions` | Admin | Admin compute tax withholding |
 
 ### Utilities
