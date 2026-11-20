@@ -8,7 +8,7 @@
 //! constructor.
 
 use super::*;
-use crate::{EscrowSettings, FundingMode, DISPUTE_TIMEOUT_SECONDS};
+use crate::{EscrowSettings, FundingMode};
 use soroban_sdk::testutils::EnvTestConfig;
 use soroban_sdk::{vec, Address, BytesN, Env, Vec};
 
@@ -25,11 +25,7 @@ fn test_env() -> Env {
 }
 
 fn default_settings() -> EscrowSettings {
-    EscrowSettings {
-        funding_mode: FundingMode::Upfront,
-        dispute_timeout_seconds: DISPUTE_TIMEOUT_SECONDS,
-        arbiter_fee_bps: 0,
-    }
+    EscrowSettings::default()
 }
 
 struct Parties {
@@ -128,6 +124,7 @@ fn constructor_applies_settings() {
                 funding_mode: FundingMode::PerMilestone,
                 dispute_timeout_seconds: 2 * 24 * 60 * 60,
                 arbiter_fee_bps: 500,
+                ..default_settings()
             },
         ),
     );

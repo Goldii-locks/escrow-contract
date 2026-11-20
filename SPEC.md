@@ -40,6 +40,24 @@ The escrow supports two funding modes.
 
 Funding is recorded only after the client balance is confirmed sufficient, so a failed transfer does not mark a milestone funded.
 
+## Per-escrow policy settings
+
+The constructor's `EscrowSettings` configures the revision limit, acceptance
+window and overdue grace. Defaults preserve existing behavior: 3 revisions,
+7 days to accept after funding, and 1 day after a milestone deadline before
+overdue reclaim. Valid ranges are 0–100 revisions, 1 hour–90 days for the
+acceptance window, and 0–90 days for overdue grace. Deployments without stored
+overrides use the same defaults.
+
+## Job acceptance and decline
+
+The freelancer and arbiter must accept before delivery or disputes. Either can
+decline before accepting; after a decline the client may immediately reclaim
+funded escrow with `withdraw_unaccepted`. Without a decline, the configured
+acceptance window applies. An accepted arbiter may resign only when no dispute
+is open; the client and freelancer must jointly replace the arbiter, and the
+replacement must accept before disputes can resume.
+
 ## Conservation
 
 A milestone can never release more than its funded amount. Partial approvals, refunds, and dispute splits operate only against that remaining funded balance.
@@ -52,7 +70,8 @@ After a milestone is `Delivered`, the authorized client may call
 - The milestone returns to `Pending`.
 - `delivered_at` is cleared (persistent and temporary), so the previous
   auto-release window cannot fire.
-- `revision_count` increments by one. `MAX_REVISIONS` is 3.
+- `revision_count` increments by one, up to the per-escrow
+  `EscrowSettings.max_revisions` (default 3; valid range 0–100).
 - Further revision requests after the cap return `MaxRevisions`; the client
   must approve, partially approve, or dispute.
 - Once the auto-release deadline has passed, `request_revision` returns
@@ -62,6 +81,14 @@ After a milestone is `Delivered`, the authorized client may call
 - A later `mark_delivered` writes a fresh `delivered_at` and starts a new
   auto-release window.
 - Revision does not change funding, released amounts, or escrow balances.
+
+## Milestone due dates
+
+`set_milestone_due_date(client, freelancer, index, new_due_at)` changes one
+nonterminal milestone's deadline. A nonzero date must be in the future. The
+client may extend or clear a deadline alone; assigning a date when none exists
+or moving an existing date earlier requires both the client and freelancer.
+Each successful change emits `duedate`.
 
 ## Excess asset recovery
 

@@ -4,9 +4,7 @@ use soroban_sdk::{
     symbol_short, testutils::Address as _, token, vec, Address, BytesN, Env, FromVal, TryIntoVal,
 };
 
-use crate::{
-    Error, EscrowCreatedEvent, EscrowFactory, EscrowFactoryClient, EscrowSettings, FundingMode,
-};
+use crate::{Error, EscrowCreatedEvent, EscrowFactory, EscrowFactoryClient, EscrowSettings};
 
 // Import the compiled milestone-escrow WASM so the test env can deploy real
 // escrow instances through the factory.
@@ -39,11 +37,7 @@ fn last_event(env: &Env) -> (soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Va
 }
 
 fn default_settings() -> EscrowSettings {
-    EscrowSettings {
-        funding_mode: FundingMode::Upfront,
-        dispute_timeout_seconds: 30 * 24 * 60 * 60,
-        arbiter_fee_bps: 0,
-    }
+    EscrowSettings::default()
 }
 
 fn mint_token(env: &Env, recipient: &Address, amount: i128) -> Address {
@@ -168,6 +162,58 @@ fn create_escrow_rejects_out_of_range_dispute_timeout() {
             Err(Ok(Error::InvalidDisputeTimeout))
         );
     }
+}
+
+#[test]
+fn create_escrow_rejects_out_of_range_policy_settings() {
+    let (env, fid, _admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    for settings in [
+        EscrowSettings {
+            max_revisions: 101,
+            ..default_settings()
+        },
+        EscrowSettings {
+            acceptance_window_seconds: 3_599,
+            ..default_settings()
+        },
+        EscrowSettings {
+            overdue_grace_seconds: 90 * 24 * 60 * 60 + 1,
+            ..default_settings()
+        },
+    ] {
+        assert_eq!(
+            factory.try_create_escrow(
+                &Address::generate(&env),
+                &Address::generate(&env),
+                &Address::generate(&env),
+                &token,
+                &604800u64,
+                &vec![&env, 1_000_i128],
+                &zero_hashes(&env, 1),
+                &settings,
+                &BytesN::from_array(&env, &[4u8; 32]),
+            ),
+            Err(Ok(Error::InvalidEscrowSettings))
+        );
+    }
+
+    factory.create_escrow(
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &Address::generate(&env),
+        &token,
+        &604800u64,
+        &vec![&env, 1_000_i128],
+        &zero_hashes(&env, 1),
+        &EscrowSettings {
+            max_revisions: 100,
+            acceptance_window_seconds: 90 * 24 * 60 * 60,
+            overdue_grace_seconds: 90 * 24 * 60 * 60,
+            ..default_settings()
+        },
+        &BytesN::from_array(&env, &[5u8; 32]),
+    );
 }
 
 /// Deploy two escrows for the same client; verify they are independent by

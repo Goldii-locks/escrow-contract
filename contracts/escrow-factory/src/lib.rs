@@ -13,12 +13,17 @@ pub enum Error {
     TokenNotAllowed = 4,
     InvalidAmount = 5,
     InvalidDisputeTimeout = 6,
+    InvalidEscrowSettings = 7,
 }
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
 pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
 /// Mirrors `milestone_escrow::MAX_DISPUTE_TIMEOUT_SECONDS` (180 days).
 pub const MAX_DISPUTE_TIMEOUT_SECONDS: u64 = 180 * 24 * 60 * 60;
+const MAX_CONFIGURABLE_REVISIONS: u32 = 100;
+const MIN_ACCEPTANCE_WINDOW_SECONDS: u64 = 60 * 60;
+const MAX_ACCEPTANCE_WINDOW_SECONDS: u64 = 90 * 24 * 60 * 60;
+const MAX_OVERDUE_GRACE_SECONDS: u64 = 90 * 24 * 60 * 60;
 
 #[contracttype]
 enum DataKey {
@@ -43,6 +48,25 @@ pub struct EscrowSettings {
     pub funding_mode: FundingMode,
     pub dispute_timeout_seconds: u64,
     pub arbiter_fee_bps: u32,
+    /// Defaults to 3; maximum 100 revision requests per milestone.
+    pub max_revisions: u32,
+    /// Defaults to 7 days; valid range is 1 hour to 90 days.
+    pub acceptance_window_seconds: u64,
+    /// Defaults to 1 day; valid range is 0 to 90 days.
+    pub overdue_grace_seconds: u64,
+}
+
+impl Default for EscrowSettings {
+    fn default() -> Self {
+        Self {
+            funding_mode: FundingMode::Upfront,
+            dispute_timeout_seconds: 30 * 24 * 60 * 60,
+            arbiter_fee_bps: 0,
+            max_revisions: 3,
+            acceptance_window_seconds: 7 * 24 * 60 * 60,
+            overdue_grace_seconds: 24 * 60 * 60,
+        }
+    }
 }
 
 /// Payload of the factory's `created` event. The party addresses are indexed
@@ -150,6 +174,13 @@ impl EscrowFactory {
             .contains(&settings.dispute_timeout_seconds)
         {
             return Err(Error::InvalidDisputeTimeout);
+        }
+        if settings.max_revisions > MAX_CONFIGURABLE_REVISIONS
+            || !(MIN_ACCEPTANCE_WINDOW_SECONDS..=MAX_ACCEPTANCE_WINDOW_SECONDS)
+                .contains(&settings.acceptance_window_seconds)
+            || settings.overdue_grace_seconds > MAX_OVERDUE_GRACE_SECONDS
+        {
+            return Err(Error::InvalidEscrowSettings);
         }
 
         // Summed up front for the `created` event; an overflowing total can

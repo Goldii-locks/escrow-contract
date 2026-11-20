@@ -100,7 +100,9 @@ stateDiagram-v2
 | Flag | Key | Set by | Cleared by | Checked by |
 |---|---|---|---|---|
 | Funded | `JobMeta.funded`, `DataKey::FundedAt`, `DataKey::FundedCount` | `fund`, or the last `fund_milestone` (when `FundedCount` reaches `milestone_count`) | never | most settlement entry points (`NotFunded`) |
-| Acceptance | `DataKey::Acceptance` (bit 1 freelancer, bit 2 arbiter) | `accept_job`, `accept_arbiter` | never | `mark_delivered`, `raise_dispute`, `resolve_dispute`, `apply_dispute_arbitration_split` (`NotAccepted`), `withdraw_unaccepted` |
+| Acceptance | `DataKey::Acceptance` (bit 1 freelancer, bit 2 arbiter) | `accept_job`, `accept_arbiter` | `resign_arbiter` clears arbiter bit | `mark_delivered`, `raise_dispute`, `resolve_dispute`, `apply_dispute_arbitration_split` (`NotAccepted`), `withdraw_unaccepted` |
+| Declines | `DataKey::Declined` (bit 1 freelancer, bit 2 arbiter) | `decline_job`, `decline_arbiter` | `replace_arbiter` clears arbiter bit | `withdraw_unaccepted` |
+| Arbiter vacancy | `DataKey::ArbiterVacant` | `resign_arbiter` | `replace_arbiter` | `raise_dispute` (`ArbiterVacant`) |
 | Party pause | `DataKey::Ep` (with `DataKey::EpParty`) | `emergency_pause` | `emergency_unpause_parties`, `emergency_unpause` | `is_paused` |
 | Admin pause | `DataKey::Paused` | `admin_pause_escrow`, `emergency_pause_admin_override` (deprecated alias) | `admin_resume_escrow`, `emergency_unpause` | `is_paused` |
 | Cancel approval | `DataKey::CancelApproval` (`CancelApprovalRecord`: `mask` + `approved_at`) | `cancel_escrow` (first party) | `revoke_cancel_approval`, `cancel_escrow` (second party), expiry after `CANCEL_APPROVAL_TTL_SECONDS` | `cancel_escrow`, `revoke_cancel_approval` |
@@ -141,17 +143,23 @@ topic.
 | `remove_whitelisted_token` | admin | not funded; token present; not the last token | n/a | n/a | none | `wldel` |
 | `accept_job` | freelancer | not already accepted by the freelancer | n/a | sets freelancer acceptance | none | `acceptjob` |
 | `accept_arbiter` | arbiter | not already accepted by the arbiter | n/a | sets arbiter acceptance | none | `acceptarb` |
-| `withdraw_unaccepted` | client | `ensure_not_paused`; funded; not accepted by both; `ACCEPTANCE_WINDOW_SECONDS` (7 days) passed since funding | every milestone except `Released`, `Refunded` | `Refunded` | → client, sum of remaining | `unaccref` |
+| `decline_job` | freelancer | not already accepted or declined | n/a | records freelancer decline | none | `decljob` |
+| `decline_arbiter` | arbiter | not already accepted or declined | n/a | records arbiter decline | none | `declarb` |
+| `resign_arbiter` | arbiter | accepted; no milestone is `Disputed`; not paused | n/a | clears arbiter acceptance and vacates seat | none | `arbresig` |
+| `replace_arbiter` | client + freelancer | no milestone is `Disputed`; clears vacancy and prior arbiter decline if present | n/a | records replacement arbiter | none | `arbchg` |
+| `withdraw_unaccepted` | client | `ensure_not_paused`; funded; not accepted by both; a party declined or the configured acceptance window passed since funding | every milestone except `Released`, `Refunded` | `Refunded` | → client, sum of remaining | `unaccref` |
 
 ### Milestone workflow
 
 | Entry point | Signer(s) | Guards | Source status | Target status | Token movement | Event |
 |---|---|---|---|---|---|---|
 | `mark_delivered` | freelancer | `ensure_not_paused`; funded; accepted by both | `Pending` | `Delivered` | none | `deliver` |
+| `set_milestone_due_date` | client; client + freelancer to shorten | valid index; nonterminal milestone; new nonzero date is in the future | any nonterminal status | unchanged | none | `duedate` |
 | `extend_milestone_deadline` | client | `assert_not_paused`; `extra_seconds > 0` | `Delivered`, `PartiallyReleased` | unchanged | none | `extend` |
 | `approve_partial` | client | `ensure_not_paused`; funded; `0 < amount <= remaining` | `Delivered`, `PartiallyReleased` | `PartiallyReleased`, or `Released` when fully paid | → freelancer, `amount` | `approve` |
 | `approve_milestone` | client | `ensure_not_paused`; funded | `Delivered` | `Released` | → freelancer, remaining | `approve` |
 | `claim_auto_release` | freelancer | `ensure_not_paused`; auto-release deadline passed | `Delivered` | `Released` | → freelancer, remaining | `claim` |
+| `reclaim_overdue` | client | `ensure_not_paused`; funded; due date plus configured grace passed | `Pending` | `Refunded` | → client, remaining | `overdue` |
 | `withdraw` | recipient | owed balance > 0 | n/a | n/a | contract → caller, owed balance | `withdraw` |
 | `withdraw_to` | recipient | owed balance > 0; `recipient` not zero or the contract | n/a | n/a | contract → `recipient`, caller's owed balance | `withdraw` |
 
@@ -159,7 +167,7 @@ topic.
 
 | Entry point | Signer(s) | Guards | Source status | Target status | Token movement | Event |
 |---|---|---|---|---|---|---|
-| `raise_dispute` | client or freelancer | `ensure_not_paused`; funded; no dispute lock held; accepted by both; a `Delivered` milestone's auto-release deadline has not passed (`ReviewWindowClosed`) | `Pending`, `Delivered`, `PartiallyReleased` | `Disputed` | none | `dispute` |
+| `raise_dispute` | client or freelancer | `ensure_not_paused`; funded; arbiter seat filled; no dispute lock held; accepted by both; a `Delivered` milestone's auto-release deadline has not passed (`ReviewWindowClosed`) | `Pending`, `Delivered`, `PartiallyReleased` | `Disputed` | none | `dispute` |
 | `submit_evidence` | client or freelancer | `ensure_not_paused`; funded; milestone `Disputed`; fewer than `MAX_DISPUTE_EVIDENCE_ENTRIES` hashes recorded | `Disputed` | `Disputed` | none | `evidence` |
 | `resolve_dispute` | arbiter | `ensure_not_paused`; funded; accepted by both | `Disputed` | `Released` (release) or `Refunded` (refund) | → freelancer or → client, remaining capped at available balance | `resolve` |
 | `apply_dispute_arbitration_split` | arbiter | `ensure_not_paused`; funded; accepted by both | `Disputed` | `Refunded`, `Split` or `Released` depending on the shares | → client and → freelancer by `client_refund_bps`, capped at available balance | `resolve`, `arbsplit` |
@@ -176,6 +184,16 @@ Either party can append up to `MAX_DISPUTE_EVIDENCE_ENTRIES` (10) hashes with
 `evidence` and is readable through `get_dispute_info`. Resolving, escalating or
 admin-overriding a dispute deletes the record, so the evidence trail never
 outlives the dispute it belongs to.
+
+An accepted arbiter may call `resign_arbiter` only when no milestone is
+`Disputed`. Resignation clears the arbiter's acceptance bit and marks the seat
+vacant; `raise_dispute` returns `ArbiterVacant` until the client and freelancer
+jointly call `replace_arbiter`. The replacement arbiter must accept before
+disputes can be raised.
+
+`decline_job` and `decline_arbiter` are available only to the named party before
+acceptance. A decline lets the client call `withdraw_unaccepted` immediately;
+otherwise it uses the per-escrow acceptance window.
 
 Both closing entry points — `resolve_dispute` and
 `apply_dispute_arbitration_split` — additionally take a 32-byte

@@ -206,7 +206,7 @@ pub enum Error {
     /// `fund` was called on a PerMilestone escrow, or `fund_milestone`
     /// was called on an Upfront escrow.
     InvalidFundingMode = 40,
-    /// `request_revision` was called after `MAX_REVISIONS` revisions.
+    /// `request_revision` was called after the configured revision limit.
     MaxRevisions = 41,
     /// `sweep_excess` found no recoverable surplus.
     NothingToSweep = 42,
@@ -246,9 +246,9 @@ pub enum Error {
     /// `execute_multisig_config` / `cancel_multisig_config_proposal` found no
     /// pending signer-set change.
     NoPendingMultiSigConfig = 54,
-    /// `replace_arbiter` was called while at least one milestone is in the
-    /// `Disputed` state.  The sitting arbiter is the party authorised to
-    /// conclude an open dispute (`resolve_dispute` /
+    /// `replace_arbiter` or `resign_arbiter` was called while at least one
+    /// milestone is in the `Disputed` state. The sitting arbiter is the party
+    /// authorised to conclude an open dispute (`resolve_dispute` /
     /// `apply_dispute_arbitration_split` both verify the stored
     /// `meta.arbiter`), so the client and freelancer may only jointly swap the
     /// arbiter once every dispute has been resolved, split, or timed out and
@@ -259,11 +259,19 @@ pub enum Error {
     /// freelancer is entitled to `claim_auto_release`.
     ReviewWindowClosed = 56,
     /// A non-zero milestone due date was not in the future at the time
-    /// `set_milestone_due_dates` was called.
+    /// `set_milestone_due_dates` or `set_milestone_due_date` was called.
     InvalidDeadline = 57,
+    /// `raise_dispute` was called while the arbiter seat is vacant.
+    ArbiterVacant = 58,
+    /// One of the per-escrow revision or timing settings is outside its bounds.
+    InvalidEscrowSettings = 59,
 }
 
+/// Default maximum revision requests per milestone, retained for existing
+/// deployments that do not have a per-escrow override.
 const MAX_REVISIONS: u32 = 3;
+/// Bound the per-milestone revision counter and its validation cost.
+const MAX_CONFIGURABLE_REVISIONS: u32 = 100;
 
 /// Maximum number of evidence hashes a single dispute may accumulate through
 /// `submit_evidence`.  The cap bounds the persistent `DisputeInfo` value so a
@@ -279,14 +287,15 @@ const MAX_CLIENT_FEE_BPS: u32 = 5000;
 /// Keeps `get_job` and every whole-set iteration bounded
 /// so the ledger footprint of amendment endpoints stays predictable.
 const MAX_MILESTONES: u32 = 50;
-/// Seconds after funding during which the freelancer and arbiter may accept
-/// the job. Once it has passed without both acceptances, the client can
-/// reclaim the escrow with `withdraw_unaccepted`.
+/// Default seconds after funding during which the freelancer and arbiter may
+/// accept the job. Existing deployments use this when no setting was stored.
 const ACCEPTANCE_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
-/// Seconds after a milestone's `due_at` before the client may reclaim it with
-/// `reclaim_overdue`, so a delivery landing just after the deadline still
-/// counts.
+const MIN_ACCEPTANCE_WINDOW_SECONDS: u64 = 60 * 60;
+const MAX_ACCEPTANCE_WINDOW_SECONDS: u64 = 90 * 24 * 60 * 60;
+/// Default seconds after a milestone's `due_at` before the client may reclaim
+/// it with `reclaim_overdue`.
 pub const OVERDUE_GRACE_SECONDS: u64 = 24 * 60 * 60;
+const MAX_OVERDUE_GRACE_SECONDS: u64 = 90 * 24 * 60 * 60;
 
 const BPS_SCALE: u32 = 10_000;
 /// Timelock for treasury address changes (#674): seven days.
@@ -514,6 +523,27 @@ pub struct EscrowSettings {
     /// Arbiter fee on dispute resolution, in basis points, at most
     /// `MAX_ARBITER_FEE_BPS` (issue #738). 0 means no fee.
     pub arbiter_fee_bps: u32,
+    /// Maximum revision requests per milestone (default 3, at most 100).
+    pub max_revisions: u32,
+    /// Time after funding during which parties may accept (default 7 days;
+    /// range 1 hour to 90 days).
+    pub acceptance_window_seconds: u64,
+    /// Time after a milestone due date before overdue reclaim is allowed
+    /// (default 1 day; range 0 to 90 days).
+    pub overdue_grace_seconds: u64,
+}
+
+impl Default for EscrowSettings {
+    fn default() -> Self {
+        Self {
+            funding_mode: FundingMode::Upfront,
+            dispute_timeout_seconds: DISPUTE_TIMEOUT_SECONDS,
+            arbiter_fee_bps: 0,
+            max_revisions: MAX_REVISIONS,
+            acceptance_window_seconds: ACCEPTANCE_WINDOW_SECONDS,
+            overdue_grace_seconds: OVERDUE_GRACE_SECONDS,
+        }
+    }
 }
 
 #[contracttype]
@@ -731,12 +761,12 @@ pub enum DataKey {
     /// Instance: sum of every `Owed(_)` entry, excluded from the balance that
     /// settlement paths may pay out so credits stay fully backed.
     TotalOwed,
-    /// Instance: bitmask of the parties that accepted the job.  Bit 0
+    /// Instance: bitmask of the parties that accepted the job. Bit 0
     /// (value 1) = freelancer via `accept_job`; bit 1 (value 2) = arbiter via
-    /// `accept_arbiter`.  Delivery and dispute endpoints require both bits.
+    /// `accept_arbiter`. `resign_arbiter` clears the arbiter bit.
     Acceptance,
-    /// Instance: ledger timestamp at which `fund` ran.  Starts the
-    /// `ACCEPTANCE_WINDOW_SECONDS` window checked by `withdraw_unaccepted`.
+    /// Instance: ledger timestamp at which funding began. Starts the
+    /// configured acceptance window checked by `withdraw_unaccepted`.
     FundedAt,
     /// Instance: number of milestones that hold their own deposit (#999).
     /// `fund_milestone` advances it by one, so deciding whether the job is
@@ -793,7 +823,8 @@ pub enum DataKey {
     /// admin holds it.
     AdminRole(AdminRole),
     /// Persistent: delivery deadline (ledger timestamp) of milestone `u32`,
-    /// set by `set_milestone_due_dates`.  Absent or `0` means no deadline.
+    /// set by `set_milestone_due_dates` or `set_milestone_due_date`. Absent or
+    /// `0` means no deadline.
     DueAt(u32),
     /// Instance: address receiving the configured treasury share of payouts.
     /// Absent means the admin address is used, so existing deployments keep
@@ -801,6 +832,19 @@ pub enum DataKey {
     Treasury,
     /// Instance: admin-timelocked treasury change awaiting execution.
     PendingTreasury,
+    /// Instance: maximum revision requests per milestone. Missing entries use
+    /// `MAX_REVISIONS` for deployments created before this setting existed.
+    MaxRevisions,
+    /// Instance: acceptance window in seconds. Missing entries use the
+    /// historical seven-day default.
+    AcceptanceWindowSeconds,
+    /// Instance: overdue grace in seconds. Missing entries use the historical
+    /// one-day default.
+    OverdueGraceSeconds,
+    /// Instance: true when the appointed arbiter has resigned.
+    ArbiterVacant,
+    /// Instance: bitmask of parties that declined (`1` freelancer, `2` arbiter).
+    Declined,
 }
 
 #[contracttype]
@@ -1289,6 +1333,34 @@ pub struct ArbiterReplacedEvent {
     pub old: Address,
     /// Arbiter persisted in `JobMeta` by this call.
     pub new: Address,
+}
+
+/// Emitted by `resign_arbiter` when the appointed arbiter vacates the seat.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArbiterResignedEvent {
+    pub client: Address,
+    pub arbiter: Address,
+}
+
+/// Emitted when the freelancer or arbiter declines the job.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobDeclinedEvent {
+    pub party: Address,
+    pub declined_mask: u32,
+}
+
+/// Emitted by `set_milestone_due_date` after changing one milestone's
+/// delivery deadline.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneDueDateChangedEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestone_index: u32,
+    pub old_due_at: u64,
+    pub new_due_at: u64,
 }
 
 /// Emitted by `cancel_escrow` once both the client and the freelancer have
@@ -2883,6 +2955,41 @@ impl MilestoneEscrow {
             .unwrap_or(0)
     }
 
+    fn load_declined(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Declined)
+            .unwrap_or(0)
+    }
+
+    fn load_arbiter_vacant(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::ArbiterVacant)
+            .unwrap_or(false)
+    }
+
+    fn load_max_revisions(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxRevisions)
+            .unwrap_or(MAX_REVISIONS)
+    }
+
+    fn load_acceptance_window_seconds(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AcceptanceWindowSeconds)
+            .unwrap_or(ACCEPTANCE_WINDOW_SECONDS)
+    }
+
+    fn load_overdue_grace_seconds(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::OverdueGraceSeconds)
+            .unwrap_or(OVERDUE_GRACE_SECONDS)
+    }
+
     /// Reject with `NotAccepted` unless both the freelancer and the arbiter
     /// have accepted the job.
     fn require_accepted(env: &Env) -> Result<(), Error> {
@@ -2902,7 +3009,7 @@ impl MilestoneEscrow {
         topic: Symbol,
     ) -> Result<(), Error> {
         let mask = Self::load_acceptance(env);
-        if mask & bit != 0 {
+        if mask & bit != 0 || Self::load_declined(env) & bit != 0 {
             return Err(Error::InvalidStatus);
         }
         let new_mask = mask | bit;
@@ -2915,6 +3022,30 @@ impl MilestoneEscrow {
             JobAcceptedEvent {
                 party,
                 acceptance_mask: new_mask,
+            },
+        );
+        Ok(())
+    }
+
+    fn record_decline(
+        env: &Env,
+        party: Address,
+        client: Address,
+        bit: u32,
+        topic: Symbol,
+    ) -> Result<(), Error> {
+        let accepted = Self::load_acceptance(env);
+        let declined = Self::load_declined(env);
+        if accepted & bit != 0 || declined & bit != 0 {
+            return Err(Error::InvalidStatus);
+        }
+        let new_mask = declined | bit;
+        env.storage().instance().set(&DataKey::Declined, &new_mask);
+        env.events().publish(
+            (topic, party.clone(), client),
+            JobDeclinedEvent {
+                party,
+                declined_mask: new_mask,
             },
         );
         Ok(())
@@ -2945,6 +3076,15 @@ impl MilestoneEscrow {
             .persistent()
             .get(&DataKey::Milestone(index))
             .ok_or(Error::InvalidMilestone)
+    }
+
+    fn ensure_no_open_disputes(env: &Env, meta: &JobMeta) -> Result<(), Error> {
+        for index in 0..meta.milestone_count {
+            if Self::load_milestone(env, index)?.status == MilestoneStatus::Disputed {
+                return Err(Error::DisputePending);
+            }
+        }
+        Ok(())
     }
 
     fn store_milestone(env: &Env, index: u32, milestone: &Milestone) {
@@ -3390,6 +3530,8 @@ impl MilestoneEscrow {
     ///   `MAX_ARBITER_FEE_BPS`.
     /// * [`Error::InvalidDisputeTimeout`] – `settings.dispute_timeout_seconds`
     ///   is outside `MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS`.
+    /// * [`Error::InvalidEscrowSettings`] – a revision or timing setting is
+    ///   outside its documented bounds.
     /// * Every error documented on `__constructor`.
     #[allow(clippy::too_many_arguments)]
     fn initialize_with_settings(
@@ -3406,6 +3548,13 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         if settings.arbiter_fee_bps > MAX_ARBITER_FEE_BPS {
             return Err(Error::InvalidRatio);
+        }
+        if settings.max_revisions > MAX_CONFIGURABLE_REVISIONS
+            || !(MIN_ACCEPTANCE_WINDOW_SECONDS..=MAX_ACCEPTANCE_WINDOW_SECONDS)
+                .contains(&settings.acceptance_window_seconds)
+            || settings.overdue_grace_seconds > MAX_OVERDUE_GRACE_SECONDS
+        {
+            return Err(Error::InvalidEscrowSettings);
         }
         Self::initialize_inner(
             env.clone(),
@@ -3429,6 +3578,23 @@ impl MilestoneEscrow {
                 .instance()
                 .set(&DataKey::ArbiterFeeBps, &settings.arbiter_fee_bps);
         }
+        if settings.max_revisions != MAX_REVISIONS {
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxRevisions, &settings.max_revisions);
+        }
+        if settings.acceptance_window_seconds != ACCEPTANCE_WINDOW_SECONDS {
+            env.storage().instance().set(
+                &DataKey::AcceptanceWindowSeconds,
+                &settings.acceptance_window_seconds,
+            );
+        }
+        if settings.overdue_grace_seconds != OVERDUE_GRACE_SECONDS {
+            env.storage().instance().set(
+                &DataKey::OverdueGraceSeconds,
+                &settings.overdue_grace_seconds,
+            );
+        }
         Ok(())
     }
 
@@ -3436,11 +3602,7 @@ impl MilestoneEscrow {
     /// and no arbiter fee.
     #[cfg(test)]
     fn default_settings() -> EscrowSettings {
-        EscrowSettings {
-            funding_mode: FundingMode::Upfront,
-            dispute_timeout_seconds: DISPUTE_TIMEOUT_SECONDS,
-            arbiter_fee_bps: 0,
-        }
+        EscrowSettings::default()
     }
 
     /// Test-only initialiser with default settings, for tests that register
@@ -3764,6 +3926,36 @@ impl MilestoneEscrow {
                 arbiter_fee_bps,
                 ..Self::default_settings()
             },
+        )
+    }
+
+    /// Test-only: initialize with an explicit settings struct.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn initialize_with_settings_test(
+        env: Env,
+        admin: Address,
+        client: Address,
+        freelancer: Address,
+        arbiter: Address,
+        token: Address,
+        auto_release_seconds: u64,
+        milestone_amounts: Vec<i128>,
+        milestone_spec_hashes: Vec<BytesN<32>>,
+        settings: EscrowSettings,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Self::initialize_with_settings(
+            env,
+            admin,
+            client,
+            freelancer,
+            arbiter,
+            token,
+            auto_release_seconds,
+            milestone_amounts,
+            milestone_spec_hashes,
+            settings,
         )
     }
 
@@ -4546,7 +4738,7 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialized.
     /// * `Unauthorized`   – `freelancer` does not match the job's freelancer.
-    /// * `InvalidStatus`  – The freelancer has already accepted.
+    /// * `InvalidStatus`  – The freelancer has already accepted or declined.
     pub fn accept_job(env: Env, freelancer: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         freelancer.require_auth();
@@ -4565,7 +4757,8 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialized.
     /// * `Unauthorized`   – `arbiter` does not match the job's arbiter.
-    /// * `InvalidStatus`  – The arbiter has already accepted.
+    /// * `InvalidStatus`  – The arbiter has already accepted or declined, or
+    ///                       the seat is vacant.
     pub fn accept_arbiter(env: Env, arbiter: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         arbiter.require_auth();
@@ -4573,7 +4766,84 @@ impl MilestoneEscrow {
         if meta.arbiter != arbiter {
             return Err(Error::Unauthorized);
         }
+        if Self::load_arbiter_vacant(&env) {
+            return Err(Error::InvalidStatus);
+        }
         Self::record_acceptance(&env, arbiter, meta.client, 2, symbol_short!("acceptarb"))
+    }
+
+    /// Decline the job as its freelancer before accepting it.
+    ///
+    /// # Errors
+    /// * `Unauthorized` – `freelancer` is not the appointed freelancer.
+    /// * `InvalidStatus` – The freelancer already accepted or declined.
+    pub fn decline_job(env: Env, freelancer: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        freelancer.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        if meta.freelancer != freelancer {
+            return Err(Error::Unauthorized);
+        }
+        Self::record_decline(&env, freelancer, meta.client, 1, symbol_short!("decljob"))
+    }
+
+    /// Decline the job as its arbiter before accepting it.
+    ///
+    /// The client may then reclaim the escrow immediately with
+    /// `withdraw_unaccepted`.
+    ///
+    /// # Errors
+    /// * `Unauthorized` – `arbiter` is not the appointed arbiter.
+    /// * `InvalidStatus` – The arbiter already accepted or declined, or has
+    ///   resigned.
+    pub fn decline_arbiter(env: Env, arbiter: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        arbiter.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        if meta.arbiter != arbiter {
+            return Err(Error::Unauthorized);
+        }
+        if Self::load_arbiter_vacant(&env) {
+            return Err(Error::InvalidStatus);
+        }
+        Self::record_decline(&env, arbiter, meta.client, 2, symbol_short!("declarb"))
+    }
+
+    /// Vacate the arbiter seat after accepting, provided no dispute is open.
+    /// The client and freelancer must jointly appoint a replacement before
+    /// another dispute can be raised.
+    ///
+    /// # Errors
+    /// * `Unauthorized` – `arbiter` is not the appointed arbiter.
+    /// * `InvalidStatus` – The arbiter has not accepted or has already
+    ///   resigned.
+    /// * `DisputePending` – At least one milestone is currently disputed.
+    pub fn resign_arbiter(env: Env, arbiter: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::ensure_not_paused(&env)?;
+        arbiter.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        if meta.arbiter != arbiter {
+            return Err(Error::Unauthorized);
+        }
+        if Self::load_arbiter_vacant(&env) || Self::load_acceptance(&env) & 2 == 0 {
+            return Err(Error::InvalidStatus);
+        }
+        Self::ensure_no_open_disputes(&env, &meta)?;
+
+        let acceptance = Self::load_acceptance(&env) & !2;
+        env.storage()
+            .instance()
+            .set(&DataKey::Acceptance, &acceptance);
+        env.storage().instance().set(&DataKey::ArbiterVacant, &true);
+        env.events().publish(
+            (symbol_short!("arbresig"), arbiter.clone()),
+            ArbiterResignedEvent {
+                client: meta.client,
+                arbiter,
+            },
+        );
+        Ok(())
     }
 
     /// Appoint a new arbiter, jointly authorized by the client and the
@@ -4602,8 +4872,9 @@ impl MilestoneEscrow {
     /// outcome.  Once the swap succeeds it is recorded in `JobMeta::arbiter`,
     /// so the very next dispute raise, resolution, or arbitration split is
     /// checked and settled against the new arbiter automatically — no
-    /// additional plumbing is needed.  On success the `arbchg` event reports
-    /// the `old` and `new` arbiter addresses for indexers.
+    /// additional plumbing is needed. If the seat was vacant, the replacement
+    /// arbiter must accept before disputes can be raised. On success the
+    /// `arbchg` event reports the `old` and `new` arbiter addresses.
     ///
     /// # Parameters
     /// * `new_arbiter` – The incoming arbiter. Must be a valid address
@@ -4647,16 +4918,22 @@ impl MilestoneEscrow {
         // ── Dispute-active guard: an arbiter cannot be swapped out from
         // under an open dispute. Scanned before any write so a refused call
         // leaves no ledger trace. ─────────────────────────────────────────
-        for index in 0..meta.milestone_count {
-            let milestone = Self::load_milestone(&env, index)?;
-            if milestone.status == MilestoneStatus::Disputed {
-                return Err(Error::DisputePending);
-            }
-        }
+        Self::ensure_no_open_disputes(&env, &meta)?;
 
         let old_arbiter = meta.arbiter.clone();
         meta.arbiter = new_arbiter.clone();
         Self::store_job_meta(&env, &meta);
+        if Self::load_arbiter_vacant(&env) {
+            env.storage()
+                .instance()
+                .set(&DataKey::ArbiterVacant, &false);
+        }
+        let declined = Self::load_declined(&env);
+        if declined & 2 != 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::Declined, &(declined & !2));
+        }
 
         env.events().publish(
             (symbol_short!("arbchg"), new_arbiter.clone()),
@@ -4717,8 +4994,8 @@ impl MilestoneEscrow {
     }
 
     /// Refund the client in full when the job was not accepted by both the
-    /// freelancer and the arbiter within `ACCEPTANCE_WINDOW_SECONDS` of
-    /// funding.
+    /// freelancer and the arbiter within its configured acceptance window, or
+    /// immediately after either party declines.
     ///
     /// Every milestone that is not already `Released` or `Refunded` moves to
     /// `Refunded` and its remaining amount is paid to the client.
@@ -4730,7 +5007,8 @@ impl MilestoneEscrow {
     /// * `Unauthorized`            – `client` does not match the job's client.
     /// * `NotFunded`               – The escrow has not been funded yet.
     /// * `InvalidStatus`           – Both parties have accepted the job.
-    /// * `DeadlineNotPassed`       – The acceptance window is still open.
+    /// * `DeadlineNotPassed`       – No party declined and the acceptance
+    ///                               window is still open.
     /// * `InvalidAmount`           – Nothing remains to refund.
     pub fn withdraw_unaccepted(env: Env, client: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
@@ -4747,16 +5025,18 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
-        let funded_at: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::FundedAt)
-            .unwrap_or(meta.created_at);
-        let deadline = funded_at
-            .checked_add(ACCEPTANCE_WINDOW_SECONDS)
-            .ok_or(Error::InvalidAmount)?;
-        if env.ledger().timestamp() < deadline {
-            return Err(Error::DeadlineNotPassed);
+        if Self::load_declined(&env) == 0 {
+            let funded_at: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::FundedAt)
+                .unwrap_or(meta.created_at);
+            let deadline = funded_at
+                .checked_add(Self::load_acceptance_window_seconds(&env))
+                .ok_or(Error::InvalidAmount)?;
+            if env.ledger().timestamp() < deadline {
+                return Err(Error::DeadlineNotPassed);
+            }
         }
 
         let mut total_refunded: i128 = 0;
@@ -4802,6 +5082,73 @@ impl MilestoneEscrow {
             },
         );
 
+        Ok(())
+    }
+
+    /// Change one milestone's delivery deadline after job acceptance.
+    ///
+    /// The client may extend or clear the deadline alone. Shortening it
+    /// requires both the client and freelancer to authorize.
+    pub fn set_milestone_due_date(
+        env: Env,
+        client: Address,
+        freelancer: Address,
+        milestone_index: u32,
+        new_due_at: u64,
+    ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::ensure_not_paused(&env)?;
+        client.require_auth();
+        let meta = Self::load_job_meta(&env)?;
+        if meta.client != client {
+            return Err(Error::Unauthorized);
+        }
+        if meta.freelancer != freelancer {
+            return Err(Error::Unauthorized);
+        }
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let milestone = Self::load_milestone(&env, milestone_index)?;
+        if Self::is_terminal_status(&milestone.status) {
+            return Err(Error::InvalidStatus);
+        }
+        if new_due_at != 0 && new_due_at <= env.ledger().timestamp() {
+            return Err(Error::InvalidDeadline);
+        }
+        let old_due_at = Self::load_due_at(&env, milestone_index);
+        let is_shortening = new_due_at != 0 && (old_due_at == 0 || new_due_at < old_due_at);
+        if is_shortening {
+            freelancer.require_auth();
+        }
+        if new_due_at == old_due_at {
+            return Ok(());
+        }
+
+        let key = DataKey::DueAt(milestone_index);
+        if new_due_at == 0 {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &new_due_at);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        }
+        env.events().publish(
+            (
+                symbol_short!("duedate"),
+                meta.client.clone(),
+                meta.freelancer.clone(),
+            ),
+            MilestoneDueDateChangedEvent {
+                client: meta.client,
+                freelancer: meta.freelancer,
+                milestone_index,
+                old_due_at,
+                new_due_at,
+            },
+        );
         Ok(())
     }
 
@@ -4881,7 +5228,7 @@ impl MilestoneEscrow {
     }
 
     /// Refund a `Pending` milestone to the client once its delivery deadline
-    /// plus `OVERDUE_GRACE_SECONDS` has passed without delivery.  The
+    /// plus the configured overdue grace has passed without delivery. The
     /// milestone becomes `Refunded`.  A late `mark_delivered` stays possible
     /// until this is called.
     ///
@@ -4919,7 +5266,7 @@ impl MilestoneEscrow {
             return Err(Error::DeadlineNotPassed);
         }
         let deadline = due_at
-            .checked_add(OVERDUE_GRACE_SECONDS)
+            .checked_add(Self::load_overdue_grace_seconds(&env))
             .ok_or(Error::ArithmeticOverflow)?;
         if env.ledger().timestamp() <= deadline {
             return Err(Error::DeadlineNotPassed);
@@ -5056,8 +5403,9 @@ impl MilestoneEscrow {
     ///
     /// Returns the milestone to `Pending`, clears `delivered_at` so the previous
     /// auto-release clock cannot fire, and increments `revision_count` up to
-    /// `MAX_REVISIONS` (3). Accounting and funding are unchanged. Returns
-    /// `ReviewWindowClosed` once the auto-release deadline has passed.
+    /// the configured per-escrow limit (default 3). Accounting and funding are
+    /// unchanged. Returns `ReviewWindowClosed` once the auto-release deadline
+    /// has passed.
     pub fn request_revision(
         env: Env,
         client: Address,
@@ -5089,7 +5437,7 @@ impl MilestoneEscrow {
             .persistent()
             .get(&DataKey::RevCnt(milestone_index))
             .unwrap_or(0);
-        if current >= MAX_REVISIONS {
+        if current >= Self::load_max_revisions(&env) {
             return Err(Error::MaxRevisions);
         }
         let revision_count = current + 1;
@@ -5910,6 +6258,9 @@ impl MilestoneEscrow {
         meta: JobMeta,
     ) -> Result<(), Error> {
         Self::require_escrow_has_funding(env, &meta)?;
+        if Self::load_arbiter_vacant(env) {
+            return Err(Error::ArbiterVacant);
+        }
 
         // ── Input validation: index boundary check ───────────────────────
         if milestone_index >= meta.milestone_count {

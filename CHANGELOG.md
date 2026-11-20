@@ -53,6 +53,10 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Changed
 
+- **Breaking**: The escrow and factory `EscrowSettings` structs now include
+  `max_revisions`, `acceptance_window_seconds` and `overdue_grace_seconds`.
+  Clients must update constructor/factory settings payloads and regenerate
+  bindings.
 - **Breaking**: `resolve_dispute` and `apply_dispute_arbitration_split` take a
   trailing `decision_hash: BytesN<32>` — a tamper-evident commitment to the
   arbiter's written decision (#1015). The hash is echoed verbatim in the
@@ -88,6 +92,18 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Added
 
+- `decline_job` and `decline_arbiter` let a party reject the job before
+  accepting; a decline lets the client reclaim funded amounts immediately.
+- `resign_arbiter` lets an accepted arbiter vacate the role when no dispute is
+  open. The parties must jointly appoint a replacement before raising another
+  dispute.
+- `set_milestone_due_date` lets the client extend or clear a deadline alone;
+  shortening a deadline requires the freelancer's consent.
+- `EscrowSettings` now configures per-escrow `max_revisions`,
+  `acceptance_window_seconds` and `overdue_grace_seconds`. Defaults preserve
+  the previous behavior (3 revisions, 7 days and 1 day); accepted ranges are
+  0–100 revisions, 1 hour–90 days for acceptance, and 0–90 days for overdue
+  grace.
 - `increase_milestone(client, freelancer, milestone_index, new_amount)`:
   raise a `Pending` milestone's amount with both parties' consent. On a
   funded milestone the client deposits the difference in the same call; in

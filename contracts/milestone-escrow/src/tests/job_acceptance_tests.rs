@@ -8,9 +8,11 @@
 //! acceptance window has passed.
 
 use crate::test::dispute_reason_hash;
-use crate::{Error, MilestoneEscrow, MilestoneEscrowClient, MilestoneStatus};
+use crate::{Error, JobDeclinedEvent, MilestoneEscrow, MilestoneEscrowClient, MilestoneStatus};
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{symbol_short, token, vec, Address, Env, IntoVal, Val};
+use soroban_sdk::{
+    symbol_short, token, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val,
+};
 
 /// Seven days, matching `ACCEPTANCE_WINDOW_SECONDS`.
 const WINDOW: u64 = 7 * 24 * 60 * 60;
@@ -216,6 +218,91 @@ fn test_withdraw_unaccepted_rejected_once_accepted() {
     env.ledger().with_mut(|l| l.timestamp += WINDOW);
     assert_eq!(
         client.try_withdraw_unaccepted(&client_addr),
+        Err(Ok(Error::InvalidStatus))
+    );
+}
+
+#[test]
+fn declined_party_allows_immediate_client_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, token_client, escrow, contract_id) =
+        setup_unaccepted_escrow(&env);
+    assert_eq!(
+        escrow.try_withdraw_unaccepted(&client_addr),
+        Err(Ok(Error::DeadlineNotPassed))
+    );
+
+    escrow.decline_job(&freelancer_addr);
+    let event = crate::all_event_tuples(&env)
+        .last()
+        .expect("declining emits an event")
+        .clone();
+    let topic: Symbol = event.1.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("decljob"));
+    assert_eq!(
+        JobDeclinedEvent::from_val(&env, &event.2),
+        JobDeclinedEvent {
+            party: freelancer_addr.clone(),
+            declined_mask: 1,
+        }
+    );
+    escrow.withdraw_unaccepted(&client_addr);
+
+    assert_eq!(token_client.balance(&client_addr), 1_500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert_eq!(
+        escrow.get_job().milestones.get(0).unwrap().status,
+        MilestoneStatus::Refunded
+    );
+}
+
+#[test]
+fn arbiter_can_decline_and_declines_are_party_scoped() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, arbiter_addr, _, escrow, _) = setup_unaccepted_escrow(&env);
+    assert_eq!(
+        escrow.try_decline_job(&client_addr),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        escrow.try_decline_arbiter(&freelancer_addr),
+        Err(Ok(Error::Unauthorized))
+    );
+    escrow.decline_arbiter(&arbiter_addr);
+    let event = crate::all_event_tuples(&env)
+        .last()
+        .expect("declining emits an event")
+        .clone();
+    let topic: Symbol = event.1.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("declarb"));
+    assert_eq!(
+        JobDeclinedEvent::from_val(&env, &event.2),
+        JobDeclinedEvent {
+            party: arbiter_addr.clone(),
+            declined_mask: 2,
+        }
+    );
+    escrow.withdraw_unaccepted(&client_addr);
+}
+
+#[test]
+fn declining_after_acceptance_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, freelancer_addr, arbiter_addr, _, escrow, _) = setup_unaccepted_escrow(&env);
+    escrow.accept_job(&freelancer_addr);
+    escrow.accept_arbiter(&arbiter_addr);
+    assert_eq!(
+        escrow.try_decline_job(&freelancer_addr),
+        Err(Ok(Error::InvalidStatus))
+    );
+    assert_eq!(
+        escrow.try_decline_arbiter(&arbiter_addr),
         Err(Ok(Error::InvalidStatus))
     );
 }

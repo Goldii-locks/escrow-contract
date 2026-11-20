@@ -52,36 +52,44 @@ The constructor's `settings.arbiter_fee_bps` sets an arbiter fee (basis points, 
 
 ## Contract Functions
 
-The contract exposes **94 public functions** grouped by category below.
+The contract exposes **102 public functions** grouped by category below.
 
 ### Core Escrow (Initialization & Funding)
 
 | Function | Caller | Description |
 |---|---|---|
-| `__constructor` | Deployer | Atomically initializes the job with milestone amounts, spec hashes and `settings` (`EscrowSettings`: funding mode, dispute timeout, arbiter fee) |
+| `__constructor` | Deployer | Atomically initializes the job with milestone amounts, spec hashes and `settings` (`EscrowSettings`: funding mode, dispute timeout, arbiter fee, revision cap, acceptance window and overdue grace) |
 | `get_arbiter_fee_bps` | Anyone | Read the arbiter fee (0 when none) |
 | `fund` | Client | Deposit total amount into contract (Upfront mode) |
 | `fund_milestone` | Client | Deposit one milestone (PerMilestone mode) |
 | `get_funding_mode` | Anyone | View the current funding mode |
 | `accept_job` | Freelancer | Freelancer accepts the job |
 | `accept_arbiter` | Arbiter | Arbiter accepts the job |
-| `withdraw_unaccepted` | Client | Reclaim funds if job not accepted within 7 days |
+| `decline_job` | Freelancer | Decline before acceptance, enabling an immediate client refund |
+| `decline_arbiter` | Arbiter | Decline before acceptance, enabling an immediate client refund |
+| `withdraw_unaccepted` | Client | Reclaim funds if either party declines or the configured acceptance window expires |
 | `add_milestone` | Client + Freelancer | Append a new Pending milestone to a funded job; the client deposits its amount in the same call (capped at `MAX_MILESTONES` = 50) |
 | `reduce_milestone` | Client + Freelancer | Lower a Pending milestone's amount and refund the difference to the client |
 | `increase_milestone` | Client + Freelancer | Raise a Pending milestone's amount; the client deposits the difference if the milestone is funded |
 | `rotate_freelancer` | Client + Freelancer | Move the freelancer role and future payouts to a new address |
 | `replace_arbiter` | Client + Freelancer | Appoint a new arbiter when the sitting one is unavailable; refused while a dispute is open |
+| `resign_arbiter` | Arbiter | Vacate the role when no dispute is open; disputes pause until replacement |
 | `get_job` | Anyone | View current job state |
 | `get_milestone` | Anyone | View one milestone without loading the whole job |
 | `milestone_count` | Anyone | Number of milestones |
 | `version` | Anyone | Get contract version |
+
+`EscrowSettings` defaults to 3 revisions, a 7-day acceptance window and a
+1-day overdue grace. Valid ranges are 0–100 revisions, 1 hour–90 days for the
+acceptance window, and 0–90 days for overdue grace.
 
 ### Milestone Lifecycle
 
 | Function | Caller | Description |
 |---|---|---|
 | `mark_delivered` | Freelancer | Mark a milestone as delivered |
-| `request_revision` | Client | Return a delivered milestone to Pending (max 3 revisions) |
+| `request_revision` | Client | Return a delivered milestone to Pending (per-escrow revision limit; default 3) |
+| `set_milestone_due_date` | Client; Client + Freelancer to shorten | Extend or clear one milestone deadline, or shorten it with both parties' consent |
 | `get_revision_count` | Anyone | Get revision count for a milestone |
 | `extend_milestone_deadline` | Client | Extend auto-release deadline for a delivered milestone |
 | `claim_auto_release` | Freelancer | Auto-release a delivered milestone after deadline |
@@ -303,7 +311,9 @@ action — never a caller-supplied calculation.
 | 54 | `NoPendingMultiSigConfig` | `execute_multisig_config` / `cancel_multisig_config_proposal` found no pending signer-set change |
 | 55 | `DisputePending` | `replace_arbiter` was called while a milestone is `Disputed` |
 | 56 | `ReviewWindowClosed` | `raise_dispute` or `request_revision` was called on a `Delivered` milestone after its auto-release deadline |
-| 57 | `InvalidDeadline` | `set_milestone_due_dates` got a non-zero due date at or before the current ledger timestamp |
+| 57 | `InvalidDeadline` | A milestone due-date setter got a non-zero due date at or before the current ledger timestamp |
+| 58 | `ArbiterVacant` | `raise_dispute` was called while the arbiter seat is vacant |
+| 59 | `InvalidEscrowSettings` | A per-escrow revision or timing setting is outside its allowed range |
 
 ## Milestone States
 

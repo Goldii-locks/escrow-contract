@@ -43,7 +43,7 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 
 | Capability | Entry points | Mitigation or status |
 |---|---|---|
-| Resolve disputes | `resolve_dispute`, `apply_dispute_arbitration_split` | Acts only on `Disputed` milestones and can only pay the recorded client and freelancer. There is no timeout if the arbiter never acts and no way to replace the arbiter; the admin overrides are the only fallback. See [#784](https://github.com/Goldii-locks/escrow-contract/issues/784), [#731](https://github.com/Goldii-locks/escrow-contract/issues/731), [#738](https://github.com/Goldii-locks/escrow-contract/issues/738). |
+| Resolve disputes | `resolve_dispute`, `apply_dispute_arbitration_split` | Acts only on `Disputed` milestones and can only pay the recorded client and freelancer. The client and freelancer can jointly replace the arbiter when no dispute is open; an accepted arbiter can also resign only when no dispute is open, leaving disputes blocked until replacement. See [#784](https://github.com/Goldii-locks/escrow-contract/issues/784), [#731](https://github.com/Goldii-locks/escrow-contract/issues/731), [#738](https://github.com/Goldii-locks/escrow-contract/issues/738). |
 | Accept the job | `accept_arbiter` | The arbiter is named by the job creator but must accept on-chain before disputes can be raised or resolved; an unaccepted job can be reclaimed by the client after the acceptance window. |
 
 ### Client and freelancer
@@ -55,7 +55,7 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 | Cancel | `cancel_escrow`, `revoke_cancel_approval` | Both parties must approve; the escrow is then cancel locked and the admin decides whether funds go to the client or the freelancer. A one-sided approval never expires. See [#713](https://github.com/Goldii-locks/escrow-contract/issues/713), [#727](https://github.com/Goldii-locks/escrow-contract/issues/727). |
 | Dispute | `raise_dispute` | Either party can freeze a `Pending`, `Delivered` or `PartiallyReleased` milestone; only the arbiter or the admin can unfreeze it. See [#774](https://github.com/Goldii-locks/escrow-contract/issues/774), [#712](https://github.com/Goldii-locks/escrow-contract/issues/712). |
 | Block settlement through account state | n/a | Payouts that fail (e.g. a removed trustline) are credited to the recipient and claimed with `withdraw`, so a party cannot block settlement by making their account unable to receive. |
-| Accept or ignore a job | `accept_job`, `withdraw_unaccepted` | The freelancer must accept the job on-chain before delivering, agreeing to the milestone amounts and auto-release window. If the freelancer or arbiter does not accept within 7 days of funding, the client can reclaim the full escrow. |
+| Accept or decline a job | `accept_job`, `accept_arbiter`, `decline_job`, `decline_arbiter`, `withdraw_unaccepted` | The freelancer and arbiter must accept on-chain before delivery or disputes. Either can decline before accepting, allowing the client to reclaim immediately; otherwise the configured acceptance window controls reclamation. |
 
 ### Multisig signers
 

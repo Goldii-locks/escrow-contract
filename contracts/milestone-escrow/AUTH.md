@@ -29,7 +29,11 @@ are listed at the bottom as **No auth required**.
 | `fund_milestone` | `client` | `client.require_auth()` |
 | `accept_job` | `freelancer` | `freelancer.require_auth()` |
 | `accept_arbiter` | `arbiter` | `arbiter.require_auth()` |
+| `decline_job` | `freelancer` | `freelancer.require_auth()` |
+| `decline_arbiter` | `arbiter` | `arbiter.require_auth()` |
+| `resign_arbiter` | `arbiter` | `arbiter.require_auth()` |
 | `withdraw_unaccepted` | `client` | `client.require_auth()` |
+| `set_milestone_due_date` | `client` for extensions/clearing; `client` and `freelancer` for shortening | `client.require_auth()`; `freelancer.require_auth()` when shortening |
 | `mark_delivered` | `freelancer` | `freelancer.require_auth()` |
 | `request_revision` | `client` | `client.require_auth()` |
 | `extend_milestone_deadline` | `client` **and** `freelancer` (both) | `client.require_auth()` + `meta.freelancer.require_auth()` (#670) |

@@ -24,6 +24,10 @@ freelancer when the client acts and the client otherwise:
 | `freerot`  | `new_freelancer`                      |
 | `acceptjob`| `freelancer`, `client`                |
 | `acceptarb`| `arbiter`, `client`                   |
+| `decljob`  | `freelancer`, `client`                |
+| `declarb`  | `arbiter`, `client`                   |
+| `arbresig` | `arbiter`                             |
+| `duedate`  | `client`, `freelancer`                |
 | `msfund`   | `client`, `freelancer`                |
 | `withdraw` | `caller`, counterparty (`recipient` in the body) |
 | `sweep`    | `client`, `freelancer`                |
@@ -47,6 +51,10 @@ freelancer when the client acts and the client otherwise:
 | `fund`     | `FundedEvent`                    | state change      |
 | `acceptjob`| `JobAcceptedEvent`               | state change      |
 | `acceptarb`| `JobAcceptedEvent`               | state change      |
+| `decljob`  | `JobDeclinedEvent`               | state change      |
+| `declarb`  | `JobDeclinedEvent`               | state change      |
+| `arbresig` | `ArbiterResignedEvent`           | state change      |
+| `duedate`  | `MilestoneDueDateChangedEvent`   | state change      |
 | `unaccref` | `UnacceptedWithdrawnEvent`       | state change      |
 | `overdue`  | `OverdueReclaimedEvent`          | state change      |
 | `withdraw` | `WithdrawnEvent`                 | state change      |
@@ -186,7 +194,7 @@ are indexed so RPC `getEvents` can filter by participant, as for the escrow's
 | `total_amount`         | `i128`           | Sum of all milestone amounts, in the token's smallest unit.|
 | `milestone_count`      | `u32`            | Number of milestones the escrow was created with.          |
 | `auto_release_seconds` | `u64`            | Auto-release window passed to the escrow constructor.      |
-| `settings`             | `EscrowSettings` | `funding_mode`, `dispute_timeout_seconds`, `arbiter_fee_bps` exactly as passed to the constructor. |
+| `settings`             | `EscrowSettings` | `funding_mode`, `dispute_timeout_seconds`, `arbiter_fee_bps`, `max_revisions`, `acceptance_window_seconds` and `overdue_grace_seconds` exactly as passed to the constructor. |
 | `wasm_hash`            | `BytesN<32>`     | Escrow WASM hash the factory used for this deployment.     |
 
 **Breaking change for indexers.** Before this change the event had one topic
