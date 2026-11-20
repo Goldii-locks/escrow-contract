@@ -37,14 +37,11 @@ fn approve_milestone_still_rejects_non_deliverable_statuses() {
     for status in [MilestoneStatus::Pending, MilestoneStatus::Released] {
         let env = soroban_sdk::Env::default();
         let fx = EscrowFixture::new(&env).milestones(&[100]).funded().build();
-        match status {
-            MilestoneStatus::Released => {
-                fx.escrow
-                    .mock_all_auths()
-                    .mark_delivered(&fx.freelancer, &0);
-                fx.escrow.mock_all_auths().approve_milestone(&fx.client, &0);
-            }
-            _ => {}
+        if status == MilestoneStatus::Released {
+            fx.escrow
+                .mock_all_auths()
+                .mark_delivered(&fx.freelancer, &0);
+            fx.escrow.mock_all_auths().approve_milestone(&fx.client, &0);
         }
         assert_eq!(
             fx.escrow

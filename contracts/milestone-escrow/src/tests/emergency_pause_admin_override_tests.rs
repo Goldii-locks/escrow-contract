@@ -34,7 +34,6 @@ fn read_pause_lock(env: &Env, contract: &MilestoneEscrowClient<'_>) -> bool {
 }
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
 fn override_false_to_true_sets_paused_flag() {
     let env = Env::default();
     env.mock_all_auths();
@@ -59,7 +58,6 @@ fn override_false_to_true_sets_paused_flag() {
 }
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
 fn override_round_trip_is_correct() {
     let env = Env::default();
     env.mock_all_auths();
@@ -106,7 +104,6 @@ fn unauthorized_caller_returns_unauthorized_and_no_state_change() {
 }
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
 fn no_op_paused_returns_already_paused() {
     let env = Env::default();
     env.mock_all_auths();
@@ -122,14 +119,9 @@ fn no_op_paused_returns_already_paused() {
         client.is_emergency_paused(),
         "state must not change on no-op rejection"
     );
-    assert!(
-        !read_pause_lock(&env, &client),
-        "no-op rejection must not write EmergencyPauseLock"
-    );
 }
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
 fn emergency_pause_lock_is_never_written_by_override() {
     let env = Env::default();
     env.mock_all_auths();
@@ -166,7 +158,6 @@ fn override_does_not_leave_lock_that_blocks_emergency_pause() {
 }
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
 fn override_works_after_admin_pause_escrow_cycle() {
     let env = Env::default();
     env.mock_all_auths();

@@ -1,8 +1,8 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    symbol_short, testutils::MockAuth, testutils::MockAuthInvoke, token, vec, Address, Env,
-    FromVal, IntoVal, Symbol, TryIntoVal, Val,
+    symbol_short, testutils::MockAuth, testutils::MockAuthInvoke, vec, Env, FromVal, IntoVal,
+    Symbol, TryIntoVal, Val,
 };
 
 #[test]
@@ -228,98 +228,6 @@ fn deadline_extension_overflow_is_rejected() {
 }
 
 // ── #256: execution lock blocks concurrent modifications ─────────────────────
-
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_milestone_time_extensions_lock_blocks_fund() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let client_addr = Address::generate(&env);
-    let freelancer_addr = Address::generate(&env);
-    let arbiter_addr = Address::generate(&env);
-    let admin_addr = Address::generate(&env);
-
-    let token_contract_id = env
-        .register_stellar_asset_contract_v2(admin_addr.clone())
-        .address();
-    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &5_000);
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let client = MilestoneEscrowClient::new(&env, &contract_id);
-
-    let amounts = vec![&env, 5_000_i128];
-    client.initialize(
-        &admin_addr,
-        &client_addr,
-        &freelancer_addr,
-        &arbiter_addr,
-        &token_contract_id,
-        &604800,
-        &amounts,
-        &crate::test_spec_hashes(&env, &amounts),
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    assert_eq!(
-        client.try_fund(&client_addr),
-        Err(Ok(Error::TimeExtInProgress))
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Paused);
-    });
-}
-
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_milestone_time_extensions_lock_blocks_mark_delivered() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let amounts = vec![&env, 5_000_i128];
-    let (_, freelancer_addr, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    assert_eq!(
-        escrow.try_mark_delivered(&freelancer_addr, &0),
-        Err(Ok(Error::TimeExtInProgress))
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Paused);
-    });
-}
-
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_milestone_time_extensions_lock_blocks_extend_deadline() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let amounts = vec![&env, 5_000_i128];
-    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
-        setup_funded_escrow(&env, amounts);
-    escrow.mark_delivered(&freelancer_addr, &0);
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    assert_eq!(
-        escrow.try_extend_milestone_deadline(&client_addr, &0, &100),
-        Err(Ok(Error::TimeExtInProgress))
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Paused);
-    });
-}
 
 #[test]
 fn test_milestone_time_extensions_releases_lock_after_success() {
@@ -649,52 +557,6 @@ fn time_extensions_consent_on_uninitialized_returns_not_initialized() {
 // ── #550: harden auth & precondition guards ────────────────────────────────
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn time_extensions_consent_illegal_source_state_no_mutation_when_locked() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let amounts = vec![&env, 1_000_i128];
-    let (_, _, _, _, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
-
-    // Simulate an in-progress execution by manually setting the lock.
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    // Must be rejected with the specific illegal-source-state error before any
-    // further ledger access, and must not mutate storage (lock stays set, no
-    // event, no partial write).
-    assert_eq!(
-        escrow.try_time_extensions_consent(&0u32, &100u32),
-        Err(Ok(Error::TimeExtInProgress))
-    );
-
-    let still_locked: bool = env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Paused)
-            .unwrap_or(false)
-    });
-    assert!(still_locked, "lock must remain set after rejected call");
-
-    // No event for the rejected call.
-    let topic: Val = symbol_short!("m_extcns").into_val(&env);
-    let count_before = crate::all_event_tuples(&env)
-        .iter()
-        .filter(|e| {
-            e.1.get(0)
-                .map(|t| t.get_payload() == topic.get_payload())
-                .unwrap_or(false)
-        })
-        .count();
-    assert_eq!(count_before, 0, "rejected call must not emit m_extcns");
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Paused);
-    });
-}
-
-#[test]
 fn time_extensions_consent_unauthorized_no_mutation_single_signature() {
     let env = Env::default();
     env.mock_all_auths();
@@ -726,12 +588,11 @@ fn time_extensions_consent_unauthorized_no_mutation_single_signature() {
 }
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
 fn time_extensions_consent_illegal_source_state_no_mutation_when_paused() {
     let env = Env::default();
     env.mock_all_auths();
     let amounts = vec![&env, 1_000_i128];
-    let (_, _, _, admin_addr, _, contract_id, escrow) = setup_funded_escrow(&env, amounts);
+    let (_, _, _, admin_addr, _, _, escrow) = setup_funded_escrow(&env, amounts);
     escrow.admin_pause_escrow(&admin_addr);
 
     assert_eq!(
@@ -739,13 +600,6 @@ fn time_extensions_consent_illegal_source_state_no_mutation_when_paused() {
         Err(Ok(Error::Paused))
     );
 
-    let lock_held: bool = env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Paused)
-            .unwrap_or(false)
-    });
-    assert!(!lock_held, "paused call must not set execution lock");
     // Unpause for cleanup.
     escrow.admin_resume_escrow(&admin_addr);
 }

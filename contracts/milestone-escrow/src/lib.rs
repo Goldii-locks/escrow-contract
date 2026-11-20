@@ -1091,6 +1091,13 @@ pub struct PendingTreasury {
 }
 
 /// Emitted on every freelancer payout that charges a treasury fee (#674).
+/// Published by `apply_treasury_update` when the fee treasury changes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreasuryUpdatedEvent {
+    pub treasury: Address,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformFeeChargedEvent {
@@ -2322,11 +2329,10 @@ impl MilestoneEscrow {
     /// Treasury receiving platform fees. Defaults to the admin until an
     /// admin-timelocked update is applied, so old deployments need no migration.
     fn treasury_address(env: &Env) -> Result<Address, Error> {
-        Ok(env
-            .storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .unwrap_or_else(|| Self::load_admin(env).unwrap()))
+        match env.storage().instance().get(&DataKey::Treasury) {
+            Some(treasury) => Ok(treasury),
+            None => Self::load_admin(env),
+        }
     }
 
     /// Treasury share using the same rounding as `calculate_platform_fee_split`.
@@ -7403,6 +7409,56 @@ impl MilestoneEscrow {
             || instance.get::<_, bool>(&DataKey::Ep).unwrap_or(false)
     }
 
+    /// Propose a treasury address change. It takes effect only after
+    /// `TREASURY_UPDATE_DELAY_SECONDS`, giving clients time to react.
+    pub fn propose_treasury_update(
+        env: Env,
+        admin: Address,
+        treasury: Address,
+    ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        Self::validate_address(&env, &treasury)?;
+        let effective_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(TREASURY_UPDATE_DELAY_SECONDS)
+            .ok_or(Error::ArithmeticOverflow)?;
+        env.storage().instance().set(
+            &DataKey::PendingTreasury,
+            &PendingTreasury {
+                address: treasury,
+                effective_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Apply a treasury change once its timelock has elapsed.
+    pub fn apply_treasury_update(env: Env, admin: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        let pending: PendingTreasury = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingTreasury)
+            .ok_or(Error::NotInitialized)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(Error::InvalidStatus);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::Treasury, &pending.address);
+        env.storage().instance().remove(&DataKey::PendingTreasury);
+        env.events().publish(
+            (symbol_short!("treasury"),),
+            TreasuryUpdatedEvent {
+                treasury: pending.address,
+            },
+        );
+        Ok(())
+    }
+
     /// Sets the global platform fee allocation in basis points (BPS).
     ///
     /// # Effects
@@ -7426,55 +7482,9 @@ impl MilestoneEscrow {
     /// * `NotInitialized` - Admin key has never been stored.
     /// * `Unauthorized` - `admin` is neither the `FeeManager` delegate nor, if none is set, the
     ///   stored admin.
-    /// * `PlatformFeeAllocationInProgress` - A platform fee update lock is currently active.
-    /// * `EmergencyPauseInProgress` - An emergency pause lock is currently active.
     /// * `InvalidRatio` - The sum of the BPS values does not equal 10,000 (BPS_SCALE).
     /// * `FeeTooHigh` - The treasury or client BPS exceeds the maximum allowed limits.
     /// * `InvalidStatus` - The allocation is locked.
-    /// Propose a treasury address change. It takes effect only after
-    /// `TREASURY_UPDATE_DELAY_SECONDS`, giving clients time to react.
-    pub fn propose_treasury_update(
-        env: Env,
-        admin: Address,
-        treasury: Address,
-    ) -> Result<(), Error> {
-        Self::require_role(&env, &admin, AdminRole::Operator)?;
-        Self::validate_address(&env, &treasury)?;
-        let effective_at = env
-            .ledger()
-            .timestamp()
-            .checked_add(TREASURY_UPDATE_DELAY_SECONDS)
-            .ok_or(Error::ArithmeticOverflow)?;
-        env.storage().instance().set(
-            &DataKey::PendingTreasury,
-            &PendingTreasury {
-                address: treasury,
-                effective_at,
-            },
-        );
-        Ok(())
-    }
-
-    /// Apply a treasury change once its timelock has elapsed.
-    pub fn apply_treasury_update(env: Env, admin: Address) -> Result<(), Error> {
-        Self::require_role(&env, &admin, AdminRole::Operator)?;
-        let pending: PendingTreasury = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingTreasury)
-            .ok_or(Error::NotInitialized)?;
-        if env.ledger().timestamp() < pending.effective_at {
-            return Err(Error::InvalidStatus);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::Treasury, &pending.address);
-        env.storage().instance().remove(&DataKey::PendingTreasury);
-        env.events()
-            .publish((symbol_short!("treasury"),), pending.address);
-        Ok(())
-    }
-
     pub fn set_platform_fee_allocation(
         env: Env,
         admin: Address,
@@ -7496,7 +7506,7 @@ impl MilestoneEscrow {
         }
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
 
-        let result = (|| {
+        (|| {
             let current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
             if current.locked {
@@ -7526,9 +7536,7 @@ impl MilestoneEscrow {
             );
 
             Ok(())
-        })();
-
-        result
+        })()
     }
 
     /// Lock the current platform-fee allocation, preventing further non-override
@@ -7572,7 +7580,7 @@ impl MilestoneEscrow {
 
         // All checks passed; now proceed with mutation under re-entrancy guard
 
-        let result = (|| {
+        (|| {
             // Emit a structured event so downstream indexers can track
             // lock state changes without polling storage.
             env.events().publish(
@@ -7590,9 +7598,7 @@ impl MilestoneEscrow {
                 .persistent()
                 .set(&DataKey::PlatformFeeAllocation, &current);
             Ok(())
-        })();
-
-        result
+        })()
     }
 
     /// Admin override that replaces a *locked* platform-fee allocation and
@@ -7908,7 +7914,7 @@ impl MilestoneEscrow {
         // Validate ratio inputs before touching storage.
         Self::validate_streaming_ratio(remaining, numerator, denominator)?;
 
-        let result = (|| {
+        (|| {
             let split = Self::split_round_nearest(remaining, numerator, denominator)?;
 
             let token_client = token::Client::new(&env, &meta.token);
@@ -7949,9 +7955,7 @@ impl MilestoneEscrow {
             );
 
             Ok(split)
-        })();
-
-        result
+        })()
     }
 
     /// Allocate a milestone's escrowed amount between two parties (typically
@@ -8038,7 +8042,7 @@ impl MilestoneEscrow {
             return Err(Error::InvalidRatio);
         }
 
-        let result = (|| {
+        (|| {
             // Delegate to the single shared high-precision split primitive.
             // split_round_nearest(total, numerator, denominator) computes:
             //   first  = round_nearest(total × numerator / denominator)
@@ -8058,9 +8062,7 @@ impl MilestoneEscrow {
             );
 
             Ok(split)
-        })();
-
-        result
+        })()
     }
 
     /// Extend the auto-release deadline for a Delivered milestone with
@@ -10646,7 +10648,7 @@ impl MilestoneEscrow {
             return Err(Error::NotPaused);
         }
 
-        let result = (|| {
+        (|| {
             env.storage().instance().set(&DataKey::Paused, &false);
 
             env.events().publish(
@@ -10657,9 +10659,7 @@ impl MilestoneEscrow {
             );
 
             Ok(())
-        })();
-
-        result
+        })()
     }
 
     // ── tax recipient configuration (issue #788) ──────────────────────────────

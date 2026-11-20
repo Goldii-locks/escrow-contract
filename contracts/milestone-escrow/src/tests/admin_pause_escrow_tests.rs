@@ -129,28 +129,6 @@ fn pause_rejects_non_admin_caller() {
     assert_eq!(pause_event_count(&env), 0);
 }
 
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn pause_rejects_when_emergency_lock_held() {
-    let env = test_env();
-    let (client, admin) = initialised_escrow(&env);
-    let contract_id = client.address.clone();
-
-    // Manually set the emergency-pause lock to simulate a mid-flight transition.
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Ep, &true);
-    });
-
-    assert_eq!(
-        client.try_admin_pause_escrow(&admin),
-        Err(Ok(Error::EmergencyPauseInProgress))
-    );
-    // No mutation: paused flag remains false, lock still held.
-    assert!(!is_paused(&env, &contract_id));
-    assert!(is_lock_held(&env, &contract_id));
-    assert_eq!(pause_event_count(&env), 0);
-}
-
 // ── redundant pause rejection ───────────────────────────────────────────────────
 
 #[test]

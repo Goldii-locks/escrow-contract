@@ -655,98 +655,6 @@ fn test_streaming_matrix_repeated_calls_are_pure() {
 // ── #257: execution lock blocks concurrent modifications ─────────────────────
 
 #[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_payment_streaming_lock_blocks_fund() {
-    let env = test_env();
-    env.mock_all_auths();
-
-    let admin_addr = Address::generate(&env);
-    let client_addr = Address::generate(&env);
-    let freelancer_addr = Address::generate(&env);
-    let arbiter_addr = Address::generate(&env);
-
-    let token_contract_id = env
-        .register_stellar_asset_contract_v2(admin_addr.clone())
-        .address();
-    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &5_000);
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
-    let amounts = vec![&env, 5_000_i128];
-    escrow.initialize(
-        &admin_addr,
-        &client_addr,
-        &freelancer_addr,
-        &arbiter_addr,
-        &token_contract_id,
-        &604800,
-        &amounts,
-        &crate::test_spec_hashes(&env, &amounts),
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    assert_eq!(
-        escrow.try_fund(&client_addr),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Paused);
-    });
-}
-
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_payment_streaming_lock_blocks_mark_delivered() {
-    let env = test_env();
-    let (escrow, parties) = initialised_escrow(&env);
-
-    // The escrow is already funded and milestone 0 is already Delivered from
-    // initialised_escrow. The payment-streaming lock must fire before the
-    // status check so even a milestone already in Delivered state is blocked.
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    assert_eq!(
-        escrow.try_mark_delivered(&parties.freelancer, &0),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage().instance().remove(&DataKey::Paused);
-    });
-}
-
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_payment_streaming_lock_blocks_approve_milestone() {
-    let env = test_env();
-    let (escrow, parties) = initialised_escrow(&env);
-
-    // The escrow is already funded and milestone 0 is Delivered from
-    // initialised_escrow, so approve_milestone would succeed without the lock.
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    assert_eq!(
-        escrow.try_approve_milestone(&parties.client, &0),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage().instance().remove(&DataKey::Paused);
-    });
-}
-
-#[test]
 fn test_payment_streaming_releases_lock_after_success() {
     let env = test_env();
     env.mock_all_auths();
@@ -974,34 +882,6 @@ fn test_payment_streaming_milestones_uninitialized_returns_typed_error_without_m
     );
 
     let after = storage_snapshot(&env, &contract_id);
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
-    assert!(!emitted_p_stream_event(&env));
-}
-
-/// A payment-streaming split that is already mid-execution is an illegal
-/// source state: the call must answer with the typed
-/// `PaymentStreamingInProgress` error, keep the pre-existing lock untouched,
-/// and write nothing else.
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_payment_streaming_milestones_locked_source_returns_typed_error_without_mutation() {
-    let env = test_env();
-    let (escrow, p) = initialised_escrow(&env);
-
-    env.as_contract(&p.contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-
-    let before = storage_snapshot(&env, &p.contract_id);
-
-    assert_eq!(
-        escrow.try_payment_streaming_milestones(&ARGS_TOTAL, &ARGS_NUM, &ARGS_DEN),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    let after = storage_snapshot(&env, &p.contract_id);
     assert_eq!(after.0, before.0, "instance storage must be untouched");
     assert_eq!(after.1, before.1, "persistent storage must be untouched");
     assert_eq!(after.2, before.2, "temporary storage must be untouched");

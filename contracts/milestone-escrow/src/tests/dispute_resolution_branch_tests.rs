@@ -67,26 +67,6 @@ fn milestone_0(client: &MilestoneEscrowClient<'_>) -> Milestone {
 
 // ── raise_dispute ───────────────────────────────────────────────────────────
 
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn raise_dispute_rejects_when_dispute_lock_is_held() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (client_addr, _, _, _, _, contract_id, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .temporary()
-            .set(&DataKey::DisputeFlag(0u32), &true);
-    });
-
-    let result = client.try_raise_dispute(&client_addr, &0u32, &dispute_reason_hash(&env));
-    assert_eq!(result, Err(Ok(Error::DisputeAlreadyRaised)));
-    assert_eq!(milestone_0(&client).status, MilestoneStatus::Pending);
-}
-
 // ── resolve_dispute ─────────────────────────────────────────────────────────
 
 #[test]

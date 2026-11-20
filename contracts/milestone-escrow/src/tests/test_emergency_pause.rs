@@ -1325,28 +1325,6 @@ fn test_claim_refund_rejections_leave_state_untouched() {
     }
 }
 
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn test_claim_refund_is_rejected_while_the_pause_lock_is_held() {
-    let env = test_env();
-    let (escrow, admin, client, freelancer) = initialised_escrow(&env);
-    escrow.emergency_pause(&client, &freelancer);
-
-    env.as_contract(&escrow.address, || {
-        env.storage().instance().set(&DataKey::Ep, &true);
-    });
-
-    assert_claim_rejected(
-        &env,
-        &escrow,
-        &admin,
-        1_000,
-        5_000,
-        5_000,
-        Error::EmergencyPauseInProgress,
-    );
-}
-
 // ── #533: checked arithmetic ────────────────────────────────────────────────
 
 #[test]

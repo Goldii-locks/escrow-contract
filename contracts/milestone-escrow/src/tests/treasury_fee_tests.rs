@@ -81,9 +81,12 @@ fn refunds_take_no_treasury_fee() {
         &0,
         &crate::test::dispute_reason_hash(&env),
     );
-    fx.escrow
-        .mock_all_auths()
-        .resolve_dispute(&fx.arbiter, &0, &false);
+    fx.escrow.mock_all_auths().resolve_dispute(
+        &fx.arbiter,
+        &0,
+        &false,
+        &crate::test::decision_hash(&env),
+    );
 
     let token = fx.token_client();
     assert_eq!(token.balance(&fx.client), 10_000);

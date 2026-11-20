@@ -6,7 +6,7 @@
 
 use crate::test::setup_funded_escrow;
 use crate::{DataKey, Error, MilestoneEscrowClient, PlatformFeeAllocation};
-use soroban_sdk::{testutils::Address as _, testutils::EnvTestConfig, vec, Address, Env};
+use soroban_sdk::{testutils::Address as _, vec, Address, Env};
 
 fn setup(env: &Env) -> (Address, MilestoneEscrowClient<'_>, Address) {
     env.mock_all_auths();
@@ -92,30 +92,4 @@ fn invalid_ratio_returns_invalid_ratio_and_does_not_mutate_locked_check() {
     let after = read_allocation(&env, &contract_id);
     assert_eq!(before, after);
     assert_eq!(env.to_ledger_snapshot(), ledger_before);
-}
-
-#[test]
-#[ignore = "storage reentrancy guard removed (#675)"]
-fn allocation_and_lock_reject_an_in_progress_allocation_without_mutation() {
-    let env = Env::new_with_config(EnvTestConfig {
-        capture_snapshot_at_drop: false,
-    });
-    let (contract_id, escrow, admin_addr) = setup(&env);
-    let before_lock = env.to_ledger_snapshot();
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Paused, &true);
-    });
-    let locked_snapshot = env.to_ledger_snapshot();
-
-    assert_eq!(
-        escrow.try_set_platform_fee_allocation(&admin_addr, &2_000_u32, &7_000_u32, &1_000_u32),
-        Err(Ok(Error::PlatformFeeAllocationInProgress))
-    );
-    assert_eq!(
-        escrow.try_lock_platform_fee_allocation(&admin_addr),
-        Err(Ok(Error::PlatformFeeAllocationInProgress))
-    );
-    assert_eq!(env.to_ledger_snapshot(), locked_snapshot);
-    assert_ne!(before_lock, locked_snapshot);
 }
