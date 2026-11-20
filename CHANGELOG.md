@@ -12,6 +12,17 @@ See "Verifying the deployed contract" in the README.
 WASM: build with `scripts/build-reproducible.sh <commit>`; CI publishes the
 hash for every commit in the `reproducible-wasm` job summary.
 
+### Changed
+
+- Admin-transfer and multisig-config proposals share one `Proposal` record
+  (`DataKey::Proposal(id)`) with a `ProposalKind` (`AdminTransfer(new_admin)` /
+  `MultisigConfig(signers_hash, threshold)`) and a `payload_hash` committing to
+  the ID and action (#996). New `get_proposal(id)`; `multisig_approve` and the
+  `execute_*` calls verify the hash, and execution checks the record against the
+  pending state (`ProposalPayloadMismatch`, 59). **Storage:** pre-upgrade
+  `AdminProposal(id)` records are not converted; a proposal pending across the
+  upgrade must be cancelled and re-proposed.
+
 ### Fixed
 
 - Admin-transfer and multisig-config proposals now expire `PROPOSAL_TTL_SECONDS`

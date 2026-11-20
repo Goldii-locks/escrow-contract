@@ -4,7 +4,7 @@
 //! recipient (issue #788).
 
 use super::*;
-use crate::{AdminProposalStatus, AdminTransferProposal, DataKey, Error};
+use crate::{DataKey, Error, Proposal, ProposalKind};
 use soroban_sdk::testutils::EnvTestConfig;
 use soroban_sdk::{vec, Address, Env};
 
@@ -29,18 +29,18 @@ fn multisig_setup(
     (admin, signers, client)
 }
 
-fn proposal(env: &Env, client: &MilestoneEscrowClient<'_>, id: u32) -> AdminTransferProposal {
+fn proposal(env: &Env, client: &MilestoneEscrowClient<'_>, id: u32) -> Proposal {
     env.as_contract(&client.address, || {
         env.storage()
             .persistent()
-            .get(&DataKey::AdminProposal(id))
+            .get(&DataKey::Proposal(id))
             .unwrap()
     })
 }
 
 fn proposal_exists(env: &Env, client: &MilestoneEscrowClient<'_>, id: u32) -> bool {
     env.as_contract(&client.address, || {
-        env.storage().persistent().has(&DataKey::AdminProposal(id))
+        env.storage().persistent().has(&DataKey::Proposal(id))
     })
 }
 
@@ -59,10 +59,11 @@ fn proposal_ids_are_sequential_and_never_reused() {
     assert_eq!(second, 2);
     // #995: the cancelled record is deleted, the new one is live.
     assert!(!proposal_exists(&env, &client, 1));
-    assert_eq!(
-        proposal(&env, &client, 2).status,
-        AdminProposalStatus::Pending
-    );
+    assert!(proposal_exists(&env, &client, 2));
+    assert!(matches!(
+        proposal(&env, &client, 2).kind,
+        ProposalKind::AdminTransfer(_)
+    ));
 }
 
 #[test]

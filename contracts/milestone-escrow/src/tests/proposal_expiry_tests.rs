@@ -51,7 +51,7 @@ fn setup(env: &Env) -> Setup<'_> {
 
 fn has_record(env: &Env, s: &Setup<'_>, id: u32) -> bool {
     env.as_contract(&s.escrow.address, || {
-        env.storage().persistent().has(&DataKey::AdminProposal(id))
+        env.storage().persistent().has(&DataKey::Proposal(id))
     })
 }
 
@@ -336,28 +336,4 @@ fn executed_and_cancelled_proposals_delete_only_their_own_record() {
     assert!(has_record(&env, &s, c2));
     s.escrow.cancel_multisig_config_proposal(&new_admin);
     assert!(!has_record(&env, &s, c2));
-}
-
-#[test]
-fn legacy_terminal_record_can_be_cleared_without_waiting() {
-    let env = test_env();
-    let s = setup(&env);
-    let id = s
-        .escrow
-        .propose_admin_transfer(&s.admin, &Address::generate(&env));
-    // Simulate a pre-#995 tombstone: cancelled status left behind.
-    env.as_contract(&s.escrow.address, || {
-        let mut r: crate::AdminTransferProposal = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AdminProposal(id))
-            .unwrap();
-        r.status = crate::AdminProposalStatus::Cancelled;
-        env.storage()
-            .persistent()
-            .set(&DataKey::AdminProposal(id), &r);
-    });
-    s.escrow
-        .clear_expired_proposal(&Address::generate(&env), &id);
-    assert!(!has_record(&env, &s, id));
 }

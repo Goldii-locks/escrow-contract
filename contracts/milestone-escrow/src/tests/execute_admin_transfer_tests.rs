@@ -212,14 +212,12 @@ fn execute_transfer_skips_redundant_admin_write_for_legacy_same_admin_proposal()
             },
         );
         env.storage().persistent().set(
-            &DataKey::AdminProposal(2),
-            &crate::AdminTransferProposal {
-                proposal_id: 2,
-                new_admin: old_admin.clone(),
-                created_at: env.ledger().timestamp(),
-                status: crate::AdminProposalStatus::Pending,
-                approvals_bitmap: 0,
-            },
+            &DataKey::Proposal(2),
+            &crate::MilestoneEscrow::new_proposal(
+                &env,
+                2,
+                crate::ProposalKind::AdminTransfer(old_admin.clone()),
+            ),
         );
     });
     client.multisig_approve(&s1, &2u32);

@@ -11,6 +11,7 @@
     not(test),
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contractmeta, contracttype, symbol_short, token,
     Address, BytesN, ContractExecutable, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
@@ -275,6 +276,10 @@ pub enum Error {
     /// `PROPOSAL_TTL_SECONDS`; it can no longer be approved or executed and
     /// may be removed with `clear_expired_proposal` (issue #995).
     ProposalExpired = 58,
+    /// A proposal record does not match the payload committed in its
+    /// `payload_hash`, or does not match the pending admin-transfer /
+    /// multisig-config state it claims to describe (issue #996).
+    ProposalPayloadMismatch = 59,
 }
 
 const MAX_REVISIONS: u32 = 3;
@@ -771,13 +776,18 @@ pub enum DataKey {
     /// atomically with the proposal record, so IDs move forward only, are
     /// never caller-chosen, and can never be reused to replay old approvals.
     AdminProposalCounter,
-    /// Persistent: the admin-transfer proposal record for
-    /// `AdminProposal(proposal_id)` (issue #785).  It binds the ID to the
-    /// `new_admin` it would install, its creation timestamp, its lifecycle
-    /// status, and the signer approval bitmap — so approvals collected for one
-    /// proposal are unusable against any other, and marking the record
-    /// terminal consumes both the ID and its approvals.
+    /// Persistent, **legacy** (issue #785): the pre-#996 admin-transfer proposal
+    /// record.  Never written any more and never decoded; it is only deleted
+    /// (blindly, by ID) when the matching proposal is cancelled or executed.
+    /// See `Proposal` for the migration note.
     AdminProposal(u32),
+    /// Persistent: the unified `Proposal` record for an admin-transfer or
+    /// multisig-config proposal (issue #996), keyed by its contract-assigned
+    /// ID.  It replaces `AdminProposal(id)`, whose shape could not describe a
+    /// signer-set change; see `Proposal` for the migration note.  A record
+    /// exists exactly while the proposal is live: it is deleted on execution,
+    /// cancellation and expiry-clearing (issue #995).
+    Proposal(u32),
     /// Persistent: the address that receives withheld tax, configured by the
     /// admin through `set_tax_recipient` (issue #788).
     /// `tax_withholding_deductions` refuses to record a withholding unless a
@@ -1840,36 +1850,53 @@ pub struct AdminTransferCancelledEvent {
     pub proposal_id: u32,
 }
 
-/// Lifecycle status of an admin-transfer proposal record (issue #785).
-///
-/// `Pending` is the only state that accepts approvals or can execute.
-/// `Executed` and `Cancelled` are terminal.  Since issue #995 the record is
-/// deleted on execution, cancellation and expiry-clearing; the variants remain
-/// only so records written before that change still decode (they are inert and
-/// removable with `clear_expired_proposal`).  An ID stays unusable after
-/// deletion because the proposal ID counter only ever moves forward.
+/// What a [`Proposal`] would do if executed (issue #996).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AdminProposalStatus {
-    Pending,
-    Executed,
-    Cancelled,
+pub enum ProposalKind {
+    /// Install `new_admin` as the contract admin.
+    AdminTransfer(Address),
+    /// Replace the multisig signer set and threshold.  `signers_hash` is the
+    /// SHA-256 of the XDR encoding of the ordered `Vec<Address>` of new
+    /// signers (order matters: approval bitmaps index it); the signer list
+    /// itself is held in `PendingMultiSigConfig` and verified against this
+    /// hash before execution.
+    MultisigConfig(BytesN<32>, u32),
 }
 
-/// Stored in `DataKey::AdminProposal(proposal_id)` by `propose_admin_transfer`
-/// (issue #785).  This record is what a multisig approval is bound to:
-/// `multisig_approve` only accepts an ID whose record exists and is still
-/// `Pending`, the approval bitmap lives inside the record beside the
-/// `new_admin` it would install, and `execute_admin_transfer` /
-/// `cancel_admin_transfer_proposal` mark it terminal and clear the bitmap, so
-/// neither the ID nor its approvals can ever be replayed.
+/// A pending admin-transfer or multisig-config proposal, stored in
+/// `DataKey::Proposal(proposal_id)` (issues #785, #995, #996).
+///
+/// This record is what a multisig approval is bound to: the approval bitmap
+/// lives beside the `kind` it authorises, and `payload_hash` commits to
+/// exactly that action *and this ID* —
+/// `sha256(xdr((Symbol("proposal"), proposal_id, kind)))` — so approvals
+/// collected for one proposal can never be applied to a different ID or
+/// payload.  `multisig_approve` and the `execute_*` entry points recompute the
+/// hash and reject a mismatch with `ProposalPayloadMismatch`.
+///
+/// A record exists exactly while its proposal is live.  It is deleted on
+/// execution, cancellation and expiry-clearing; the proposal events remain as
+/// the audit trail, and the monotonically increasing ID counter means a deleted
+/// ID can never be re-issued.
+///
+/// **Migration:** before issue #996 proposals were stored as
+/// a struct with `new_admin` and a status field under
+/// `DataKey::AdminProposal(id)`, a layout that
+/// cannot decode as this struct.  Those records are deliberately *not*
+/// converted: a legacy multisig-config proposal was indistinguishable from a
+/// transfer to the current admin, so guessing its kind would be unsafe.  A
+/// proposal still pending across the upgrade has no `Proposal` record, so it
+/// cannot be approved or executed (`InvalidStatus` / `NoPendingAdminTransfer`);
+/// the admin cancels it (which also deletes the legacy record) and proposes
+/// again.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminTransferProposal {
+pub struct Proposal {
     pub proposal_id: u32,
-    pub new_admin: Address,
+    pub kind: ProposalKind,
+    pub payload_hash: BytesN<32>,
     pub created_at: u64,
-    pub status: AdminProposalStatus,
     pub approvals_bitmap: u32,
 }
 
@@ -8251,7 +8278,7 @@ impl MilestoneEscrow {
     //    proposal.
     //
     // 3. **The bitmap lives inside the proposal record** —
-    //    `AdminProposal(proposal_id)`, written by `propose_admin_transfer`
+    //    `Proposal(proposal_id)`, written by `propose_admin_transfer`
     //    (issue #785) — beside the `new_admin`, creation timestamp and
     //    lifecycle status it belongs to.  That placement is what binds an
     //    approval to one specific live proposal instead of to a free-floating
@@ -8438,7 +8465,7 @@ impl MilestoneEscrow {
     /// * `DataKey::MultiSigConfig` (persistent, issue #772) — the registered signers
     ///   (which also provide the membership check and the signer's bit index)
     ///   and the approval threshold, in one consolidated entry (issue #456).
-    /// * `DataKey::AdminProposal(proposal_id)` (persistent) — the proposal
+    /// * `DataKey::Proposal(proposal_id)` (persistent) — the proposal
     ///   record that owns the approval bitmap (issue #785).
     ///
     /// The former `DataKey::Job` metadata read and cross-contract token
@@ -8446,7 +8473,7 @@ impl MilestoneEscrow {
     /// tokens, so an unfunded escrow is a legitimate place to collect
     /// signatures and this call no longer needs either.
     ///
-    /// Keys this call writes: only `AdminProposal(proposal_id)`, and only
+    /// Keys this call writes: only `Proposal(proposal_id)`, and only
     /// when the signer's bit is not already set.  A duplicate approval cannot
     /// change the bitmap, so it writes no contract storage key at all instead
     /// of re-writing the record; the first approval from each signer writes
@@ -8506,14 +8533,14 @@ impl MilestoneEscrow {
         // membership check and the bitmap read is gone.  Recording signer
         // intent moves no tokens, so approvals are accepted on an unfunded
         // escrow; `execute_admin_transfer` still cannot conjure funds.
-        let mut record: AdminTransferProposal = env
+        let mut record: Proposal = env
             .storage()
             .persistent()
-            .get(&DataKey::AdminProposal(proposal_id))
+            .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::NoPendingAdminTransfer)?;
-        if record.status != AdminProposalStatus::Pending {
-            return Err(Error::InvalidStatus);
-        }
+        // Issue #996: the approval applies to this ID *and* the payload it
+        // committed to; a record whose hash no longer matches is refused.
+        Self::verify_payload_hash(&env, &record)?;
         // Issue #995: an expired proposal can no longer gather approvals.
         if Self::proposal_is_expired(&env, &record) {
             return Err(Error::ProposalExpired);
@@ -8552,7 +8579,7 @@ impl MilestoneEscrow {
             record.approvals_bitmap = bitmap.checked_add(mask).ok_or(Error::ArithmeticOverflow)?;
             env.storage()
                 .persistent()
-                .set(&DataKey::AdminProposal(proposal_id), &record);
+                .set(&DataKey::Proposal(proposal_id), &record);
         }
         // Re-read after the conditional write so the state returned (and the
         // event) always carries the bitmap as stored, new bit included.
@@ -8585,7 +8612,7 @@ impl MilestoneEscrow {
     ///
     /// # Returns
     /// A `MultiSigApprovalState` built from the persistent `MultiSigConfig`
-    /// (its threshold field) and the `AdminProposal(proposal_id)` record's
+    /// (its threshold field) and the `Proposal(proposal_id)` record's
     /// approval bitmap (issue #785).  An ID with no record reads as an empty
     /// bitmap (`approvals == 0`), and so does an executed or cancelled
     /// proposal — its record keeps the ID observable while its cleared bitmap
@@ -8624,10 +8651,10 @@ impl MilestoneEscrow {
         // whose record never existed (or whose approvals were collected before
         // the upgrade) reads as zero, so approvals are re-collected against a
         // freshly proposed record.
-        let record: Option<AdminTransferProposal> = env
+        let record: Option<Proposal> = env
             .storage()
             .persistent()
-            .get(&DataKey::AdminProposal(proposal_id));
+            .get(&DataKey::Proposal(proposal_id));
         let bitmap: u32 = record.map(|r| r.approvals_bitmap).unwrap_or(0);
 
         let approvals = bitmap.count_ones();
@@ -8712,7 +8739,7 @@ impl MilestoneEscrow {
     /// proposal, so no caller can choose an ID to collide with approvals
     /// already collected elsewhere, and an ID — along with the record and
     /// approvals it consumed — can never be reused.  Both the full proposal
-    /// record (`DataKey::AdminProposal(id)`, holding `new_admin`, the
+    /// record (`DataKey::Proposal(id)`, holding the proposal `kind`, its
     /// creation timestamp, the `Pending` status, and the approval bitmap) and
     /// the `PendingAdminTransfer` lock/mirror are written atomically.
     ///
@@ -8763,7 +8790,8 @@ impl MilestoneEscrow {
         // release profile's overflow checks, and the counter write lands in
         // the same invocation as the two record writes below, so the assigned
         // ID can never be handed out twice.
-        let proposal_id = Self::open_proposal_record(&env, &new_admin)?;
+        let proposal_id =
+            Self::open_proposal_record(&env, ProposalKind::AdminTransfer(new_admin.clone()))?;
         env.storage().persistent().set(
             &DataKey::PendingAdminTransfer,
             &PendingAdminTransfer {
@@ -8784,13 +8812,12 @@ impl MilestoneEscrow {
         Ok(proposal_id)
     }
 
-    /// Assign the next proposal ID and open its `Pending` record with an
-    /// empty approval bitmap (issue #785).  `checked_add` reports an exhausted
-    /// counter as `ArithmeticOverflow`, and the counter and record are written
-    /// in the same invocation, so an ID is never handed out twice.  `subject`
-    /// is stored as the record's `new_admin`: the incoming admin for a
-    /// transfer, the proposing admin for a signer-set change.
-    fn open_proposal_record(env: &Env, subject: &Address) -> Result<u32, Error> {
+    /// Assign the next proposal ID and open its record with an empty approval
+    /// bitmap (issues #785, #996).  `checked_add` reports an exhausted counter
+    /// as `ArithmeticOverflow`, and the counter and record are written in the
+    /// same invocation, so an ID is never handed out twice.  The record's
+    /// `payload_hash` commits to `kind` and the new ID.
+    fn open_proposal_record(env: &Env, kind: ProposalKind) -> Result<u32, Error> {
         let persistent = env.storage().persistent();
         let proposal_id: u32 = persistent
             .get(&DataKey::AdminProposalCounter)
@@ -8799,16 +8826,87 @@ impl MilestoneEscrow {
             .ok_or(Error::ArithmeticOverflow)?;
         persistent.set(&DataKey::AdminProposalCounter, &proposal_id);
         persistent.set(
-            &DataKey::AdminProposal(proposal_id),
-            &AdminTransferProposal {
-                proposal_id,
-                new_admin: subject.clone(),
-                created_at: env.ledger().timestamp(),
-                status: AdminProposalStatus::Pending,
-                approvals_bitmap: 0,
-            },
+            &DataKey::Proposal(proposal_id),
+            &Self::new_proposal(env, proposal_id, kind),
         );
         Ok(proposal_id)
+    }
+
+    /// Canonical commitment to a proposal's action: SHA-256 of the XDR
+    /// encoding of `(Symbol("proposal"), proposal_id, kind)`.  Soroban XDR for
+    /// `contracttype` values is deterministic (enum variant tag, then fields in
+    /// order), so equal inputs give equal hashes and any change to the ID, the
+    /// kind, or its fields changes the hash.
+    fn payload_hash(env: &Env, proposal_id: u32, kind: &ProposalKind) -> BytesN<32> {
+        let payload = (Symbol::new(env, "proposal"), proposal_id, kind.clone()).to_xdr(env);
+        env.crypto().sha256(&payload).to_bytes()
+    }
+
+    /// SHA-256 of the XDR encoding of an ordered signer list, as committed in
+    /// `ProposalKind::MultisigConfig`.
+    fn signers_hash(env: &Env, signers: &Vec<Address>) -> BytesN<32> {
+        env.crypto().sha256(&signers.clone().to_xdr(env)).to_bytes()
+    }
+
+    pub(crate) fn new_proposal(env: &Env, proposal_id: u32, kind: ProposalKind) -> Proposal {
+        Proposal {
+            proposal_id,
+            payload_hash: Self::payload_hash(env, proposal_id, &kind),
+            kind,
+            created_at: env.ledger().timestamp(),
+            approvals_bitmap: 0,
+        }
+    }
+
+    /// Reject a record whose stored hash does not commit to its own ID and
+    /// kind (issue #996).
+    fn verify_payload_hash(env: &Env, record: &Proposal) -> Result<(), Error> {
+        if record.payload_hash != Self::payload_hash(env, record.proposal_id, &record.kind) {
+            return Err(Error::ProposalPayloadMismatch);
+        }
+        Ok(())
+    }
+
+    /// Look up the proposal a pending lock points at and check that it is
+    /// intact and describes exactly `expected` (issue #996).  A missing record
+    /// (a legacy pre-#996 proposal) is `InvalidStatus`.
+    fn load_live_proposal(
+        env: &Env,
+        proposal_id: u32,
+        expected: &ProposalKind,
+    ) -> Result<Proposal, Error> {
+        let record: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::InvalidStatus)?;
+        if record.proposal_id != proposal_id || &record.kind != expected {
+            return Err(Error::ProposalPayloadMismatch);
+        }
+        Self::verify_payload_hash(env, &record)?;
+        Ok(record)
+    }
+
+    /// Delete a proposal's record plus any pre-#996 `AdminProposal(id)` record
+    /// for the same ID.
+    fn delete_proposal(env: &Env, proposal_id: u32) {
+        let persistent = env.storage().persistent();
+        persistent.remove(&DataKey::Proposal(proposal_id));
+        persistent.remove(&DataKey::AdminProposal(proposal_id));
+    }
+
+    /// The proposal with `proposal_id`, if it is still live (issue #996).
+    ///
+    /// `kind` says what executing it would do: the incoming admin for an
+    /// `AdminTransfer`, or the `signers_hash` (SHA-256 of the XDR of the
+    /// ordered signer list) and threshold for a `MultisigConfig`.
+    /// `payload_hash` commits to the ID and kind.  Returns `None` once the
+    /// proposal has executed, been cancelled, or been cleared as expired.
+    /// Read-only; requires no authorisation.
+    pub fn get_proposal(env: Env, proposal_id: u32) -> Option<Proposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
     }
 
     /// Execute a pending admin transfer once its multisig proposal has
@@ -8847,14 +8945,12 @@ impl MilestoneEscrow {
         // `new_admin` they authorize installing, so approvals collected for
         // any other proposal can never satisfy this one, and a legacy pending
         // entry with no record (pre-upgrade) cannot be executed at all.
-        let record: AdminTransferProposal = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AdminProposal(pending.proposal_id))
-            .ok_or(Error::InvalidStatus)?;
-        if record.status != AdminProposalStatus::Pending {
-            return Err(Error::InvalidStatus);
-        }
+        // Issue #996: the record must describe exactly the pending transfer.
+        let record = Self::load_live_proposal(
+            &env,
+            pending.proposal_id,
+            &ProposalKind::AdminTransfer(pending.new_admin.clone()),
+        )?;
         // Issue #995: approvals do not outlive the proposal.
         if Self::proposal_is_expired(&env, &record) {
             return Err(Error::ProposalExpired);
@@ -8889,9 +8985,7 @@ impl MilestoneEscrow {
         // counter only moves forward and `multisig_approve` /
         // `execute_*` reject an ID with no record; the `adminexc` event keeps
         // the history.
-        env.storage()
-            .persistent()
-            .remove(&DataKey::AdminProposal(pending.proposal_id));
+        Self::delete_proposal(&env, pending.proposal_id);
 
         env.events().publish(
             (symbol_short!("adminexc"),),
@@ -8934,9 +9028,7 @@ impl MilestoneEscrow {
         // written before the record existed has nothing to delete — it is
         // simply cleared so the admin can re-propose under a fresh ID.  The
         // `admincxl` event keeps the history.
-        env.storage()
-            .persistent()
-            .remove(&DataKey::AdminProposal(pending.proposal_id));
+        Self::delete_proposal(&env, pending.proposal_id);
 
         env.events().publish(
             (symbol_short!("admincxl"),),
@@ -8996,7 +9088,10 @@ impl MilestoneEscrow {
             return Err(Error::MultiSigConfigPending);
         }
 
-        let proposal_id = Self::open_proposal_record(&env, &admin)?;
+        let proposal_id = Self::open_proposal_record(
+            &env,
+            ProposalKind::MultisigConfig(Self::signers_hash(&env, &new_signers), new_threshold),
+        )?;
         persistent.set(
             &DataKey::PendingMultiSigConfig,
             &PendingMultiSigConfig {
@@ -9039,12 +9134,16 @@ impl MilestoneEscrow {
         let MultiSigConfig(old_signers, old_threshold) =
             Self::load_multisig_config(&env).ok_or(Error::NotInitialized)?;
 
-        let record: AdminTransferProposal = persistent
-            .get(&DataKey::AdminProposal(pending.proposal_id))
-            .ok_or(Error::InvalidStatus)?;
-        if record.status != AdminProposalStatus::Pending {
-            return Err(Error::InvalidStatus);
-        }
+        // Issue #996: the record must commit to exactly the signer set and
+        // threshold held in `PendingMultiSigConfig`.
+        let record = Self::load_live_proposal(
+            &env,
+            pending.proposal_id,
+            &ProposalKind::MultisigConfig(
+                Self::signers_hash(&env, &pending.signers),
+                pending.threshold,
+            ),
+        )?;
         // Issue #995: approvals do not outlive the proposal.
         if Self::proposal_is_expired(&env, &record) {
             return Err(Error::ProposalExpired);
@@ -9066,15 +9165,15 @@ impl MilestoneEscrow {
         persistent.remove(&DataKey::PendingMultiSigConfig);
 
         // Delete the consumed record (issue #995); `msigcfg` keeps the history.
-        persistent.remove(&DataKey::AdminProposal(pending.proposal_id));
+        Self::delete_proposal(&env, pending.proposal_id);
 
         // Approvals for a pending admin transfer were given by the old signer
         // set; their bits would name different addresses now.
         if let Some(transfer) =
             persistent.get::<_, PendingAdminTransfer>(&DataKey::PendingAdminTransfer)
         {
-            let key = DataKey::AdminProposal(transfer.proposal_id);
-            if let Some(mut transfer_record) = persistent.get::<_, AdminTransferProposal>(&key) {
+            let key = DataKey::Proposal(transfer.proposal_id);
+            if let Some(mut transfer_record) = persistent.get::<_, Proposal>(&key) {
                 if transfer_record.approvals_bitmap != 0 {
                     transfer_record.approvals_bitmap = 0;
                     persistent.set(&key, &transfer_record);
@@ -9112,7 +9211,7 @@ impl MilestoneEscrow {
         persistent.remove(&DataKey::PendingMultiSigConfig);
 
         // Delete the record (issue #995); `msigcfgx` keeps the history.
-        persistent.remove(&DataKey::AdminProposal(pending.proposal_id));
+        Self::delete_proposal(&env, pending.proposal_id);
 
         env.events().publish(
             (symbol_short!("msigcfgx"),),
@@ -9127,7 +9226,7 @@ impl MilestoneEscrow {
 
     /// Whether `record` is older than `PROPOSAL_TTL_SECONDS` (issue #995).
     /// Live up to and including `created_at + TTL`; expired one second later.
-    fn proposal_is_expired(env: &Env, record: &AdminTransferProposal) -> bool {
+    fn proposal_is_expired(env: &Env, record: &Proposal) -> bool {
         env.ledger().timestamp() > record.created_at.saturating_add(PROPOSAL_TTL_SECONDS)
     }
 
@@ -9139,9 +9238,9 @@ impl MilestoneEscrow {
     /// Only the record for exactly `proposal_id` is deleted, and the
     /// `PendingAdminTransfer` / `PendingMultiSigConfig` lock is cleared only
     /// when it still points at that same ID, so a newer proposal or an
-    /// unrelated ID is never affected.  A leftover `Executed`/`Cancelled`
-    /// record from before issue #995 is inert and may also be removed here
-    /// without waiting for expiry.
+    /// unrelated ID is never affected.  Pre-#996 `AdminProposal(id)` records
+    /// are not touched here; the admin clears those by cancelling (see
+    /// `Proposal`).
     ///
     /// # Errors
     /// * `NotInitialized`         – Contract not initialised.
@@ -9157,12 +9256,9 @@ impl MilestoneEscrow {
         caller.require_auth();
 
         let persistent = env.storage().persistent();
-        let key = DataKey::AdminProposal(proposal_id);
-        let record: AdminTransferProposal =
-            persistent.get(&key).ok_or(Error::NoPendingAdminTransfer)?;
-        if record.status == AdminProposalStatus::Pending
-            && !Self::proposal_is_expired(&env, &record)
-        {
+        let key = DataKey::Proposal(proposal_id);
+        let record: Proposal = persistent.get(&key).ok_or(Error::NoPendingAdminTransfer)?;
+        if !Self::proposal_is_expired(&env, &record) {
             return Err(Error::InvalidStatus);
         }
 

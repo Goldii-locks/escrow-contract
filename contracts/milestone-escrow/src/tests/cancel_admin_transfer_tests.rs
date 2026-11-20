@@ -254,7 +254,7 @@ fn test_cancel_admin_transfer_footprint_full_storage_snapshot() {
     // unchanged.
     assert_eq!(persistent_after.len(), persistent_before.len() - 2);
     assert!(persistent_after.get(pending_key).is_none());
-    let record_key: Val = DataKey::AdminProposal(1).into_val(&env);
+    let record_key: Val = DataKey::Proposal(1).into_val(&env);
     assert!(persistent_before.get(record_key).is_some());
     assert!(persistent_after.get(record_key).is_none());
     let mut expected_persistent = persistent_before.clone();

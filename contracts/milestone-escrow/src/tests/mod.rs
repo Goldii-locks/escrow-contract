@@ -110,6 +110,7 @@ mod platform_fee_allocation_no_mutation_tests;
 mod platform_fee_split_no_mutation_tests;
 mod platform_fee_split_overflow_tests;
 mod proposal_expiry_tests;
+mod proposal_kind_tests;
 mod propose_admin_transfer_footprint_tests;
 mod pull_withdraw_tests;
 mod pure_calculation_no_events_tests;
@@ -328,14 +329,21 @@ pub(crate) fn setup_unfunded_escrow(
 pub(crate) fn seed_admin_proposal(env: &Env, contract_id: &Address, proposal_id: u32) {
     env.as_contract(contract_id, || {
         env.storage().persistent().set(
-            &DataKey::AdminProposal(proposal_id),
-            &crate::AdminTransferProposal {
+            &DataKey::Proposal(proposal_id),
+            &crate::MilestoneEscrow::new_proposal(
+                env,
                 proposal_id,
-                new_admin: Address::generate(env),
-                created_at: env.ledger().timestamp(),
-                status: crate::AdminProposalStatus::Pending,
-                approvals_bitmap: 0,
-            },
+                // Describe the pending transfer for this ID when there is one
+                // (execution checks the record against it, #996).
+                crate::ProposalKind::AdminTransfer(
+                    env.storage()
+                        .persistent()
+                        .get::<_, crate::PendingAdminTransfer>(&DataKey::PendingAdminTransfer)
+                        .filter(|p| p.proposal_id == proposal_id)
+                        .map(|p| p.new_admin)
+                        .unwrap_or_else(|| Address::generate(env)),
+                ),
+            ),
         );
     });
 }
@@ -10069,20 +10077,13 @@ fn test_multisig_approve_illegal_source_state_fails() {
     assert_eq!(state.approvals, 0);
     assert_eq!(state.bitmap, 0);
 
-    // A consumed proposal is also an illegal source state.
+    // A consumed proposal is deleted (#995), so it is an illegal source state
+    // too.
     env.as_contract(&client.address, || {
-        let mut record: crate::AdminTransferProposal = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AdminProposal(51))
-            .unwrap();
-        record.status = crate::AdminProposalStatus::Cancelled;
-        env.storage()
-            .persistent()
-            .set(&DataKey::AdminProposal(51), &record);
+        env.storage().persistent().remove(&DataKey::Proposal(51));
     });
     let result = client.try_multisig_approve(&signer1, &51u32);
-    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    assert_eq!(result, Err(Ok(Error::NoPendingAdminTransfer)));
 }
 
 /// Admin: unauthorised caller cannot initialise multisig, and no storage

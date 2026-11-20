@@ -124,7 +124,7 @@ fn stored_bitmap(env: &Env, contract_id: &Address, proposal_id: u32) -> Option<u
     env.as_contract(contract_id, || {
         env.storage()
             .persistent()
-            .get::<_, crate::AdminTransferProposal>(&DataKey::AdminProposal(proposal_id))
+            .get::<_, crate::Proposal>(&DataKey::Proposal(proposal_id))
             .map(|record| record.approvals_bitmap)
             .filter(|bitmap| *bitmap != 0)
     })
@@ -135,7 +135,7 @@ fn ensure_proposal(env: &Env, escrow: &MilestoneEscrowClient<'_>, proposal_id: u
     let exists = env.as_contract(&escrow.address, || {
         env.storage()
             .persistent()
-            .has(&DataKey::AdminProposal(proposal_id))
+            .has(&DataKey::Proposal(proposal_id))
     });
     if !exists {
         crate::tests::seed_admin_proposal(env, &escrow.address, proposal_id);

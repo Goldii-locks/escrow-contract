@@ -4,7 +4,7 @@
 //! # What this call touches
 //! `multisig_approve` reads the registered signer set and the approval
 //! threshold (the consolidated `MultiSigConfig`) and the proposal record
-//! `AdminProposal(proposal_id)` (**persistent**, issue #785), which holds the
+//! `Proposal(proposal_id)` (**persistent**, issues #785/#996), which holds the
 //! approval bitmap — one bit per signer index.  Since issue #787 it no longer
 //! reads the job metadata or the token balance.
 //!
@@ -140,7 +140,7 @@ fn stored_bitmap(env: &Env, contract_id: &Address, proposal_id: u32) -> u32 {
     env.as_contract(contract_id, || {
         env.storage()
             .persistent()
-            .get::<_, crate::AdminTransferProposal>(&DataKey::AdminProposal(proposal_id))
+            .get::<_, crate::Proposal>(&DataKey::Proposal(proposal_id))
             .map(|record| record.approvals_bitmap)
             .unwrap_or(0)
     })
@@ -151,7 +151,7 @@ fn bitmap_ttl(env: &Env, contract_id: &Address, proposal_id: u32) -> u32 {
     env.as_contract(contract_id, || {
         env.storage()
             .persistent()
-            .get_ttl(&DataKey::AdminProposal(proposal_id))
+            .get_ttl(&DataKey::Proposal(proposal_id))
     })
 }
 

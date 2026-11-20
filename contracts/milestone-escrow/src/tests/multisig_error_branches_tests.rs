@@ -535,7 +535,7 @@ fn approval_bitmap(env: &Env, contract_id: &Address, proposal_id: u32) -> Option
     env.as_contract(contract_id, || {
         env.storage()
             .persistent()
-            .get::<_, crate::AdminTransferProposal>(&DataKey::AdminProposal(proposal_id))
+            .get::<_, crate::Proposal>(&DataKey::Proposal(proposal_id))
             .map(|record| record.approvals_bitmap)
             .filter(|bitmap| *bitmap != 0)
     })
