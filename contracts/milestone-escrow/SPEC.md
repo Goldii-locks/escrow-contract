@@ -115,6 +115,10 @@ true while either is set. `assert_not_paused` rejects with `Paused` while
 `is_paused` holds; `ensure_not_paused` does the same and also rejects with
 `EscrowLocked` while `CancelLock` is set. The emergency refund endpoints
 require `is_paused` instead (`NotPaused` otherwise).
+User-facing state changes, including `extend_milestone_deadline` and
+`rotate_freelancer`, must use `ensure_not_paused` so they also reject under a
+cancel lock. The remaining `assert_not_paused` callers are recovery paths that
+intentionally stay available during an emergency pause / cancel lock.
 
 ## Payouts
 
@@ -148,7 +152,7 @@ topic.
 | Entry point | Signer(s) | Guards | Source status | Target status | Token movement | Event |
 |---|---|---|---|---|---|---|
 | `mark_delivered` | freelancer | `ensure_not_paused`; funded; accepted by both | `Pending` | `Delivered` | none | `deliver` |
-| `extend_milestone_deadline` | client | `assert_not_paused`; `extra_seconds > 0` | `Delivered`, `PartiallyReleased` | unchanged | none | `extend` |
+| `extend_milestone_deadline` | client | `ensure_not_paused`; `extra_seconds > 0` | `Delivered`, `PartiallyReleased` | unchanged | none | `extend` |
 | `approve_partial` | client | `ensure_not_paused`; funded; `0 < amount <= remaining` | `Delivered`, `PartiallyReleased` | `PartiallyReleased`, or `Released` when fully paid | → freelancer, `amount` | `approve` |
 | `approve_milestone` | client | `ensure_not_paused`; funded | `Delivered` | `Released` | → freelancer, remaining | `approve` |
 | `claim_auto_release` | freelancer | `ensure_not_paused`; auto-release deadline passed | `Delivered` | `Released` | → freelancer, remaining | `claim` |

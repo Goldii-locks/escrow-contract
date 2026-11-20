@@ -106,6 +106,7 @@ mod overdue_reclaim_tests;
 mod partial_approval_completion_tests;
 mod partial_auto_release_tests;
 mod payment_streaming_consent_arithmetic_tests;
+mod pause_guard_regression_tests;
 mod platform_fee_allocation_no_mutation_tests;
 mod platform_fee_split_no_mutation_tests;
 mod platform_fee_split_overflow_tests;
