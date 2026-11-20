@@ -177,6 +177,11 @@ Either party can append up to `MAX_DISPUTE_EVIDENCE_ENTRIES` (10) hashes with
 admin-overriding a dispute deletes the record, so the evidence trail never
 outlives the dispute it belongs to.
 
+When `escalate_dispute` restores a `Delivered` milestone, it preserves the
+original `delivered_at` timestamp. The original auto-release deadline therefore
+continues to apply; escalating a dispute does not restart or extend the review
+window (#979).
+
 Both closing entry points — `resolve_dispute` and
 `apply_dispute_arbitration_split` — additionally take a 32-byte
 `decision_hash`: a commitment to the arbiter's written decision (#1015). The
