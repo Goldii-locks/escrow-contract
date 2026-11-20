@@ -31,10 +31,10 @@ jobs:
         # soroban-sdk 28 refuses to build under a bare `cargo build` and
         # requires stellar-cli v25.2.0+. The action installs a prebuilt binary;
         # pin to a commit SHA so a retagged release cannot change CI output.
-        uses: stellar/stellar-cli@c0f4d0da891bbf214c08b8c5035ae6db80e9a3bd # v28.1.0
+        uses: stellar/stellar-cli@f2a7b74175c34585f3b30a1abf42a2d41cbcc390 # v30.0.1
         with:
           # A SHA ref carries no version, so name the release to download.
-          version: "28.1.0"
+          version: "30.0.1"
 
       - name: Cache cargo
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -164,10 +164,10 @@ jobs:
           targets: wasm32v1-none
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@c0f4d0da891bbf214c08b8c5035ae6db80e9a3bd # v28.1.0
+        uses: stellar/stellar-cli@f2a7b74175c34585f3b30a1abf42a2d41cbcc390 # v30.0.1
         with:
           # A SHA ref carries no version, so name the release to download.
-          version: "28.1.0"
+          version: "30.0.1"
 
       - name: Cache cargo
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
