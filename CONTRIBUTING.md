@@ -39,6 +39,27 @@ bash scripts/e2e.sh
 It requires `cargo`, `docker`, and the `stellar` CLI. The same script runs
 nightly (and on demand) via the `E2E` GitHub Actions workflow.
 
+## Ignored tests
+
+Every `#[ignore]` must carry a reason that cites a tracking issue as `#<number>`,
+e.g. `#[ignore = "blocked on #123: ..."]`. `scripts/check-ignored-tests.py`
+(run in CI) scans `contracts/**/*.rs` and, for each cited number, asks the
+GitHub API (`GET /repos/{GITHUB_REPOSITORY}/issues/{n}`) for its state. It
+fails when:
+
+- the `#[ignore]` has no reason, or the reason cites no `#<number>`;
+- none of the cited numbers is an **open issue** (closed issues, nonexistent
+  numbers and pull requests do not count).
+
+Verification failures never pass silently: network errors, unexpected HTTP
+statuses and exhausted rate limits make the script exit `2`. Rate-limit and 5xx
+responses are retried (honouring `Retry-After` / `X-RateLimit-Reset`) only when
+the wait is at most 60 seconds. Each issue is looked up individually, so no
+pagination is needed. Set `GITHUB_TOKEN` locally for a higher rate limit;
+`GITHUB_REPOSITORY` overrides the repository (default `Goldii-locks/escrow-contract`).
+When the underlying bug is fixed, remove the `#[ignore]` rather than closing
+the issue first. Offline unit tests: `python3 scripts/test_check_ignored_tests.py`.
+
 ## Documentation requirements
 
 Three references are checked in CI and must stay in sync with the contract:

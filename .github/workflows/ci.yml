@@ -51,6 +51,13 @@ jobs:
       - name: Check for orphaned test modules
         run: python3 scripts/check-orphan-test-modules.py
 
+      - name: Check ignored tests cite an open issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/test_check_ignored_tests.py
+          python3 scripts/check-ignored-tests.py
+
       - name: Format check
         run: cargo fmt --manifest-path contracts/milestone-escrow/Cargo.toml --check
 

@@ -540,7 +540,6 @@ proptest! {
 }
 
 #[test]
-#[ignore = "catches known issue on main: admin_override_refund sets released_amount = amount even on client refund"]
 fn catches_refund_accounting_through_released_amount_issue() {
     let env = Env::new_with_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
@@ -562,10 +561,22 @@ fn catches_refund_accounting_through_released_amount_issue() {
 
     assert_eq!(token_client.balance(&freelancer_addr), 400);
 
+    // admin_override_refund only intervenes on a genuinely blocked milestone
+    // (Disputed, or an active cancel lock), so raise a dispute first.
+    client.raise_dispute(&client_addr, &0u32, &dispute_reason_hash(&env));
+    assert_eq!(
+        client.get_job().milestones.get(0).unwrap().status,
+        MilestoneStatus::Disputed
+    );
+    let client_balance_before = token_client.balance(&client_addr);
+
     client.admin_override_refund(&admin_addr, &0u32);
 
     let milestone = client.get_job().milestones.get(0).unwrap();
-    let refunded_to_client = 600i128;
+    let refunded_to_client = token_client.balance(&client_addr) - client_balance_before;
+    assert_eq!(refunded_to_client, 600i128);
+    assert_eq!(milestone.status, MilestoneStatus::Refunded);
+    assert_eq!(milestone.released_amount, 400i128);
 
     assert!(
         milestone.released_amount + refunded_to_client <= milestone.amount,
