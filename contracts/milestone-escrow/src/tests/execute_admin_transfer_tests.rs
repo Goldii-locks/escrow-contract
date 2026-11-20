@@ -136,7 +136,7 @@ fn execute_transfer_rejects_when_threshold_not_met() {
 
     // Admin unchanged and pending transfer still present.
     let old_admin: Address = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin).unwrap()
+        env.storage().instance().get(&DataKey::Admin).unwrap()
     });
     assert_ne!(old_admin, new_admin);
 
@@ -177,7 +177,7 @@ fn execute_transfer_swaps_admin_and_emits_event() {
 
     // Admin key swapped to new_admin.
     let current_admin: Address = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin).unwrap()
+        env.storage().instance().get(&DataKey::Admin).unwrap()
     });
     assert_eq!(current_admin, new_admin);
     assert_ne!(current_admin, old_admin);

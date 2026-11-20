@@ -34,6 +34,7 @@ mod admin_tax_withholding_guards_tests;
 mod admin_transfer_target_tests;
 mod approve_milestones_tests;
 mod arbiter_fee_tests;
+mod arbitration_split_consistency_proptests;
 mod arbitration_split_event_tests;
 mod auth_requirements_tests;
 mod cancel_admin_transfer_tests;
@@ -108,6 +109,7 @@ mod platform_fee_split_no_mutation_tests;
 mod platform_fee_split_overflow_tests;
 mod propose_admin_transfer_footprint_tests;
 mod pull_withdraw_tests;
+mod pure_calculation_no_events_tests;
 mod ratio_split_boundary_tests;
 mod read_path_tests;
 mod refund_released_amount_tests;
@@ -3720,14 +3722,14 @@ fn test_multisig_lock_does_not_write_persistent_storage() {
     // DataKey::Admin in persistent storage must already be present (written by
     // initialize) and must remain unchanged after multisig_lock.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     client.multisig_lock(&admin_addr);
 
     // Persistent Admin must be unchanged — multisig_lock must not touch it.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -10579,7 +10581,7 @@ fn test_milestone_time_extensions_overflow_fails() {
 // dispute_arbitration_split — validation test suite (#186)
 // ============================================================================
 
-/// Happy path — 50/50 split: freelancer_bps=5000, total=10_000.
+/// Happy path — 50/50 split: client_refund_bps=5000, total=10_000.
 /// freelancer_payout=5_000, client_refund=5_000, bps echo correct.
 #[test]
 fn test_dispute_arbitration_split_50_50() {
@@ -10596,7 +10598,7 @@ fn test_dispute_arbitration_split_50_50() {
     assert_eq!(result.freelancer_payout + result.client_refund, 10_000);
 }
 
-/// Full release — freelancer_bps=10_000: freelancer gets everything.
+/// Full release — client_refund_bps=0: freelancer gets everything.
 #[test]
 fn test_dispute_arbitration_split_full_freelancer() {
     let env = Env::default();
@@ -10604,14 +10606,14 @@ fn test_dispute_arbitration_split_full_freelancer() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let result = client.dispute_arbitration_split(&50_000_i128, &10_000u32);
+    let result = client.dispute_arbitration_split(&50_000_i128, &0u32);
     assert_eq!(result.freelancer_payout, 50_000);
     assert_eq!(result.client_refund, 0);
     assert_eq!(result.freelancer_payout_bps, 10_000);
     assert_eq!(result.client_refund_bps, 0);
 }
 
-/// Full refund — freelancer_bps=0: client gets everything back.
+/// Full refund — client_refund_bps=10_000: client gets everything back.
 #[test]
 fn test_dispute_arbitration_split_full_client_refund() {
     let env = Env::default();
@@ -10619,15 +10621,15 @@ fn test_dispute_arbitration_split_full_client_refund() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let result = client.dispute_arbitration_split(&50_000_i128, &0u32);
+    let result = client.dispute_arbitration_split(&50_000_i128, &10_000u32);
     assert_eq!(result.freelancer_payout, 0);
     assert_eq!(result.client_refund, 50_000);
     assert_eq!(result.freelancer_payout_bps, 0);
     assert_eq!(result.client_refund_bps, 10_000);
 }
 
-/// Round-nearest: odd amount 101 at 5000 bps → round_nearest(101 × 5000/10000)
-/// = round_nearest(50.5) = 51 freelancer, 50 client.
+/// Floor rounding: odd amount 101 at 5000 bps → client = floor(101 × 5000/10000)
+/// = 50, freelancer receives the 51 remainder — matching the payout path.
 #[test]
 fn test_dispute_arbitration_split_rounding_nearest() {
     let env = Env::default();
@@ -10721,7 +10723,7 @@ fn test_dispute_arbitration_split_total_always_preserved() {
     }
 }
 
-/// Exact 1 bps on 10_000 total: round_nearest(10_000 × 1 / 10_000) = 1.
+/// Freelancer receives 1 stroop when the client refund is 9_999 bps.
 #[test]
 fn test_dispute_arbitration_split_one_bps() {
     let env = Env::default();
@@ -10729,7 +10731,7 @@ fn test_dispute_arbitration_split_one_bps() {
     let contract_id = env.register(MilestoneEscrow, ());
     let client = MilestoneEscrowClient::new(&env, &contract_id);
 
-    let result = client.dispute_arbitration_split(&10_000_i128, &1u32);
+    let result = client.dispute_arbitration_split(&10_000_i128, &9_999u32);
     assert_eq!(result.freelancer_payout, 1);
     assert_eq!(result.client_refund, 9_999);
 }
@@ -11773,7 +11775,7 @@ fn test_escrow_interest_yield_max_rate_succeeds() {
 }
 
 #[test]
-fn test_escrow_interest_yield_emits_one_structured_event() {
+fn test_escrow_interest_yield_emits_no_event() {
     let env = Env::default();
     let (client, admin) = setup_interest_yield_escrow(&env);
 
@@ -11790,15 +11792,12 @@ fn test_escrow_interest_yield_emits_one_structured_event() {
         if let Some(value) = event.1.get(0) {
             if value.get_payload() == topic.get_payload() {
                 count += 1;
-                let payload = EscrowInterestYieldEvent::from_val(&env, &event.2);
-                assert_eq!(payload.principal, principal);
-                assert_eq!(payload.annual_rate_bps, annual_rate_bps);
-                assert_eq!(payload.duration_seconds, duration_seconds);
-                assert_eq!(payload.yield_amount, yield_amount);
             }
         }
     }
-    assert_eq!(count, 1);
+    // A calculation publishes no event an indexer could record as activity (#676).
+    assert!(yield_amount >= 0);
+    assert_eq!(count, 0);
 }
 
 #[test]
@@ -12084,14 +12083,14 @@ fn test_set_escrow_interest_yield_does_not_grow_instance_storage() {
 
     // Snapshot persistent::Admin before the call.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     client.set_escrow_interest_yield(&admin, &5_000u32, &5_000u32);
 
     // persistent::Admin must be unchanged.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -13411,7 +13410,7 @@ fn test_pf_alloc_admin_override_emits_structured_event() {
 }
 
 #[test]
-fn test_calculate_platform_fee_split_emits_structured_event() {
+fn test_calculate_platform_fee_split_emits_no_event() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -13452,20 +13451,13 @@ fn test_calculate_platform_fee_split_emits_structured_event() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == pf_split_topic_val.get_payload() {
                 pf_split_events += 1;
-                assert_eq!(event.1.len(), 1);
-                assert_eq!(
-                    PlatformFeeSplitCalculatedEvent::from_val(&env, &event.2),
-                    PlatformFeeSplitCalculatedEvent {
-                        total_amount: 1000,
-                        client_amount: 200,
-                        freelancer_amount: 700,
-                        treasury_amount: 100,
-                    }
-                );
             }
         }
     }
-    assert_eq!(pf_split_events, 1, "expected exactly one pf_split event");
+    assert_eq!(
+        pf_split_events, 0,
+        "a preview publishes no pf_split event (#676)"
+    );
 }
 
 #[test]
@@ -13592,14 +13584,14 @@ fn test_set_platform_fee_allocation_does_not_grow_instance_storage() {
 
     // Snapshot persistent::Admin before the call.
     let admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
 
     // persistent::Admin must be unchanged.
     let admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         admin_before, admin_after,
@@ -13800,7 +13792,10 @@ fn test_platform_fee_split_rounds_to_zero() {
             }
         }
     }
-    assert_eq!(pf_split_events, 1, "expected exactly one pf_split event");
+    assert_eq!(
+        pf_split_events, 0,
+        "a preview publishes no pf_split event (#676)"
+    );
 }
 
 // ============================================================================
@@ -14560,7 +14555,7 @@ fn test_interest_yield_split_refund_zero_total_fails() {
 }
 
 #[test]
-fn test_interest_yield_split_refund_emits_event() {
+fn test_interest_yield_split_refund_emits_no_event() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -14575,15 +14570,11 @@ fn test_interest_yield_split_refund_emits_event() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
-                let data = SplitRefundCalculatedEvent::from_val(&env, &e.2);
-                assert_eq!(data.client_refund, allocation.client_refund);
-                assert_eq!(data.freelancer_payout, allocation.freelancer_payout);
-                assert_eq!(data.client_refund_bps, 6_000);
-                assert_eq!(data.freelancer_payout_bps, 4_000);
             }
         }
     }
-    assert!(found, "expected iyspltref event");
+    assert_eq!(allocation.client_refund_bps, 6_000);
+    assert!(!found, "a preview publishes no iyspltref event (#676)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -14777,7 +14768,7 @@ fn test_cancel_escrow_split_refund_bps_echoed_in_allocation() {
 }
 
 #[test]
-fn test_cancel_escrow_split_refund_emits_event() {
+fn test_cancel_escrow_split_refund_emits_no_event() {
     let env = Env::default();
     env.mock_all_auths();
     let client = split_refund_calculator(&env);
@@ -14795,28 +14786,25 @@ fn test_cancel_escrow_split_refund_emits_event() {
             }
             acc
         });
-    assert_eq!(count, 1, "expected exactly one cxlspref event");
+    assert_eq!(count, 0, "a preview publishes no cxlspref event (#676)");
 }
 
 #[test]
-fn test_cancel_escrow_split_refund_event_payload_correct() {
+fn test_cancel_escrow_split_refund_allocation_correct() {
     let env = Env::default();
     env.mock_all_auths();
     let client = split_refund_calculator(&env);
 
     let allocation = client.cancel_escrow_split_refund(&1_001_i128, &2_500_u32, &7_500_u32);
 
-    let events = crate::all_event_tuples(&env);
-    let last = events.last().unwrap();
-    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(topic, symbol_short!("cxlspref"));
-
-    let payload = CancelSplitRefundCalculatedEvent::from_val(&env, &last.2);
-    assert_eq!(payload.client_refund, allocation.client_refund);
-    assert_eq!(payload.freelancer_payout, allocation.freelancer_payout);
-    assert_eq!(payload.client_refund_bps, 2_500);
-    assert_eq!(payload.freelancer_payout_bps, 7_500);
-    assert_eq!(payload.client_refund + payload.freelancer_payout, 1_001);
+    assert_eq!(allocation.client_refund_bps, 2_500);
+    assert_eq!(allocation.freelancer_payout_bps, 7_500);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        1_001
+    );
+    // A preview publishes no event (#676).
+    assert_eq!(crate::all_event_tuples(&env).len(), 0);
 }
 
 #[test]
@@ -15365,7 +15353,7 @@ fn test_initialize_two_i128_max_amounts_overflow_returns_typed_error() {
             "Version key must not be written after a failed initialize"
         );
         assert!(
-            !env.storage().persistent().has(&DataKey::Admin),
+            !env.storage().instance().has(&DataKey::Admin),
             "persistent Admin key must not be written after a failed initialize"
         );
     });

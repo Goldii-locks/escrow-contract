@@ -324,7 +324,7 @@ fn event_publish_adds_no_ledger_entry() {
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     let persistent_admin_before: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
 
     client.multisig_lock(&admin_addr);
@@ -343,7 +343,7 @@ fn event_publish_adds_no_ledger_entry() {
         "multisig_lock must not write MultisigLocked to persistent storage"
     );
     let persistent_admin_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     });
     assert_eq!(
         persistent_admin_before, persistent_admin_after,

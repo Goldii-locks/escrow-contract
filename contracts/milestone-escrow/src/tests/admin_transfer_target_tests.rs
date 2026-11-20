@@ -62,7 +62,7 @@ fn admin_event_count(env: &Env) -> u32 {
 
 fn assert_admin_unchanged(env: &Env, contract_id: &Address, admin: &Address) {
     let (persistent, instance, pending) = env.as_contract(contract_id, || {
-        let persistent: Address = env.storage().persistent().get(&DataKey::Admin).unwrap();
+        let persistent: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         let instance: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         let pending = env
             .storage()
@@ -152,7 +152,7 @@ fn transfer_still_accepts_a_distinct_new_admin() {
     let new_admin = Address::generate(&env);
     assert_eq!(client.try_transfer_admin(&admin, &new_admin), Ok(Ok(())));
     let stored: Address = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&DataKey::Admin).unwrap()
+        env.storage().instance().get(&DataKey::Admin).unwrap()
     });
     assert_eq!(stored, new_admin);
 }

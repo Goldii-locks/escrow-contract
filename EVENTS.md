@@ -104,7 +104,6 @@ freelancer when the client acts and the client otherwise:
 | `mslock`   | `MultisigLockedEvent`            | state change      |
 | `msadmrel` | `MultisigAdminOverrideReleaseEvent` | state change   |
 | `msadmref` | `MultisigAdminOverrideRefundEvent`  | state change   |
-| `intyield` | `EscrowInterestYieldEvent`       | calculation       |
 | `yldset`   | `EscrowInterestYieldSetEvent`    | state change      |
 | `yldcons`  | `EscrowInterestYieldConsentSetEvent` | state change  |
 | `yldrate`  | `YieldRateSetEvent`              | state change      |
@@ -114,7 +113,6 @@ freelancer when the client acts and the client otherwise:
 | `pf_set`   | `PlatformFeeAllocationSetEvent`  | state change      |
 | `pf_lock`  | `PlatformFeeAllocationLockedEvent` | state change    |
 | `pf_ovr`   | `PlatformFeeAllocationOverrideEvent` | state change  |
-| `pf_split` | `PlatformFeeSplitCalculatedEvent`| calculation       |
 | `p_stream` | `PaymentStreamingEvent`          | calculation       |
 | `p_strcns` | `PaymentStreamingConsentEvent`   | state change      |
 | `m_ext`    | `MilestoneTimeExtensionEvent`    | state change      |
@@ -123,12 +121,7 @@ freelancer when the client acts and the client otherwise:
 | `taxrcpt`  | `TaxRecipientSetEvent`           | state change      |
 | `taxpaid`  | `TaxPaidEvent`                   | state change      |
 | `taxwh`    | `TaxWithholdingDeductionsEvent`  | calculation       |
-| `twspltref`| `TaxWithholdingSplitRefundEvent` | calculation       |
-| `splitref` | `SplitRefundCalculatedEvent`     | calculation       |
-| `iyspltref`| `SplitRefundCalculatedEvent`     | calculation       |
-| `epspltref`| `SplitRefundCalculatedEvent`     | calculation       |
 | `cxlspref` | `CancelSplitRefundCalculatedEvent` | calculation     |
-| `sprefnet` | `SplitRefundNetDistributionEvent`| calculation       |
 
 ## Dispute records
 
@@ -152,9 +145,9 @@ emits `migrate` with `from_version` 3 and `to_version` 4 when it stamps them.
   decision the arbiter relied on. The document itself stays off-chain in
   escrow-backend storage, keyed by that hash; because resolution deletes the
   `DisputeInfo` record, the event is the only on-chain anchor for it.
-- Several split-refund paths share the `SplitRefundCalculatedEvent` struct but
-  use distinct topics (`arbsplit`, `epspltref`, `iyspltref`, `splitref`) so
-  consumers can tell the originating workflow apart.
+- Unauthenticated calculation previews (`calculate_platform_fee_split`,
+  `escrow_interest_yield` and the `*_split_refund` calculators) publish no
+  events, so indexers never record caller-supplied numbers as activity (#676).
 - Each topic carries exactly one payload struct, enforced by
   `event_docs_sync_tests`. The admin unpause publishes `emunpause`; the joint
   party unpause publishes `emunpausp`.
