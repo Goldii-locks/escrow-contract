@@ -379,6 +379,28 @@ in `contracts/milestone-escrow/golden_snapshots` and CI fails when a run
 changes them. After an intended change, rerun
 `cargo test golden_snapshot_tests` and commit the updated files.
 
+### Coverage
+
+Install nightly Rust with its LLVM tools and `cargo-llvm-cov` once. Branch
+coverage requires the nightly compiler:
+
+```bash
+rustup toolchain install nightly --component llvm-tools-preview
+cargo +nightly install cargo-llvm-cov --locked
+```
+
+From the repository root, run the contract tests with line and branch coverage
+and write an LCOV report:
+
+```bash
+cargo +nightly llvm-cov --manifest-path contracts/milestone-escrow/Cargo.toml --branch --lcov --output-path coverage.lcov
+```
+
+The CI coverage job uploads the LCOV report as an artifact and adds line and
+branch totals for `lib.rs` and `math.rs` to the job summary. It currently
+requires at least 95.63% line coverage, one percentage point below the
+measured baseline.
+
 ## Project Status
 
 The contract implementation is complete. Mainnet release gates are tracked in

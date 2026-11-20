@@ -127,6 +127,94 @@ jobs:
       - name: Build factory WASM
         run: stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # toolchain version set via `with:`
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-llvm-cov
+        run: |
+          rustup component add llvm-tools-preview --toolchain nightly
+          cargo +nightly install cargo-llvm-cov --locked
+
+      - name: Measure contract coverage
+        # 96.63% line coverage was measured on this revision; keep 1 percentage point of headroom.
+        run: cargo +nightly llvm-cov --manifest-path contracts/milestone-escrow/Cargo.toml --branch --fail-under-lines 95.63 --lcov --output-path coverage.lcov
+
+      - name: Write coverage summary
+        run: |
+          python3 - coverage.lcov <<'PY'
+          import sys
+
+          files = {}
+          current = None
+          with open(sys.argv[1], encoding="utf-8") as report:
+              for line in report:
+                  line = line.rstrip()
+                  if line.startswith("SF:"):
+                      current = files.setdefault(line[3:], {"lines": [], "branches": []})
+                  elif line == "end_of_record":
+                      current = None
+                  elif current is not None and line.startswith("DA:"):
+                      _, count = line[3:].split(",")
+                      current["lines"].append(int(count) > 0)
+                  elif current is not None and line.startswith("BRDA:"):
+                      taken = line.rsplit(",", 1)[1]
+                      current["branches"].append(taken != "-" and int(taken) > 0)
+
+          def totals(entries, key):
+              values = [covered for entry in entries for covered in entry[key]]
+              return sum(values), len(values)
+
+          def percentage(covered, found):
+              return f"{100 * covered / found:.2f}%" if found else "n/a"
+
+          summary = []
+          selected = [
+              (path, data)
+              for path, data in files.items()
+              if path.endswith("/src/lib.rs") or path.endswith("/src/math.rs")
+          ]
+          if {path.rsplit("/", 1)[1] for path, _ in selected} != {"lib.rs", "math.rs"}:
+              raise SystemExit("coverage report is missing lib.rs or math.rs")
+
+          summary.extend([
+              "### Contract test coverage",
+              "",
+              "| File | Lines | Branches |",
+              "|---|---:|---:|",
+          ])
+          for path, data in sorted(selected):
+              line_covered, line_total = totals([data], "lines")
+              branch_covered, branch_total = totals([data], "branches")
+              summary.append(
+                  f"| `{path.rsplit('/', 1)[1]}` | "
+                  f"{line_covered}/{line_total} ({percentage(line_covered, line_total)}) | "
+                  f"{branch_covered}/{branch_total} ({percentage(branch_covered, branch_total)}) |"
+              )
+
+          line_covered, line_total = totals([data for _, data in files.items()], "lines")
+          branch_covered, branch_total = totals([data for _, data in files.items()], "branches")
+          summary.append(
+              f"| **Total** | {line_covered}/{line_total} ({percentage(line_covered, line_total)}) | "
+              f"{branch_covered}/{branch_total} ({percentage(branch_covered, branch_total)}) |"
+          )
+          with open(sys.argv[1].replace(".lcov", ".summary.md"), "w", encoding="utf-8") as output:
+              output.write("\n".join(summary) + "\n")
+          PY
+          cat coverage.summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload LCOV report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: milestone-escrow-coverage-${{ github.sha }}
+          path: coverage.lcov
+
   dependencies:
     # RUSTSEC advisories (vulnerable, unsound, unmaintained), yanked crates,
     # disallowed licenses and unknown sources in Cargo.lock fail CI. Policy
