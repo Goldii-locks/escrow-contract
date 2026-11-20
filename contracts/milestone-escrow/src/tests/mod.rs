@@ -34,6 +34,7 @@ mod admin_tax_withholding_guards_tests;
 mod admin_transfer_target_tests;
 mod approve_milestones_tests;
 mod arbiter_fee_tests;
+mod arbitration_split_consistency_proptests;
 mod arbitration_split_event_tests;
 mod auth_requirements_tests;
 mod cancel_admin_transfer_tests;
@@ -41,8 +42,6 @@ mod cancel_approval_ttl_tests;
 mod cancel_escrow_split_refund_guards_tests;
 mod cancel_escrow_test;
 mod cold_config_storage_tests;
-mod arbitration_split_consistency_proptests;
-mod pure_calculation_no_events_tests;
 mod conservation_proptests;
 mod constructor_tests;
 mod cost_tests;
@@ -110,6 +109,7 @@ mod platform_fee_split_no_mutation_tests;
 mod platform_fee_split_overflow_tests;
 mod propose_admin_transfer_footprint_tests;
 mod pull_withdraw_tests;
+mod pure_calculation_no_events_tests;
 mod ratio_split_boundary_tests;
 mod read_path_tests;
 mod refund_released_amount_tests;
@@ -11775,7 +11775,7 @@ fn test_escrow_interest_yield_max_rate_succeeds() {
 }
 
 #[test]
-fn test_escrow_interest_yield_emits_one_structured_event() {
+fn test_escrow_interest_yield_emits_no_event() {
     let env = Env::default();
     let (client, admin) = setup_interest_yield_escrow(&env);
 
@@ -11792,15 +11792,12 @@ fn test_escrow_interest_yield_emits_one_structured_event() {
         if let Some(value) = event.1.get(0) {
             if value.get_payload() == topic.get_payload() {
                 count += 1;
-                let payload = EscrowInterestYieldEvent::from_val(&env, &event.2);
-                assert_eq!(payload.principal, principal);
-                assert_eq!(payload.annual_rate_bps, annual_rate_bps);
-                assert_eq!(payload.duration_seconds, duration_seconds);
-                assert_eq!(payload.yield_amount, yield_amount);
             }
         }
     }
-    assert_eq!(count, 1);
+    // A calculation publishes no event an indexer could record as activity (#676).
+    assert!(yield_amount >= 0);
+    assert_eq!(count, 0);
 }
 
 #[test]
@@ -13413,7 +13410,7 @@ fn test_pf_alloc_admin_override_emits_structured_event() {
 }
 
 #[test]
-fn test_calculate_platform_fee_split_emits_structured_event() {
+fn test_calculate_platform_fee_split_emits_no_event() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -13454,20 +13451,13 @@ fn test_calculate_platform_fee_split_emits_structured_event() {
         if let Some(topic) = event.1.get(0) {
             if topic.get_payload() == pf_split_topic_val.get_payload() {
                 pf_split_events += 1;
-                assert_eq!(event.1.len(), 1);
-                assert_eq!(
-                    PlatformFeeSplitCalculatedEvent::from_val(&env, &event.2),
-                    PlatformFeeSplitCalculatedEvent {
-                        total_amount: 1000,
-                        client_amount: 200,
-                        freelancer_amount: 700,
-                        treasury_amount: 100,
-                    }
-                );
             }
         }
     }
-    assert_eq!(pf_split_events, 1, "expected exactly one pf_split event");
+    assert_eq!(
+        pf_split_events, 0,
+        "a preview publishes no pf_split event (#676)"
+    );
 }
 
 #[test]
@@ -13802,7 +13792,10 @@ fn test_platform_fee_split_rounds_to_zero() {
             }
         }
     }
-    assert_eq!(pf_split_events, 1, "expected exactly one pf_split event");
+    assert_eq!(
+        pf_split_events, 0,
+        "a preview publishes no pf_split event (#676)"
+    );
 }
 
 // ============================================================================
@@ -14562,7 +14555,7 @@ fn test_interest_yield_split_refund_zero_total_fails() {
 }
 
 #[test]
-fn test_interest_yield_split_refund_emits_event() {
+fn test_interest_yield_split_refund_emits_no_event() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -14577,15 +14570,11 @@ fn test_interest_yield_split_refund_emits_event() {
         if let Some(t) = e.1.get(0) {
             if t.get_payload() == topic.get_payload() {
                 found = true;
-                let data = SplitRefundCalculatedEvent::from_val(&env, &e.2);
-                assert_eq!(data.client_refund, allocation.client_refund);
-                assert_eq!(data.freelancer_payout, allocation.freelancer_payout);
-                assert_eq!(data.client_refund_bps, 6_000);
-                assert_eq!(data.freelancer_payout_bps, 4_000);
             }
         }
     }
-    assert!(found, "expected iyspltref event");
+    assert_eq!(allocation.client_refund_bps, 6_000);
+    assert!(!found, "a preview publishes no iyspltref event (#676)");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -14779,7 +14768,7 @@ fn test_cancel_escrow_split_refund_bps_echoed_in_allocation() {
 }
 
 #[test]
-fn test_cancel_escrow_split_refund_emits_event() {
+fn test_cancel_escrow_split_refund_emits_no_event() {
     let env = Env::default();
     env.mock_all_auths();
     let client = split_refund_calculator(&env);
@@ -14797,28 +14786,25 @@ fn test_cancel_escrow_split_refund_emits_event() {
             }
             acc
         });
-    assert_eq!(count, 1, "expected exactly one cxlspref event");
+    assert_eq!(count, 0, "a preview publishes no cxlspref event (#676)");
 }
 
 #[test]
-fn test_cancel_escrow_split_refund_event_payload_correct() {
+fn test_cancel_escrow_split_refund_allocation_correct() {
     let env = Env::default();
     env.mock_all_auths();
     let client = split_refund_calculator(&env);
 
     let allocation = client.cancel_escrow_split_refund(&1_001_i128, &2_500_u32, &7_500_u32);
 
-    let events = crate::all_event_tuples(&env);
-    let last = events.last().unwrap();
-    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(topic, symbol_short!("cxlspref"));
-
-    let payload = CancelSplitRefundCalculatedEvent::from_val(&env, &last.2);
-    assert_eq!(payload.client_refund, allocation.client_refund);
-    assert_eq!(payload.freelancer_payout, allocation.freelancer_payout);
-    assert_eq!(payload.client_refund_bps, 2_500);
-    assert_eq!(payload.freelancer_payout_bps, 7_500);
-    assert_eq!(payload.client_refund + payload.freelancer_payout, 1_001);
+    assert_eq!(allocation.client_refund_bps, 2_500);
+    assert_eq!(allocation.freelancer_payout_bps, 7_500);
+    assert_eq!(
+        allocation.client_refund + allocation.freelancer_payout,
+        1_001
+    );
+    // A preview publishes no event (#676).
+    assert_eq!(crate::all_event_tuples(&env).len(), 0);
 }
 
 #[test]

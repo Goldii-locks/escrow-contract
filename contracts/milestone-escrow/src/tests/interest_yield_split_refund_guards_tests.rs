@@ -143,7 +143,7 @@ fn test_interest_yield_split_refund_unlocked_state_succeeds() {
     let allocation = client.interest_yield_split_refund(&1_000_i128, &5_000_u32, &5_000_u32);
     assert_eq!(allocation.client_refund, 500);
     assert_eq!(allocation.freelancer_payout, 500);
-    assert_eq!(iyspltref_event_count(&env), 1);
+    assert_eq!(iyspltref_event_count(&env), 0);
 }
 
 #[test]
@@ -219,5 +219,5 @@ fn test_interest_yield_split_refund_unpause_restores_operation() {
     let allocation = client.interest_yield_split_refund(&1_000_i128, &5_000_u32, &5_000_u32);
     assert_eq!(allocation.client_refund, 500);
     assert_eq!(allocation.freelancer_payout, 500);
-    assert_eq!(iyspltref_event_count(&env), 1);
+    assert_eq!(iyspltref_event_count(&env), 0);
 }

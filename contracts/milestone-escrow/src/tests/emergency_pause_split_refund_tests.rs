@@ -250,7 +250,7 @@ fn test_split_refund_success_mutates_no_contract_storage() {
     let before = storage_snapshot(&env, &fx.contract_id);
 
     escrow.emergency_pause_split_refund(&fx.freelancer, &1_001_i128, &2_500_u32, &7_500_u32);
-    assert_eq!(epspltref_count(&env), 1);
+    assert_eq!(epspltref_count(&env), 0);
     assert_eq!(storage_snapshot(&env, &fx.contract_id), before);
 }
 

@@ -72,7 +72,7 @@ fn is_lock_held(env: &Env, contract_id: &Address) -> bool {
 
 fn has_persistent_admin(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
-        env.storage().instance().has(&DataKey::Admin)
+        env.storage().persistent().has(&DataKey::Admin)
     })
 }
 
@@ -164,7 +164,7 @@ fn test_admin_resume_escrow_touched_entries_footprint() {
     env.as_contract(&contract_id, || {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Paused, &true);
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().persistent().set(&DataKey::Admin, &admin);
     });
     assert!(
         has_persistent_admin(&env, &contract_id),
@@ -186,7 +186,7 @@ fn test_admin_resume_escrow_touched_entries_footprint() {
     let escrow_b = MilestoneEscrowClient::new(&env_b, &contract_b);
     env_b.as_contract(&contract_b, || {
         env_b.storage().instance().set(&DataKey::Admin, &admin_b);
-        env_b.storage().instance().set(&DataKey::Admin, &admin_b);
+        env_b.storage().persistent().set(&DataKey::Admin, &admin_b);
     });
 
     escrow_b.admin_pause_escrow(&admin_b);
@@ -304,7 +304,7 @@ fn test_admin_resume_escrow_authorizes_against_instance_admin_copy() {
             .instance()
             .set(&DataKey::Admin, &instance_admin);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::Admin, &stale_persistent_admin);
         env.storage().instance().set(&DataKey::Paused, &true);
     });
@@ -317,7 +317,7 @@ fn test_admin_resume_escrow_authorizes_against_instance_admin_copy() {
 
     // The persistent copy was left untouched by the call.
     let persistent_after: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Admin)
+        env.storage().persistent().get(&DataKey::Admin)
     });
     assert_eq!(
         persistent_after,
@@ -388,18 +388,19 @@ fn test_admin_resume_escrow_clears_pause_and_resumes_normal_operation() {
     let payload = EscrowResumedEvent::from_val(&env, &last.2);
     assert_eq!(payload.admin, admin);
 
-    // Pause state cleared, lock released, persisted admin untouched.
+    // Pause state cleared, lock released, no persistent admin copy.
     assert!(!is_paused(&env, &contract_id), "pause flag must be cleared");
     assert!(!is_lock_held(&env, &contract_id), "EpLk must be released");
     let (_, _, paused) = escrow.get_yield_info();
     assert!(!paused, "get_yield_info must report the escrow as running");
     let persistent_admin: Option<Address> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Admin)
+        env.storage().persistent().get(&DataKey::Admin)
     });
+    // The admin lives in instance storage only (#679): no persistent copy is
+    // written at initialisation, and resuming does not create one.
     assert_eq!(
-        persistent_admin,
-        Some(admin.clone()),
-        "persistent::Admin must be unchanged by the resume"
+        persistent_admin, None,
+        "persistent::Admin must not be created by the resume"
     );
 
     // Normal operation resumed: the same endpoint that was rejected above

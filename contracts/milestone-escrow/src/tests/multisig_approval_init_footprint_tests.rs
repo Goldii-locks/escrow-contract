@@ -144,7 +144,7 @@ fn admin_only_escrow(env: &Env) -> (Address, Address) {
 /// Whether the persistent `Admin` copy exists.
 fn has_persistent_admin(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
-        env.storage().instance().has(&DataKey::Admin)
+        env.storage().persistent().has(&DataKey::Admin)
     })
 }
 
@@ -444,7 +444,7 @@ fn test_multisig_approval_init_touched_entries_footprint() {
     let contract_b = env_b.register(MilestoneEscrow, ());
     env_b.as_contract(&contract_b, || {
         env_b.storage().instance().set(&DataKey::Admin, &admin_b);
-        env_b.storage().instance().set(&DataKey::Admin, &admin_b);
+        env_b.storage().persistent().set(&DataKey::Admin, &admin_b);
     });
     let escrow_b = MilestoneEscrowClient::new(&env_b, &contract_b);
     escrow_b.admin_pause_escrow(&admin_b);

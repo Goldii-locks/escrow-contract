@@ -36,7 +36,7 @@ fn admin_in(client_tier_instance: bool, contract_id: &Address, env: &Env) -> Opt
         if client_tier_instance {
             env.storage().instance().get(&DataKey::Admin)
         } else {
-            env.storage().instance().get(&DataKey::Admin)
+            env.storage().persistent().get(&DataKey::Admin)
         }
     })
 }
@@ -104,11 +104,10 @@ fn test_admin_accrue_yield_writes_a_single_distinct_key() {
     assert_eq!(stored_second, Some(500));
 }
 
-/// The two `DataKey::Admin` copies are both present and agree after a normal
-/// `initialize`, which is the invariant `require_admin_from_instance` depends
-/// on. Documented here as a precondition of the footprint reduction.
+/// After a normal `initialize` the admin is stored once, in instance storage;
+/// no persistent copy exists to drift out of sync (#679).
 #[test]
-fn test_admin_accrue_yield_admin_mirrors_are_in_sync_after_initialize() {
+fn test_admin_accrue_yield_admin_stored_only_in_instance_after_initialize() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -116,12 +115,12 @@ fn test_admin_accrue_yield_admin_mirrors_are_in_sync_after_initialize() {
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
 
     assert_eq!(admin_in(true, &contract_id, &env), Some(admin_addr.clone()));
-    assert_eq!(admin_in(false, &contract_id, &env), Some(admin_addr));
+    assert_eq!(admin_in(false, &contract_id, &env), None);
 }
 
 /// After `transfer_admin` the **instance** mirror is what the accrual endpoint
 /// authorizes against, so the new admin must be accepted and the old one
-/// rejected. This is the test that would fail if the two mirrors ever drifted.
+/// rejected. No persistent copy is written by the transfer (#679).
 #[test]
 fn test_admin_accrue_yield_authorizes_against_synced_instance_admin() {
     let env = Env::default();
@@ -134,7 +133,7 @@ fn test_admin_accrue_yield_authorizes_against_synced_instance_admin() {
     client.transfer_admin(&old_admin, &new_admin);
 
     assert_eq!(admin_in(true, &contract_id, &env), Some(new_admin.clone()));
-    assert_eq!(admin_in(false, &contract_id, &env), Some(new_admin.clone()));
+    assert_eq!(admin_in(false, &contract_id, &env), None);
 
     assert_eq!(
         client.try_admin_accrue_yield(&old_admin, &0u32, &100_i128),

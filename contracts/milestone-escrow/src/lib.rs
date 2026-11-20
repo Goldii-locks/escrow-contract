@@ -2652,7 +2652,6 @@ impl MilestoneEscrow {
             treasury_fee_share,
         };
 
-
         Ok(distribution)
     }
 
@@ -7854,7 +7853,6 @@ impl MilestoneEscrow {
         let allocation: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
         let distribution = Self::allocate_platform_fee(total_amount, &allocation)?;
 
-
         Ok(distribution)
     }
 
@@ -9614,7 +9612,6 @@ impl MilestoneEscrow {
             .checked_div(denominator)
             .ok_or(Error::InvalidAmount)?;
 
-
         Ok(yield_amount)
     }
 
@@ -10007,7 +10004,6 @@ impl MilestoneEscrow {
             client_refund_bps,
             freelancer_payout_bps,
         };
-
 
         Ok(allocation)
     }
@@ -11980,7 +11976,6 @@ impl MilestoneEscrow {
             freelancer_payout_bps,
         };
 
-
         Ok(allocation)
     }
 
@@ -12046,7 +12041,6 @@ impl MilestoneEscrow {
 
         let allocation =
             Self::emergency_split_exact(total_amount, client_refund_bps, freelancer_payout_bps)?;
-
 
         Ok(allocation)
     }
@@ -12186,7 +12180,6 @@ impl MilestoneEscrow {
 
         let allocation =
             Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
-
 
         Ok(allocation)
     }

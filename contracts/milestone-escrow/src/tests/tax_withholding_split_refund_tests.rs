@@ -325,26 +325,23 @@ fn test_tax_withholding_split_refund_is_a_pure_calculator() {
     );
 }
 
-/// Success publishes exactly one `twspltref` event carrying the gross, tax, net
-/// and both post-tax legs; a rejected call publishes none.
+/// The preview returns the post-tax legs and publishes no event (#676).
 #[test]
-fn test_tax_withholding_split_refund_emits_exactly_one_event_on_success() {
+fn test_tax_withholding_split_refund_emits_no_event_on_success() {
     let env = test_env();
     let (_, client) = calculator(&env);
 
-    client.tax_withholding_split_refund(&1_000_i128, &100_i128, &7_000_u32, &3_000_u32);
+    let allocation =
+        client.tax_withholding_split_refund(&1_000_i128, &100_i128, &7_000_u32, &3_000_u32);
+    assert_eq!(allocation.client_refund, 630);
+    assert_eq!(allocation.freelancer_payout, 270);
 
-    let events = twspltref_events(&env);
-    assert_eq!(events.len(), 1, "expected exactly one twspltref event");
-    let ev = events.first().unwrap();
-    assert_eq!(ev.gross_amount, 1_000);
-    assert_eq!(ev.tax_amount, 100);
-    assert_eq!(ev.net_amount, 900);
-    assert_eq!(ev.client_refund, 630);
-    assert_eq!(ev.freelancer_payout, 270);
-    assert_eq!(ev.client_refund_bps, 7_000);
-    assert_eq!(ev.freelancer_payout_bps, 3_000);
-    assert_eq!(ev.client_refund + ev.freelancer_payout, ev.net_amount);
+    // A preview publishes no event an indexer could mistake for activity (#676).
+    assert_eq!(
+        twspltref_events(&env).len(),
+        0,
+        "expected no twspltref event"
+    );
 }
 
 #[test]

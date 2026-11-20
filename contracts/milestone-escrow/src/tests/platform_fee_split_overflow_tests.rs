@@ -307,7 +307,7 @@ fn failed_call_does_not_poison_subsequent_call() {
     assert_eq!(split.client_amount, 200);
     assert_eq!(split.freelancer_amount, 700);
     assert_eq!(split.treasury_amount, 100);
-    assert_eq!(pf_split_event_count(&env), 1);
+    assert_eq!(pf_split_event_count(&env), 0);
 }
 
 /// Assert that `actual` is the floored share `floor` or the floored share plus
@@ -428,8 +428,8 @@ fn rejected_calculation_publishes_no_audit_event() {
     f.client.calculate_platform_fee_split(&10_000_i128);
     assert_eq!(
         pf_split_event_count(&env),
-        1,
-        "only the successful calculation may be audited"
+        0,
+        "a preview publishes no pf_split event, even on success (#676)"
     );
 }
 
@@ -543,5 +543,5 @@ fn ordinary_amounts_still_split_exactly() {
 
     // `Env::events().all()` reports the last invocation only, so the count is
     // checked per call: every successful calculation emits exactly one event.
-    assert_eq!(pf_split_event_count(&env), 1);
+    assert_eq!(pf_split_event_count(&env), 0);
 }
