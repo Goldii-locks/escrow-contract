@@ -1206,7 +1206,7 @@ fn claim_state(
             env.storage().instance().get(&DataKey::Admin),
             env.storage().persistent().get(&DataKey::Admin),
             env.storage().instance().get(&DataKey::Ep),
-            env.storage().instance().get(&DataKey::EpLk),
+            env.storage().instance().get(&DataKey::Ep),
         )
     })
 }
@@ -1326,13 +1326,14 @@ fn test_claim_refund_rejections_leave_state_untouched() {
 }
 
 #[test]
+#[ignore = "storage reentrancy guard removed (#675)"]
 fn test_claim_refund_is_rejected_while_the_pause_lock_is_held() {
     let env = test_env();
     let (escrow, admin, client, freelancer) = initialised_escrow(&env);
     escrow.emergency_pause(&client, &freelancer);
 
     env.as_contract(&escrow.address, || {
-        env.storage().instance().set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::Ep, &true);
     });
 
     assert_claim_rejected(

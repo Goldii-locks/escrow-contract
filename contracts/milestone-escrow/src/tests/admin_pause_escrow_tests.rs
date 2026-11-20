@@ -94,7 +94,7 @@ fn is_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::EpLk)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false)
     })
 }
@@ -130,6 +130,7 @@ fn pause_rejects_non_admin_caller() {
 }
 
 #[test]
+#[ignore = "storage reentrancy guard removed (#675)"]
 fn pause_rejects_when_emergency_lock_held() {
     let env = test_env();
     let (client, admin) = initialised_escrow(&env);
@@ -137,7 +138,7 @@ fn pause_rejects_when_emergency_lock_held() {
 
     // Manually set the emergency-pause lock to simulate a mid-flight transition.
     env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::EpLk, &true);
+        env.storage().instance().set(&DataKey::Ep, &true);
     });
 
     assert_eq!(

@@ -113,6 +113,8 @@ freelancer when the client acts and the client otherwise:
 | `pf_set`   | `PlatformFeeAllocationSetEvent`  | state change      |
 | `pf_lock`  | `PlatformFeeAllocationLockedEvent` | state change    |
 | `pf_ovr`   | `PlatformFeeAllocationOverrideEvent` | state change  |
+| `treasury` | `Address`                         | state change      |
+| `pf_charge`| `PlatformFeeChargedEvent`        | payout fee        |
 | `p_stream` | `PaymentStreamingEvent`          | calculation       |
 | `p_strcns` | `PaymentStreamingConsentEvent`   | state change      |
 | `m_ext`    | `MilestoneTimeExtensionEvent`    | state change      |

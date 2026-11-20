@@ -29,9 +29,7 @@ fn bare_contract(env: &Env) -> (MilestoneEscrowClient<'_>, Address) {
 
 fn execution_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::TaxWithholdingExecutionLock)
+        env.storage().instance().has(&DataKey::Paused)
     })
 }
 

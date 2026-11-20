@@ -7,7 +7,7 @@
 //!      for the initialisation guard, then again via `load_admin`'s
 //!      `.get(..)` for the authorization comparison.
 //!   2. The contract's single **instance** entry — the instance copy
-//!      of `DataKey::Admin`, `DataKey::Paused` and `DataKey::EpLk` all live
+//!      of `DataKey::Admin`, `DataKey::Paused` and `DataKey::Ep` all live
 //!      inside the `contract_instance` ledger entry.
 //!
 //! `initialize` writes both copies of the admin address atomically, and every
@@ -65,7 +65,7 @@ fn is_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::EpLk)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false)
     })
 }

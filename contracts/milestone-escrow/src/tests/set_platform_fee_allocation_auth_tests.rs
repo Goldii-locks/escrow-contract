@@ -95,6 +95,7 @@ fn invalid_ratio_returns_invalid_ratio_and_does_not_mutate_locked_check() {
 }
 
 #[test]
+#[ignore = "storage reentrancy guard removed (#675)"]
 fn allocation_and_lock_reject_an_in_progress_allocation_without_mutation() {
     let env = Env::new_with_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
@@ -103,9 +104,7 @@ fn allocation_and_lock_reject_an_in_progress_allocation_without_mutation() {
     let before_lock = env.to_ledger_snapshot();
 
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &true);
+        env.storage().instance().set(&DataKey::Paused, &true);
     });
     let locked_snapshot = env.to_ledger_snapshot();
 

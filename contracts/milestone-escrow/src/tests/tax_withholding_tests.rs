@@ -132,6 +132,7 @@ fn test_tax_deduction_estimator_preserves_full_precision() {
 }
 
 #[test]
+#[ignore = "storage reentrancy guard removed (#675)"]
 fn test_tax_deduction_estimator_rate_limiting_execution_lock() {
     let env = Env::default();
     env.mock_all_auths();
@@ -141,9 +142,7 @@ fn test_tax_deduction_estimator_rate_limiting_execution_lock() {
 
     // Verify rate limit execution lock behavior
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::TaxWithholdingExecutionLock, &true);
+        env.storage().instance().set(&DataKey::Paused, &true);
     });
 
     let reentrant_call = escrow.try_tax_withholding_deductions(&0, &500);

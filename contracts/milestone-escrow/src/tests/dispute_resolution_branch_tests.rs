@@ -68,6 +68,7 @@ fn milestone_0(client: &MilestoneEscrowClient<'_>) -> Milestone {
 // ── raise_dispute ───────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "storage reentrancy guard removed (#675)"]
 fn raise_dispute_rejects_when_dispute_lock_is_held() {
     let env = Env::default();
     env.mock_all_auths();
@@ -78,7 +79,7 @@ fn raise_dispute_rejects_when_dispute_lock_is_held() {
     env.as_contract(&contract_id, || {
         env.storage()
             .temporary()
-            .set(&DataKey::DisputeLock(0u32), &true);
+            .set(&DataKey::DisputeFlag(0u32), &true);
     });
 
     let result = client.try_raise_dispute(&client_addr, &0u32, &dispute_reason_hash(&env));
