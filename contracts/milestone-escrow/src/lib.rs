@@ -287,6 +287,10 @@ const ACCEPTANCE_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// `reclaim_overdue`, so a delivery landing just after the deadline still
 /// counts.
 pub const OVERDUE_GRACE_SECONDS: u64 = 24 * 60 * 60;
+/// Minimum fresh delivery window granted when a client asks for a revision
+/// of a milestone that has a due date (issue #920). Prevents an immediate
+/// `reclaim_overdue` after resetting a timely delivery to `Pending`.
+pub const REVISION_DELIVERY_WINDOW: u64 = 7 * 24 * 60 * 60;
 
 const BPS_SCALE: u32 = 10_000;
 /// Timelock for treasury address changes (#674): seven days.
@@ -4918,6 +4922,14 @@ impl MilestoneEscrow {
             .unwrap_or(0)
     }
 
+    fn store_due_at(env: &Env, index: u32, due_at: u64) {
+        let key = DataKey::DueAt(index);
+        env.storage().persistent().set(&key, &due_at);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+
     /// Refund a `Pending` milestone to the client once its delivery deadline
     /// plus `OVERDUE_GRACE_SECONDS` has passed without delivery.  The
     /// milestone becomes `Refunded`.  A late `mark_delivered` stays possible
@@ -5132,6 +5144,21 @@ impl MilestoneEscrow {
         env.storage()
             .persistent()
             .set(&DataKey::RevCnt(milestone_index), &revision_count);
+
+        // A revision gives the freelancer a fresh delivery window before the
+        // overdue grace period can run again (issue #920). Milestones without
+        // a due date stay without one.
+        let due_at = Self::load_due_at(&env, milestone_index);
+        if due_at != 0 {
+            let fresh_due_at = env
+                .ledger()
+                .timestamp()
+                .checked_add(REVISION_DELIVERY_WINDOW)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if due_at < fresh_due_at {
+                Self::store_due_at(&env, milestone_index, fresh_due_at);
+            }
+        }
 
         milestone.status = MilestoneStatus::Pending;
         milestone.delivered_at = 0;

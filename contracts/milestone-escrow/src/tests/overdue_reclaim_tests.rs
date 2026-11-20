@@ -179,3 +179,29 @@ fn due_dates_cannot_change_after_funding() {
         Err(Ok(Error::AlreadyFunded))
     );
 }
+
+#[test]
+fn revision_after_timely_delivery_resets_overdue_clock() {
+    let env = Env::default();
+    let (client, freelancer, _, escrow) = setup(&env);
+
+    // 1-2. Freelancer delivers before the due date; the client waits past the
+    // original due date plus grace without approving.
+    env.ledger().set_timestamp(DUE_AT - 1);
+    escrow.mark_delivered(&freelancer, &0);
+    env.ledger()
+        .set_timestamp(DUE_AT + OVERDUE_GRACE_SECONDS + 1);
+
+    // 3. A revision moves the milestone back to Pending and pushes the due
+    // date out by a full fresh delivery window.
+    escrow.request_revision(&client, &0, &crate::BytesN::from_array(&env, &[7; 32]));
+    assert_eq!(escrow.get_milestone(&0).status, MilestoneStatus::Pending);
+    let revised_due_at = escrow.get_milestone_due_at(&0);
+    assert!(revised_due_at >= env.ledger().timestamp() + crate::REVISION_DELIVERY_WINDOW);
+
+    // 4. The old deadline can no longer be used to reclaim the milestone.
+    assert_eq!(
+        escrow.try_reclaim_overdue(&client, &0),
+        Err(Ok(Error::DeadlineNotPassed))
+    );
+}
