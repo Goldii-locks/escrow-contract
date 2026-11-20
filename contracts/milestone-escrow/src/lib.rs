@@ -4102,6 +4102,8 @@ impl MilestoneEscrow {
     /// * `InvalidAddress`   – `client` is a zero address.
     /// * `InvalidAmount`    – The total milestone amount is invalid (e.g.
     ///                        overflow or non-positive).
+    /// * `InsufficientBalance` – The escrow received less (or more) than the
+    ///                        total, e.g. a fee-on-transfer token (#998).
     pub fn fund(env: Env, client: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
@@ -4132,8 +4134,7 @@ impl MilestoneEscrow {
             .instance()
             .set(&DataKey::FundedAt, &env.ledger().timestamp());
 
-        let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(&client, env.current_contract_address(), &total_amount);
+        Self::pull_from_client(&env, &meta.token, &client, total_amount)?;
 
         env.events().publish(
             (
@@ -4148,6 +4149,36 @@ impl MilestoneEscrow {
             },
         );
 
+        Ok(())
+    }
+
+    /// Move `amount` of `token` from `client` into the escrow and verify the
+    /// escrow actually received exactly that much (issue #998).
+    ///
+    /// The escrow's balance is read before and after the transfer; a
+    /// fee-on-transfer, rebasing or otherwise misbehaving token that credits
+    /// anything other than `amount` is rejected with `InsufficientBalance`.
+    /// Callers persist their bookkeeping *before* calling this (reentrancy
+    /// ordering), which is safe because the error aborts the whole invocation
+    /// and Soroban discards every write it made, so a failed pull never leaves
+    /// a job marked funded or its accounting amended.
+    fn pull_from_client(
+        env: &Env,
+        token: &Address,
+        client: &Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        let token_client = token::Client::new(env, token);
+        let escrow = env.current_contract_address();
+        let before = token_client.balance(&escrow);
+        token_client.transfer(client, &escrow, &amount);
+        let after = token_client.balance(&escrow);
+        let received = after
+            .checked_sub(before)
+            .ok_or(Error::InsufficientBalance)?;
+        if received != amount {
+            return Err(Error::InsufficientBalance);
+        }
         Ok(())
     }
 
@@ -4183,14 +4214,7 @@ impl MilestoneEscrow {
             .checked_add(1)
             .ok_or(Error::ArithmeticOverflow)?;
 
-        let token_client = token::Client::new(&env, &meta.token);
-        let before = token_client.balance(&env.current_contract_address());
-        token_client.transfer(&client, env.current_contract_address(), &milestone.amount);
-        let after = token_client.balance(&env.current_contract_address());
-        let received = after.checked_sub(before).unwrap_or(0);
-        if received != milestone.amount {
-            return Err(Error::InsufficientBalance);
-        }
+        Self::pull_from_client(&env, &meta.token, &client, milestone.amount)?;
 
         milestone.funded = true;
         Self::store_milestone(&env, milestone_index, &milestone);
@@ -4317,8 +4341,7 @@ impl MilestoneEscrow {
             .instance()
             .set(&DataKey::FundedCount, &meta.milestone_count);
 
-        let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(&client, env.current_contract_address(), &amount);
+        Self::pull_from_client(&env, &meta.token, &client, amount)?;
 
         env.events().publish(
             (symbol_short!("ms_add"), client.clone(), freelancer.clone()),
@@ -4511,14 +4534,7 @@ impl MilestoneEscrow {
         Self::store_job_meta(&env, &meta);
 
         if funded {
-            let token_client = token::Client::new(&env, &meta.token);
-            let before = token_client.balance(&env.current_contract_address());
-            token_client.transfer(&client, env.current_contract_address(), &difference);
-            let after = token_client.balance(&env.current_contract_address());
-            let received = after.checked_sub(before).unwrap_or(0);
-            if received != difference {
-                return Err(Error::InsufficientBalance);
-            }
+            Self::pull_from_client(&env, &meta.token, &client, difference)?;
         }
 
         env.events().publish(

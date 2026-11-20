@@ -14,6 +14,11 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Fixed
 
+- `fund` and `add_milestone` now verify the escrow received exactly the
+  requested amount (#998), through a shared `pull_from_client` helper that
+  `fund_milestone` and `increase_milestone` also use. A fee-on-transfer token
+  makes them fail with `InsufficientBalance` and leaves the job unfunded. `fund`
+  costs two extra balance reads (budget raised to 450k instructions).
 - `raise_dispute` now performs zero-address check, `require_auth`, and
   identity validation **before** writing the re-entrancy lock (#566), matching
   the authorization pattern used by `fund`, `approve_milestone`, and

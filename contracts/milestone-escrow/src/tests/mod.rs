@@ -63,6 +63,7 @@ mod freelancer_rotation_tests;
 mod fund_footprint_tests;
 mod funded_count_tests;
 mod funding_mode_tests;
+mod funding_received_amount_tests;
 mod get_escrow_interest_yield_no_mutation_tests;
 mod get_escrow_state_no_mutation_tests;
 mod get_job_no_mutation_tests;

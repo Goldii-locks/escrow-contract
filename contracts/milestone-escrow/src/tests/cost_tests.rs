@@ -60,9 +60,12 @@ struct Cost {
 /// keys were retired (#1001).
 /// `submit_evidence` raised to 215k instructions / 600 write bytes once it
 /// runs the schema guard and `DisputeInfo` carries `raised_by` (#997).
+/// `fund` raised to 450k instructions (measured 408.6k, was ~330k) because it
+/// now reads the escrow's token balance before and after the transfer to verify
+/// the received amount (#998); two cross-contract calls, no extra ledger write.
 const BUDGETS: [(&str, i64, u32, u32); 8] = [
     ("initialize", 245_000, 7, 1_910),
-    ("fund", 362_000, 4, 1_530),
+    ("fund", 450_000, 4, 1_530),
     ("mark_delivered", 234_000, 2, 650),
     ("approve_milestone", 490_000, 6, 1_440),
     ("claim_auto_release", 517_000, 6, 1_315),
