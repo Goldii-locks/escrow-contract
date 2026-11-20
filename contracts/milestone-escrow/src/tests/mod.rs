@@ -109,6 +109,7 @@ mod payment_streaming_consent_arithmetic_tests;
 mod platform_fee_allocation_no_mutation_tests;
 mod platform_fee_split_no_mutation_tests;
 mod platform_fee_split_overflow_tests;
+mod proposal_expiry_tests;
 mod propose_admin_transfer_footprint_tests;
 mod pull_withdraw_tests;
 mod pure_calculation_no_events_tests;

@@ -100,6 +100,7 @@ freelancer when the client acts and the client otherwise:
 | `msigcfgp` | `MultiSigConfigProposedEvent`    | state change      |
 | `msigcfg`  | `MultiSigConfigChangedEvent`     | state change      |
 | `msigcfgx` | `MultiSigConfigCancelledEvent`   | state change      |
+| `propexpd` | `ProposalExpiredEvent`           | state change      |
 | `msigappr` | `MultiSigApprovedEvent`          | state change      |
 | `mslock`   | `MultisigLockedEvent`            | state change      |
 | `msadmrel` | `MultisigAdminOverrideReleaseEvent` | state change   |

@@ -304,6 +304,7 @@ action — never a caller-supplied calculation.
 | 55 | `DisputePending` | `replace_arbiter` was called while a milestone is `Disputed` |
 | 56 | `ReviewWindowClosed` | `raise_dispute` or `request_revision` was called on a `Delivered` milestone after its auto-release deadline |
 | 57 | `InvalidDeadline` | `set_milestone_due_dates` got a non-zero due date at or before the current ledger timestamp |
+| 58 | `ProposalExpired` | An admin-transfer / multisig-config proposal is older than `PROPOSAL_TTL_SECONDS` (14 days); it cannot be approved or executed and can be removed with `clear_expired_proposal` |
 
 ## Milestone States
 

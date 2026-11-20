@@ -38,6 +38,12 @@ fn proposal(env: &Env, client: &MilestoneEscrowClient<'_>, id: u32) -> AdminTran
     })
 }
 
+fn proposal_exists(env: &Env, client: &MilestoneEscrowClient<'_>, id: u32) -> bool {
+    env.as_contract(&client.address, || {
+        env.storage().persistent().has(&DataKey::AdminProposal(id))
+    })
+}
+
 // ── #785: IDs are assigned by the contract and bound to their record ─────────
 
 #[test]
@@ -51,10 +57,8 @@ fn proposal_ids_are_sequential_and_never_reused() {
 
     assert_eq!(first, 1);
     assert_eq!(second, 2);
-    assert_eq!(
-        proposal(&env, &client, 1).status,
-        AdminProposalStatus::Cancelled
-    );
+    // #995: the cancelled record is deleted, the new one is live.
+    assert!(!proposal_exists(&env, &client, 1));
     assert_eq!(
         proposal(&env, &client, 2).status,
         AdminProposalStatus::Pending
@@ -75,7 +79,7 @@ fn approvals_on_a_cancelled_proposal_do_not_carry_over() {
     // The spent proposal can no longer collect approvals ...
     assert_eq!(
         client.try_multisig_approve(&signers.get(0).unwrap(), &first),
-        Err(Ok(Error::InvalidStatus))
+        Err(Ok(Error::NoPendingAdminTransfer))
     );
     assert!(!client.is_multisig_approved(&first).approved);
 
@@ -112,12 +116,12 @@ fn executed_proposal_is_consumed() {
     client.multisig_approve(&signers.get(1).unwrap(), &id);
     client.execute_admin_transfer();
 
-    let record = proposal(&env, &client, id);
-    assert_eq!(record.status, AdminProposalStatus::Executed);
-    assert_eq!(record.approvals_bitmap, 0);
+    // #995: the executed record (and its bitmap) is deleted.
+    assert!(!proposal_exists(&env, &client, id));
+    assert_eq!(client.is_multisig_approved(&id).approvals, 0);
     assert_eq!(
         client.try_multisig_approve(&signers.get(0).unwrap(), &id),
-        Err(Ok(Error::InvalidStatus))
+        Err(Ok(Error::NoPendingAdminTransfer))
     );
 }
 

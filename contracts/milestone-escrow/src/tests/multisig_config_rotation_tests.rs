@@ -92,10 +92,10 @@ fn rotation_with_threshold_approvals_succeeds() {
     );
     assert_eq!(s.escrow.get_pending_multisig_config(), None);
 
-    // The proposal is consumed: it cannot be approved again.
+    // The proposal is consumed (record deleted, #995): it cannot be approved again.
     assert_eq!(
         s.escrow.try_multisig_approve(&s.new.get(0).unwrap(), &id),
-        Err(Ok(Error::InvalidStatus))
+        Err(Ok(Error::NoPendingAdminTransfer))
     );
 
     // The new set is in force: its members can approve, the old ones cannot.
@@ -230,7 +230,7 @@ fn proposal_ids_are_never_reused() {
     assert_eq!(
         s.escrow
             .try_multisig_approve(&s.old.get(0).unwrap(), &first),
-        Err(Ok(Error::InvalidStatus))
+        Err(Ok(Error::NoPendingAdminTransfer))
     );
 }
 

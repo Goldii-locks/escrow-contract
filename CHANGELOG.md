@@ -14,6 +14,14 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Fixed
 
+- Admin-transfer and multisig-config proposals now expire `PROPOSAL_TTL_SECONDS`
+  (14 days) after `created_at` (#995). `multisig_approve`, `execute_admin_transfer`
+  and `execute_multisig_config` return the new `ProposalExpired` (58) error past
+  that point; anyone can call the new `clear_expired_proposal(caller, id)` to drop
+  the record and free the pending lock. `AdminProposal(id)` records are now deleted
+  on execution, cancellation and clearing instead of kept as tombstones, so an
+  approval on a finalised ID returns `NoPendingAdminTransfer` rather than
+  `InvalidStatus`. New event `propexpd`.
 - `raise_dispute` now performs zero-address check, `require_auth`, and
   identity validation **before** writing the re-entrancy lock (#566), matching
   the authorization pattern used by `fund`, `approve_milestone`, and

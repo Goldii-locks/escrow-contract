@@ -79,6 +79,16 @@ const MAX_BATCH_APPROVALS: u32 = 10;
 /// the TTL window restarts from that call's ledger timestamp.
 pub const CANCEL_APPROVAL_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 
+/// How long an admin-transfer or multisig-config proposal stays actionable, in
+/// seconds (14 days), measured from the record's `created_at` (issue #995).
+///
+/// A proposal is *expired* once `ledger.timestamp() > created_at + TTL`, so it
+/// is still live at exactly `created_at + TTL` and dead one second later.  An
+/// expired proposal can no longer collect approvals or execute; anyone may
+/// remove it with `clear_expired_proposal`, which frees the pending lock so a
+/// replacement can be proposed.
+pub const PROPOSAL_TTL_SECONDS: u64 = 14 * 24 * 60 * 60;
+
 /// Maximum allowed value for `auto_release_seconds` (10 years).  Prevents
 /// arithmetic overflow in deadline calculations (e.g. `claim_auto_release`)
 /// and avoids absurdly long auto-release windows.
@@ -261,6 +271,10 @@ pub enum Error {
     /// A non-zero milestone due date was not in the future at the time
     /// `set_milestone_due_dates` was called.
     InvalidDeadline = 57,
+    /// The admin-transfer / multisig-config proposal is older than
+    /// `PROPOSAL_TTL_SECONDS`; it can no longer be approved or executed and
+    /// may be removed with `clear_expired_proposal` (issue #995).
+    ProposalExpired = 58,
 }
 
 const MAX_REVISIONS: u32 = 3;
@@ -1786,6 +1800,17 @@ pub struct MultiSigConfigCancelledEvent {
     pub proposal_id: u32,
 }
 
+/// Emitted (`propexpd`) by `clear_expired_proposal`.  Proposal records are
+/// deleted once final (issue #995), so this event, together with the proposal
+/// and execution/cancellation events, is the audit trail.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalExpiredEvent {
+    pub proposal_id: u32,
+    pub created_at: u64,
+    pub cleared_by: Address,
+}
+
 /// Emitted by `propose_admin_transfer` when a new multisig-gated admin
 /// transfer proposal is created.
 #[contracttype]
@@ -1818,10 +1843,11 @@ pub struct AdminTransferCancelledEvent {
 /// Lifecycle status of an admin-transfer proposal record (issue #785).
 ///
 /// `Pending` is the only state that accepts approvals or can execute.
-/// `Executed` and `Cancelled` are terminal: the record stays on the ledger
-/// with its approval bitmap cleared as the tombstone that makes its ID — and
-/// every approval it ever held — permanently unusable, since the proposal ID
-/// counter only ever moves forward.
+/// `Executed` and `Cancelled` are terminal.  Since issue #995 the record is
+/// deleted on execution, cancellation and expiry-clearing; the variants remain
+/// only so records written before that change still decode (they are inert and
+/// removable with `clear_expired_proposal`).  An ID stays unusable after
+/// deletion because the proposal ID counter only ever moves forward.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdminProposalStatus {
@@ -8488,6 +8514,10 @@ impl MilestoneEscrow {
         if record.status != AdminProposalStatus::Pending {
             return Err(Error::InvalidStatus);
         }
+        // Issue #995: an expired proposal can no longer gather approvals.
+        if Self::proposal_is_expired(&env, &record) {
+            return Err(Error::ProposalExpired);
+        }
 
         // ── Turn the signer's index into its bitmap bit (issue #583) ─────────
         // This is the only integer computation in the call, and every step of
@@ -8817,13 +8847,17 @@ impl MilestoneEscrow {
         // `new_admin` they authorize installing, so approvals collected for
         // any other proposal can never satisfy this one, and a legacy pending
         // entry with no record (pre-upgrade) cannot be executed at all.
-        let mut record: AdminTransferProposal = env
+        let record: AdminTransferProposal = env
             .storage()
             .persistent()
             .get(&DataKey::AdminProposal(pending.proposal_id))
             .ok_or(Error::InvalidStatus)?;
         if record.status != AdminProposalStatus::Pending {
             return Err(Error::InvalidStatus);
+        }
+        // Issue #995: approvals do not outlive the proposal.
+        if Self::proposal_is_expired(&env, &record) {
+            return Err(Error::ProposalExpired);
         }
 
         // Threshold comes from the same consolidated config the approvals were
@@ -8850,14 +8884,14 @@ impl MilestoneEscrow {
             .persistent()
             .remove(&DataKey::PendingAdminTransfer);
 
-        // Consume the proposal: terminal status + cleared bitmap (issue #785).
-        // The record itself stays as the tombstone that keeps this ID — and
-        // every approval it held — permanently unusable.
-        record.status = AdminProposalStatus::Executed;
-        record.approvals_bitmap = 0;
+        // Consume the proposal (issues #785, #995): the record and its
+        // approval bitmap are deleted.  The ID cannot be replayed because the
+        // counter only moves forward and `multisig_approve` /
+        // `execute_*` reject an ID with no record; the `adminexc` event keeps
+        // the history.
         env.storage()
             .persistent()
-            .set(&DataKey::AdminProposal(pending.proposal_id), &record);
+            .remove(&DataKey::AdminProposal(pending.proposal_id));
 
         env.events().publish(
             (symbol_short!("adminexc"),),
@@ -8896,20 +8930,13 @@ impl MilestoneEscrow {
             .persistent()
             .remove(&DataKey::PendingAdminTransfer);
 
-        // Consume the proposal record when one exists (issue #785).  A pending
-        // entry written before the record existed has nothing to mark — it is
-        // simply cleared here so the admin can re-propose under a fresh,
-        // record-backed ID.
-        let record_key = DataKey::AdminProposal(pending.proposal_id);
-        if let Some(mut record) = env
-            .storage()
+        // Delete the proposal record (issues #785, #995).  A pending entry
+        // written before the record existed has nothing to delete — it is
+        // simply cleared so the admin can re-propose under a fresh ID.  The
+        // `admincxl` event keeps the history.
+        env.storage()
             .persistent()
-            .get::<DataKey, AdminTransferProposal>(&record_key)
-        {
-            record.status = AdminProposalStatus::Cancelled;
-            record.approvals_bitmap = 0;
-            env.storage().persistent().set(&record_key, &record);
-        }
+            .remove(&DataKey::AdminProposal(pending.proposal_id));
 
         env.events().publish(
             (symbol_short!("admincxl"),),
@@ -9012,11 +9039,15 @@ impl MilestoneEscrow {
         let MultiSigConfig(old_signers, old_threshold) =
             Self::load_multisig_config(&env).ok_or(Error::NotInitialized)?;
 
-        let mut record: AdminTransferProposal = persistent
+        let record: AdminTransferProposal = persistent
             .get(&DataKey::AdminProposal(pending.proposal_id))
             .ok_or(Error::InvalidStatus)?;
         if record.status != AdminProposalStatus::Pending {
             return Err(Error::InvalidStatus);
+        }
+        // Issue #995: approvals do not outlive the proposal.
+        if Self::proposal_is_expired(&env, &record) {
+            return Err(Error::ProposalExpired);
         }
         if !Self::read_multisig_approval(&env, pending.proposal_id)?.approved {
             return Err(Error::MultiSigThresholdNotMet);
@@ -9034,9 +9065,8 @@ impl MilestoneEscrow {
         instance.remove(&DataKey::MultiSigThreshold);
         persistent.remove(&DataKey::PendingMultiSigConfig);
 
-        record.status = AdminProposalStatus::Executed;
-        record.approvals_bitmap = 0;
-        persistent.set(&DataKey::AdminProposal(pending.proposal_id), &record);
+        // Delete the consumed record (issue #995); `msigcfg` keeps the history.
+        persistent.remove(&DataKey::AdminProposal(pending.proposal_id));
 
         // Approvals for a pending admin transfer were given by the old signer
         // set; their bits would name different addresses now.
@@ -9081,12 +9111,8 @@ impl MilestoneEscrow {
             .ok_or(Error::NoPendingMultiSigConfig)?;
         persistent.remove(&DataKey::PendingMultiSigConfig);
 
-        let key = DataKey::AdminProposal(pending.proposal_id);
-        if let Some(mut record) = persistent.get::<_, AdminTransferProposal>(&key) {
-            record.status = AdminProposalStatus::Cancelled;
-            record.approvals_bitmap = 0;
-            persistent.set(&key, &record);
-        }
+        // Delete the record (issue #995); `msigcfgx` keeps the history.
+        persistent.remove(&DataKey::AdminProposal(pending.proposal_id));
 
         env.events().publish(
             (symbol_short!("msigcfgx"),),
@@ -9096,6 +9122,71 @@ impl MilestoneEscrow {
             },
         );
 
+        Ok(())
+    }
+
+    /// Whether `record` is older than `PROPOSAL_TTL_SECONDS` (issue #995).
+    /// Live up to and including `created_at + TTL`; expired one second later.
+    fn proposal_is_expired(env: &Env, record: &AdminTransferProposal) -> bool {
+        env.ledger().timestamp() > record.created_at.saturating_add(PROPOSAL_TTL_SECONDS)
+    }
+
+    /// Remove an expired pending proposal (admin transfer or signer-set
+    /// change) so a replacement can be proposed.  Permissionless: anyone may
+    /// call it, but `caller` must authorise the call and is recorded in the
+    /// event.  Emits `propexpd`.
+    ///
+    /// Only the record for exactly `proposal_id` is deleted, and the
+    /// `PendingAdminTransfer` / `PendingMultiSigConfig` lock is cleared only
+    /// when it still points at that same ID, so a newer proposal or an
+    /// unrelated ID is never affected.  A leftover `Executed`/`Cancelled`
+    /// record from before issue #995 is inert and may also be removed here
+    /// without waiting for expiry.
+    ///
+    /// # Errors
+    /// * `NotInitialized`         – Contract not initialised.
+    /// * `NoPendingAdminTransfer` – No record exists for `proposal_id`.
+    /// * `InvalidStatus`          – The proposal has not expired yet.
+    pub fn clear_expired_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+    ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::load_admin(&env)?;
+        caller.require_auth();
+
+        let persistent = env.storage().persistent();
+        let key = DataKey::AdminProposal(proposal_id);
+        let record: AdminTransferProposal =
+            persistent.get(&key).ok_or(Error::NoPendingAdminTransfer)?;
+        if record.status == AdminProposalStatus::Pending
+            && !Self::proposal_is_expired(&env, &record)
+        {
+            return Err(Error::InvalidStatus);
+        }
+
+        persistent.remove(&key);
+        if let Some(p) = persistent.get::<_, PendingAdminTransfer>(&DataKey::PendingAdminTransfer) {
+            if p.proposal_id == proposal_id {
+                persistent.remove(&DataKey::PendingAdminTransfer);
+            }
+        }
+        if let Some(p) = persistent.get::<_, PendingMultiSigConfig>(&DataKey::PendingMultiSigConfig)
+        {
+            if p.proposal_id == proposal_id {
+                persistent.remove(&DataKey::PendingMultiSigConfig);
+            }
+        }
+
+        env.events().publish(
+            (symbol_short!("propexpd"),),
+            ProposalExpiredEvent {
+                proposal_id,
+                created_at: record.created_at,
+                cleared_by: caller,
+            },
+        );
         Ok(())
     }
 

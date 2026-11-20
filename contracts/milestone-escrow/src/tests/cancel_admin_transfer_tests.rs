@@ -248,25 +248,17 @@ fn test_cancel_admin_transfer_footprint_full_storage_snapshot() {
     assert_eq!(instance_after, instance_before);
     assert_eq!(temporary_after, temporary_before);
 
-    // Persistent storage lost exactly one entry, PendingAdminTransfer, and the
-    // proposal record (#785) was marked Cancelled so its ID and approvals are
-    // spent. Every other persistent key/value pair (including Admin) survives
+    // Persistent storage lost exactly two entries: PendingAdminTransfer and
+    // the proposal record (#785), which is deleted once cancelled (#995).
+    // Every other persistent key/value pair (including Admin) survives
     // unchanged.
-    assert_eq!(persistent_after.len(), persistent_before.len() - 1);
+    assert_eq!(persistent_after.len(), persistent_before.len() - 2);
     assert!(persistent_after.get(pending_key).is_none());
     let record_key: Val = DataKey::AdminProposal(1).into_val(&env);
-    let record: crate::AdminTransferProposal = env.as_contract(&contract_id, || {
-        env.storage()
-            .persistent()
-            .get(&DataKey::AdminProposal(1))
-            .unwrap()
-    });
-    assert_eq!(record.status, crate::AdminProposalStatus::Cancelled);
-    assert_eq!(record.approvals_bitmap, 0);
+    assert!(persistent_before.get(record_key).is_some());
+    assert!(persistent_after.get(record_key).is_none());
     let mut expected_persistent = persistent_before.clone();
     expected_persistent.remove(pending_key);
     expected_persistent.remove(record_key);
-    let mut actual_persistent = persistent_after.clone();
-    actual_persistent.remove(record_key);
-    assert_eq!(actual_persistent, expected_persistent);
+    assert_eq!(persistent_after, expected_persistent);
 }
