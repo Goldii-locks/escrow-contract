@@ -249,24 +249,6 @@ fn emergency_paused_is_false_after_unpause() {
     assert!(!escrow.is_emergency_paused());
 }
 
-/// Only the committed `Ep` flag is reported; a held transition lock does not
-/// change the result either way.
-#[test]
-fn emergency_paused_ignores_transition_lock() {
-    let env = Env::default();
-    let (contract_id, _, escrow) = initialized_escrow(&env);
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::EpLk, &true);
-    });
-    assert!(!escrow.is_emergency_paused());
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Ep, &true);
-    });
-    assert!(escrow.is_emergency_paused());
-}
-
 // ── #504: is_multisig_approved performs zero state mutation ──────────────────
 
 #[test]

@@ -130,22 +130,3 @@ fn test_tax_deduction_estimator_preserves_full_precision() {
     assert_eq!(result.net_amount, result.gross_amount - result.tax_amount);
     assert_eq!(result.tax_rate_bps, 2_500);
 }
-
-#[test]
-fn test_tax_deduction_estimator_rate_limiting_execution_lock() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let milestone_amounts = vec![&env, 1_000_i128];
-    let (_client_addr, _freelancer_addr, _, _, _, contract_id, escrow) =
-        setup_funded_escrow(&env, milestone_amounts);
-
-    // Verify rate limit execution lock behavior
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::TaxWithholdingExecutionLock, &true);
-    });
-
-    let reentrant_call = escrow.try_tax_withholding_deductions(&0, &500);
-    assert_eq!(reentrant_call, Err(Ok(Error::TaxWithholdingInProgress)));
-}

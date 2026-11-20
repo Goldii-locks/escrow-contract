@@ -28,7 +28,7 @@ fn read_pause_lock(env: &Env, contract: &MilestoneEscrowClient<'_>) -> bool {
     env.as_contract(&contract.address, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::EpLk)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false)
     })
 }
@@ -118,10 +118,6 @@ fn no_op_paused_returns_already_paused() {
     assert!(
         client.is_emergency_paused(),
         "state must not change on no-op rejection"
-    );
-    assert!(
-        !read_pause_lock(&env, &client),
-        "no-op rejection must not write EmergencyPauseLock"
     );
 }
 

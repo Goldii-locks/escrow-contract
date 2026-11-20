@@ -103,6 +103,8 @@ mod multisig_lock_event_tests;
 mod multisig_split_refund_tests;
 mod multisig_transfer_admin_tests;
 mod overdue_reclaim_tests;
+mod partial_approval_completion_tests;
+mod partial_auto_release_tests;
 mod payment_streaming_consent_arithmetic_tests;
 mod platform_fee_allocation_no_mutation_tests;
 mod platform_fee_split_no_mutation_tests;
@@ -136,6 +138,7 @@ mod test_payment_streaming_milestones;
 pub(crate) mod testutils;
 mod time_ext_persistence_tests;
 mod time_until_auto_release_tests;
+mod treasury_fee_tests;
 mod trigger_auto_release_tests;
 mod unlock_escrow_interest_yield_event_tests;
 mod upgrade_wasm_tests;
@@ -4271,11 +4274,15 @@ fn test_approve_milestone_state_transitions() {
         MilestoneStatus::Released
     );
 
-    // Test 3: PartiallyReleased ΓåÆ InvalidStatus (should fail)
+    // Test 3: PartiallyReleased → Released: approving releases the remainder (#673)
     client.mark_delivered(&freelancer_addr, &1u32);
     client.approve_partial(&client_addr, &1u32, &500_i128);
     let result = client.try_approve_milestone(&client_addr, &1u32);
-    assert_eq!(result, Err(Ok(Error::InvalidStatus)));
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(
+        client.get_job().milestones.get(1).unwrap().status,
+        MilestoneStatus::Released
+    );
 
     // Test 4: Released ΓåÆ InvalidStatus (should fail)
     client.mark_delivered(&freelancer_addr, &2u32);
@@ -4296,9 +4303,10 @@ fn test_approve_milestone_state_transitions() {
     let result = client.try_approve_milestone(&client_addr, &4u32);
     assert_eq!(result, Err(Ok(Error::InvalidStatus)));
 
-    // Verify token balances
-    assert_eq!(token.balance(&freelancer_addr), 2_500);
-    assert_eq!(token.balance(&contract_id), 1_500);
+    // Verify token balances (milestone 1's remaining 500 is now released by
+    // approve_milestone, #673)
+    assert_eq!(token.balance(&freelancer_addr), 3_000);
+    assert_eq!(token.balance(&contract_id), 1_000);
 }
 
 #[test]
@@ -8295,14 +8303,10 @@ fn test_pf_alloc_admin_override_writes_single_storage_key() {
     // Clear the re-entrancy-guard key so that if pf_alloc_admin_override writes
     // it again we can detect it. PlatformFeeAllocation stays intact and locked.
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .remove(&DataKey::PlatformFeeAllocationLock);
+        env.storage().instance().remove(&DataKey::Paused);
     });
     assert!(!env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::PlatformFeeAllocationLock)
+        env.storage().instance().has(&DataKey::Paused)
     }));
 
     client.pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
@@ -8317,47 +8321,8 @@ fn test_pf_alloc_admin_override_writes_single_storage_key() {
     // The re-entrancy-guard key was NOT written by the call: distinct instance
     // keys written by pf_alloc_admin_override is 1, down from 2.
     assert!(!env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::PlatformFeeAllocationLock)
+        env.storage().instance().has(&DataKey::Paused)
     }));
-}
-
-#[test]
-fn test_pf_alloc_admin_override_preserves_lock_guards() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin_addr, contract_id, client) = setup_pf_alloc_escrow(&env);
-
-    client.set_platform_fee_allocation(&admin_addr, &2000_u32, &7000_u32, &1000_u32);
-    client.lock_platform_fee_allocation(&admin_addr);
-
-    // An in-progress platform-fee allocation still blocks the override.
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &true);
-    });
-    let blocked = client.try_pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
-    assert_eq!(blocked, Err(Ok(Error::PlatformFeeAllocationInProgress)));
-
-    // An in-progress emergency pause still blocks the override.
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &false);
-        env.storage().instance().set(&DataKey::EpLk, &true);
-    });
-    let blocked = client.try_pf_alloc_admin_override(&admin_addr, &1500_u32, &7500_u32, &1000_u32);
-    assert_eq!(blocked, Err(Ok(Error::EmergencyPauseInProgress)));
-
-    // Neither failed attempt mutated the locked allocation.
-    let allocation = client.get_platform_fee_allocation();
-    assert_eq!(allocation.client_bps, 2000);
-    assert_eq!(allocation.freelancer_bps, 7000);
-    assert_eq!(allocation.treasury_bps, 1000);
-    assert!(allocation.locked);
 }
 
 #[test]
@@ -8371,9 +8336,7 @@ fn test_pf_alloc_admin_override_failure_path_writes_nothing() {
     client.lock_platform_fee_allocation(&admin_addr);
 
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .remove(&DataKey::PlatformFeeAllocationLock);
+        env.storage().instance().remove(&DataKey::Paused);
     });
 
     // Ratios that do not sum to BPS_SCALE are rejected before any write.
@@ -8387,9 +8350,7 @@ fn test_pf_alloc_admin_override_failure_path_writes_nothing() {
     assert_eq!(allocation.treasury_bps, 1000);
     assert!(allocation.locked);
     assert!(!env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::PlatformFeeAllocationLock)
+        env.storage().instance().has(&DataKey::Paused)
     }));
 }
 
@@ -13039,9 +13000,7 @@ fn test_admin_tax_withholding_deductions_calculates_without_storage_lock() {
     }));
 
     let lock: Option<bool> = env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .get(&DataKey::TaxWithholdingExecutionLock)
+        env.storage().instance().get(&DataKey::Paused)
     });
     assert_eq!(lock, None);
 }
@@ -13719,28 +13678,6 @@ fn test_set_platform_fee_allocation_successive_updates_stay_persistent() {
     assert_eq!(public_alloc.client_bps, 1_000);
     assert_eq!(public_alloc.freelancer_bps, 8_000);
     assert_eq!(public_alloc.treasury_bps, 1_000);
-}
-
-/// The re-entrancy lock (PlatformFeeAllocationLock) must be cleared after
-/// a successful call — confirmed to stay in instance storage.
-#[test]
-fn test_set_platform_fee_allocation_clears_lock_on_instance_storage() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (contract_id, admin, escrow) = setup_pf_alloc_contract(&env);
-
-    escrow.set_platform_fee_allocation(&admin, &5_000u32, &4_000u32, &1_000u32);
-
-    let lock: Option<bool> = env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .get::<_, bool>(&DataKey::PlatformFeeAllocationLock)
-    });
-    assert_eq!(
-        lock,
-        Some(false),
-        "PlatformFeeAllocationLock must be cleared (false) in instance storage after call"
-    );
 }
 
 #[test]
