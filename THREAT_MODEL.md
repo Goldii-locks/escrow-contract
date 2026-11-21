@@ -36,7 +36,7 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 | Pause and unpause | `admin_pause_escrow`, `admin_resume_escrow`, `emergency_unpause`, `emergency_pause_admin_override` | The admin pause does not block the normal workflow endpoints; the admin can set or clear the emergency pause at will, and only the admin can clear a pause the parties set. See [#664](https://github.com/Goldii-locks/escrow-contract/issues/664), [#726](https://github.com/Goldii-locks/escrow-contract/issues/726), [#759](https://github.com/Goldii-locks/escrow-contract/issues/759). |
 | Control the token whitelist | `add_whitelisted_token`, `remove_whitelisted_token` | Allowed only before funding. `initialize` whitelists the job's own token, so the list does not restrict anything. See [#680](https://github.com/Goldii-locks/escrow-contract/issues/680). |
 | Control yield | `set_escrow_interest_yield`, `lock_escrow_interest_yield`, `unlock_escrow_interest_yield`, `admin_set_yield_rate`, `admin_accrue_yield` | The admin can change yield shares without the parties' consent (`set_interest_yield_consent` is the consented alternative). Accrued yield is a recorded number that is never funded or paid. See [#776](https://github.com/Goldii-locks/escrow-contract/issues/776), [#693](https://github.com/Goldii-locks/escrow-contract/issues/693). |
-| Manage the multisig and admin succession | `multisig_approval_init`, `multisig_lock`, `transfer_admin`, `propose_admin_transfer`, `cancel_admin_transfer_proposal` | `transfer_admin` replaces the admin directly without the multisig flow. See [#786](https://github.com/Goldii-locks/escrow-contract/issues/786), [#715](https://github.com/Goldii-locks/escrow-contract/issues/715), [#761](https://github.com/Goldii-locks/escrow-contract/issues/761), [#762](https://github.com/Goldii-locks/escrow-contract/issues/762). |
+| Manage the multisig and admin succession | `multisig_approval_init`, `multisig_lock`, `transfer_admin`, `propose_admin_transfer`, `cancel_admin_transfer_proposal` | `transfer_admin` replaces the admin directly without the multisig flow. Either transfer path clears every delegated role, so delegates appointed by the outgoing admin lose their authority (see [Delegated roles and admin rotation](#delegated-roles-and-admin-rotation), [#955](https://github.com/Goldii-locks/escrow-contract/issues/955)). See [#786](https://github.com/Goldii-locks/escrow-contract/issues/786), [#715](https://github.com/Goldii-locks/escrow-contract/issues/715), [#761](https://github.com/Goldii-locks/escrow-contract/issues/761), [#762](https://github.com/Goldii-locks/escrow-contract/issues/762). |
 | Become admin of a fresh deployment | `initialize` | `initialize` is a separate call after deployment, so whoever calls it first becomes admin. See [#665](https://github.com/Goldii-locks/escrow-contract/issues/665), [#667](https://github.com/Goldii-locks/escrow-contract/issues/667). |
 
 ### Arbiter
@@ -90,6 +90,39 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 5. **`initialize` is called by the intended admin immediately after deployment**
    ([#665](https://github.com/Goldii-locks/escrow-contract/issues/665)).
 
+## Delegated roles and admin rotation
+
+**Threat.** The admin delegates `Upgrader`, `Operator`, `FeeManager` and
+`Resolver` with `set_admin_role`. `Upgrader` can replace the contract code
+(`upgrade`) and `Resolver` can settle open milestones through the admin
+overrides, so either is as dangerous as the admin key itself. If an admin key
+is compromised, the attacker can appoint itself (or a second key it controls)
+to those roles. Before #955 those assignments survived `transfer_admin` and
+`execute_admin_transfer`: rotating the admin to a clean key left the attacker
+holding `Upgrader` and `Resolver`, and nothing in the transfer showed it.
+
+**Mitigation (#955).** Both transfer paths clear every assigned role, so all
+four fall back to the incoming admin, and emit one `rolechg` event per
+cleared assignment (`previous` names the delegate that lost the role) before
+the `admin` / `adminexc` event. A rotation is therefore a complete
+hand-over of authority. Tests:
+`contracts/milestone-escrow/src/tests/admin_role_transfer_tests.rs`.
+
+**Residual risk and operating rules.**
+
+- Until the transfer executes, delegates keep their roles. With a multisig
+  admin, a compromised admin can still use `set_admin_role` while a transfer
+  proposal collects approvals. Pause first (`Operator`) only if the operator
+  key is not the compromised one.
+- The incoming admin re-delegates explicitly. Operators must re-assign any
+  role they want held by someone else after every rotation; a dashboard or
+  runbook that assumes delegates persist will be wrong.
+- Rotating the signers of the admin *account* (the factory admin-pinning
+  runbook below) changes no contract state, so it does **not** clear
+  delegations. After a key compromise, check `get_admin_role` for all four
+  roles on every escrow, and either run a contract-level admin transfer or
+  re-assign each role to the admin with `set_admin_role`.
+
 ## Factory-created escrow admin pinning
 
 `create_escrow` pins each escrow to the factory's admin address at deploy time.
@@ -113,6 +146,10 @@ Operational runbook for key compromise:
 3. Verify the new key set on testnet before updating mainnet.
 4. No escrow contract calls are needed; all existing escrows immediately
    recognise the updated signer set.
+5. Audit delegated roles: account-level rotation does not reset them (see
+   [Delegated roles and admin rotation](#delegated-roles-and-admin-rotation)).
+   Query `get_admin_role` for all four roles and reset any held by a
+   compromised key.
 
 The alternative — storing the factory address in each escrow and reading the
 current admin via a cross-contract call — was not chosen because it adds a

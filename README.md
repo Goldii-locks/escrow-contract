@@ -324,7 +324,7 @@ Roles, trust assumptions, admin powers and known risks are described in [`THREAT
 ## Prerequisites
 
 - https://rustup.rs/ (the toolchain is pinned to 1.96.0 by `rust-toolchain.toml`)
-- https://developers.stellar.org/docs/smart-contracts/getting-started/setup (stellar-cli 28.0.0)
+- https://developers.stellar.org/docs/smart-contracts/getting-started/setup (stellar-cli 30.0.1, the version CI installs; the reproducible build below still pins its own 28.0.0)
 - wasm32 target: `rustup target add wasm32v1-none`
 - Docker, for reproducible builds
 

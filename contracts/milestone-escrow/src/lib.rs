@@ -565,6 +565,15 @@ pub enum AdminRole {
     Resolver,
 }
 
+/// Every [`AdminRole`], in declaration order. An admin transfer walks this to
+/// reset the outgoing admin's delegations (issue #955).
+const ADMIN_ROLES: [AdminRole; 4] = [
+    AdminRole::Upgrader,
+    AdminRole::Operator,
+    AdminRole::FeeManager,
+    AdminRole::Resolver,
+];
+
 #[contracttype]
 pub enum DataKey {
     Job,
@@ -2115,6 +2124,37 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
         Ok(())
+    }
+
+    /// Admin-transfer role policy (issue #955): delegations made by the
+    /// outgoing admin do not survive the transfer. Every explicitly assigned
+    /// `DataKey::AdminRole(role)` is removed, so the role falls back to the
+    /// incoming admin, and one `rolechg` event is emitted per removed
+    /// assignment (`admin`: the outgoing admin, `previous`: the delegate,
+    /// `new_address`: the incoming admin).
+    ///
+    /// Unassigned roles already follow the root admin, so they change hands
+    /// with the `admin` / `adminexc` event and emit nothing here. All role
+    /// keys live in instance storage, so this adds no ledger entries to the
+    /// transfer's footprint.
+    fn reset_admin_roles(env: &Env, old_admin: &Address, new_admin: &Address) {
+        let instance = env.storage().instance();
+        for role in ADMIN_ROLES {
+            let key = DataKey::AdminRole(role);
+            let Some(previous) = instance.get::<_, Address>(&key) else {
+                continue;
+            };
+            instance.remove(&key);
+            env.events().publish(
+                (symbol_short!("rolechg"),),
+                AdminRoleChangedEvent {
+                    admin: old_admin.clone(),
+                    role,
+                    previous,
+                    new_address: new_admin.clone(),
+                },
+            );
+        }
     }
 
     /// Reject while milestone `index`'s dispute is younger than the dispute
@@ -3796,6 +3836,11 @@ impl MilestoneEscrow {
     /// (whitelist management, pause/resume, emergency overrides, etc.); the
     /// previous admin loses that access.
     ///
+    /// Delegated roles (issue #955): every role the outgoing admin assigned
+    /// with `set_admin_role` is cleared and reverts to the new admin, with one
+    /// `rolechg` event per cleared assignment, emitted before the `admin`
+    /// event. `execute_admin_transfer` applies the same policy.
+    ///
     /// # Checks (in order)
     /// 1. `current_admin.require_auth()` — SDK-level signature check.
     /// 2. Contract must be initialised (`NotInitialized`).
@@ -3867,6 +3912,9 @@ impl MilestoneEscrow {
 
         // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+        // Issue #955: the outgoing admin's delegations end with its tenure.
+        // Emitted before the `admin` event so that event stays last.
+        Self::reset_admin_roles(&env, &current_admin, &new_admin);
 
         env.events().publish(
             (symbol_short!("admin"),),
@@ -8845,6 +8893,10 @@ impl MilestoneEscrow {
             env.storage()
                 .instance()
                 .set(&DataKey::Admin, &pending.new_admin);
+            // Issue #955: same role policy as `transfer_admin`. A legacy
+            // same-admin proposal changes nobody's authority, so it keeps
+            // the delegations.
+            Self::reset_admin_roles(&env, &old_admin, &pending.new_admin);
         }
         env.storage()
             .persistent()

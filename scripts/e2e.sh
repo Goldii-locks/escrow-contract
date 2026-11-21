@@ -16,7 +16,7 @@
 # Environment overrides:
 #   NETWORK_NAME   local network name (default: milestone-e2e)
 #   KEEP_NETWORK=1 leave the local network running on exit (for debugging)
-#   QUICKSTART_TAG stellar/quickstart image tag (default: v678-b1525.1-latest)
+#   QUICKSTART_TAG stellar/quickstart image tag (default: v695-b1655.1-latest)
 
 set -euo pipefail
 
@@ -25,10 +25,22 @@ MANIFEST="${ROOT_DIR}/contracts/milestone-escrow/Cargo.toml"
 NETWORK="${NETWORK:-local}"
 NETWORK_NAME="${NETWORK_NAME:-milestone-e2e}"
 KEEP_NETWORK="${KEEP_NETWORK:-0}"
-# Pinned: the quickstart image moves daily. Its RPC 30.0.0 builds (from
-# 2026-10-22) fail every simulation from stellar-cli 28 with
-# "HostError: Error(Context, InternalError)"; this one runs RPC 29.0.1.
-QUICKSTART_TAG="${QUICKSTART_TAG:-v678-b1525.1-latest}"
+# Pinned: the quickstart image moves daily, so a pin keeps nightly runs
+# comparable (issue #961). v695-b1655.1-latest is the `latest` build pushed
+# 2026-11-20: Protocol 30, stellar-core v30.0.0, stellar-rpc v30.0.1
+# (stellar/quickstart images.json). It needs stellar-cli 30.x, which the
+# workflows install (30.0.1).
+#
+# History: the previous pin, v678-b1525.1-latest (RPC 29.0.1), was a
+# workaround. Quickstart's RPC 30 builds from 2026-10-22 failed every
+# simulation from stellar-cli 28 with "HostError: Error(Context,
+# InternalError)"; with the CLI on 30.0.1 that mismatch is gone.
+#
+# Contracts still build with soroban-sdk 28 (protocol 28): a protocol-30 host
+# runs older-protocol contracts, while SDK 29+ contracts are rejected by the
+# protocol-28 testnet and mainnet ("contract protocol number is newer than
+# host"). Move the SDK only when those networks run the newer protocol.
+QUICKSTART_TAG="${QUICKSTART_TAG:-v695-b1655.1-latest}"
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1;31mFAIL: %s\033[0m\n' "$*" >&2; exit 1; }

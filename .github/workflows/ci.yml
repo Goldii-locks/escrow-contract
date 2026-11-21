@@ -60,6 +60,12 @@ jobs:
       - name: Main entry-point resource costs
         run: cargo test --manifest-path contracts/milestone-escrow/Cargo.toml cost_tests::main_entrypoint_cost_baselines -- --nocapture
 
+      - name: Resource costs at MAX_MILESTONES
+        # Issue #963: every entry point that walks all milestones, on a
+        # 50-milestone job, against the per-transaction network limits with
+        # 20% headroom. The printed table is the record for MAINNET.md.
+        run: cargo test --manifest-path contracts/milestone-escrow/Cargo.toml cost_tests::max_milestones_cost_within_network_limits -- --nocapture
+
       - name: Run tests
         run: cargo test --manifest-path contracts/milestone-escrow/Cargo.toml
 
@@ -181,32 +187,66 @@ jobs:
       - name: Build WASM
         run: stellar contract build --manifest-path contracts/milestone-escrow/Cargo.toml
 
+      - name: Build factory WASM
+        # Issue #965: clients call the factory's create_escrow (EscrowSettings,
+        # FundingMode, Vec<BytesN<32>> spec hashes), so it gets bindings too.
+        run: stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
+      - name: Resolve bindings version
+        # One version for both packages (issue #965): a release tag publishes
+        # an escrow and a factory package that were generated from the same
+        # commit, so clients can pin them together.
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-main.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Generate TypeScript bindings
         # The bindings carry no contract id: consumers pass the deployed
         # escrow's id when they create the client (docs/typescript-bindings.md).
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           stellar contract bindings typescript \
             --wasm target/wasm32v1-none/release/milestone_escrow.wasm \
             --output-dir bindings/ts \
             --overwrite
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="0.0.0-main.${GITHUB_RUN_NUMBER}"
-          fi
           cd bindings/ts
           npm pkg set name=@goldii-locks/milestone-escrow-bindings version="$VERSION"
+          npm install
+          npm run build
+
+      - name: Generate factory TypeScript bindings
+        # Same version as the escrow package. The factory id is per network,
+        # so like the escrow package this one carries no contract id.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          stellar contract bindings typescript \
+            --wasm target/wasm32v1-none/release/escrow_factory.wasm \
+            --output-dir bindings/factory-ts \
+            --overwrite
+          cd bindings/factory-ts
+          npm pkg set name=@goldii-locks/escrow-factory-bindings version="$VERSION"
           npm install
           npm run build
           {
             echo "### TypeScript bindings"
             echo
-            echo "- package version: \`$VERSION\`"
+            echo "| package | version |"
+            echo "|---|---|"
+            echo "| \`@goldii-locks/milestone-escrow-bindings\` | \`$VERSION\` |"
+            echo "| \`@goldii-locks/escrow-factory-bindings\` | \`$VERSION\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload bindings
@@ -216,6 +256,14 @@ jobs:
           path: |
             bindings/ts/
             !bindings/ts/node_modules/
+
+      - name: Upload factory bindings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: escrow-factory-bindings-ts-${{ github.sha }}
+          path: |
+            bindings/factory-ts/
+            !bindings/factory-ts/node_modules/
 
   publish-bindings:
     # On a v* tag, publish the bindings built above as a versioned package in
@@ -232,14 +280,36 @@ jobs:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: bindings/ts
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: escrow-factory-bindings-ts-${{ github.sha }}
+          path: bindings/factory-ts
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           registry-url: https://npm.pkg.github.com
           scope: '@goldii-locks'
 
-      - name: Publish
+      - name: Check both packages share the release version
+        # Issue #965: the two packages are released together or not at all.
+        run: |
+          set -euo pipefail
+          escrow=$(node -p "require('./bindings/ts/package.json').version")
+          factory=$(node -p "require('./bindings/factory-ts/package.json').version")
+          if [ "$escrow" != "$factory" ] || [ "$escrow" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::version mismatch: escrow $escrow, factory $factory, tag $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Publish escrow bindings
         working-directory: bindings/ts
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish factory bindings
+        working-directory: bindings/factory-ts
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

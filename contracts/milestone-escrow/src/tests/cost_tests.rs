@@ -5,11 +5,12 @@ use std::println;
 
 use crate::{
     test::{decision_hash, dispute_reason_hash},
-    MilestoneEscrow, MilestoneEscrowClient,
+    DataKey, FundingMode, Milestone, MilestoneEscrow, MilestoneEscrowClient, MilestoneV1,
+    ACCEPTANCE_WINDOW_SECONDS, MAX_MILESTONES,
 };
 use soroban_sdk::{
     testutils::{Address as _, EnvTestConfig, Ledger as _},
-    token, vec, Address, Env,
+    token, vec, Address, Env, Vec,
 };
 
 const MILESTONE_AMOUNT: i128 = 1_000;
@@ -279,4 +280,316 @@ fn main_entrypoint_cost_baselines() {
             max_write_bytes
         );
     }
+}
+
+// ── Resource cost at MAX_MILESTONES (issue #963) ────────────────────────────
+//
+// Every entry point that walks all milestones is measured on a job holding
+// MAX_MILESTONES (50) milestones and checked against the per-transaction
+// network limits with headroom to spare, so a job created at the cap can
+// always be settled, refunded, read and migrated on mainnet.
+//
+// The limits are the mainnet per-transaction Soroban settings this suite is
+// held to. Re-check them against `stellar network settings --network mainnet`
+// (or https://lab.stellar.org/network-limits) before launch and whenever a
+// protocol upgrade changes them: a lower live limit makes this check too
+// lenient, a higher one makes it conservative.
+const TX_MAX_INSTRUCTIONS: i64 = 100_000_000;
+const TX_MEMORY_LIMIT_BYTES: i64 = 41_943_040;
+const TX_MAX_READ_ENTRIES: u32 = 100;
+const TX_MAX_DISK_READ_BYTES: u32 = 200_000;
+const TX_MAX_WRITE_ENTRIES: u32 = 50;
+const TX_MAX_WRITE_BYTES: u32 = 132_096;
+/// Share of each limit a flow may use at the cap: 80%, leaving 20% for growth
+/// and for limit changes.
+const HEADROOM_NUM: i64 = 4;
+const HEADROOM_DEN: i64 = 5;
+
+fn within_headroom(value: i64, limit: i64) -> bool {
+    value * HEADROOM_DEN <= limit * HEADROOM_NUM
+}
+
+struct CapFixture<'a> {
+    client_addr: Address,
+    freelancer_addr: Address,
+    arbiter_addr: Address,
+    admin_addr: Address,
+    token: Address,
+    contract_id: Address,
+    escrow: MilestoneEscrowClient<'a>,
+}
+
+/// A job at the milestone cap, initialized but not funded or accepted. The
+/// client holds enough for every milestone plus one spare unit, used to create
+/// sweepable excess.
+fn cap_fixture(env: &Env, mode: FundingMode) -> CapFixture<'_> {
+    env.ledger().set_timestamp(INITIAL_TIMESTAMP);
+    let client_addr = Address::generate(env);
+    let freelancer_addr = Address::generate(env);
+    let arbiter_addr = Address::generate(env);
+    let admin_addr = Address::generate(env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    let mut amounts = Vec::new(env);
+    for _ in 0..MAX_MILESTONES {
+        amounts.push_back(MILESTONE_AMOUNT);
+    }
+    let total = MILESTONE_AMOUNT * MAX_MILESTONES as i128;
+    token::StellarAssetClient::new(env, &token).mint(&client_addr, &(total + 1));
+    let spec_hashes = crate::spec_hashes_for(&amounts);
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(env, &contract_id);
+    escrow.initialize_with_funding_mode(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token,
+        &AUTO_RELEASE_SECONDS,
+        &amounts,
+        &spec_hashes,
+        &mode,
+    );
+    assert_eq!(escrow.get_job().milestones.len(), MAX_MILESTONES);
+    CapFixture {
+        client_addr,
+        freelancer_addr,
+        arbiter_addr,
+        admin_addr,
+        token,
+        contract_id,
+        escrow,
+    }
+}
+
+fn accept(fx: &CapFixture<'_>) {
+    fx.escrow.accept_job(&fx.freelancer_addr);
+    fx.escrow.accept_arbiter(&fx.arbiter_addr);
+}
+
+/// Funded, accepted Upfront job at the cap.
+fn funded_cap_fixture(env: &Env) -> CapFixture<'_> {
+    let fx = cap_fixture(env, FundingMode::Upfront);
+    accept(&fx);
+    fx.escrow.fund(&fx.client_addr);
+    fx
+}
+
+/// Rewrite the cap job's storage into the schema-1 layout (the same steps as
+/// `migrate_tests::revert_to_schema_1`, for every milestone).
+fn revert_cap_to_schema_1(env: &Env, fx: &CapFixture<'_>) {
+    env.as_contract(&fx.contract_id, || {
+        let persistent = env.storage().persistent();
+        let instance = env.storage().instance();
+        for index in 0..MAX_MILESTONES {
+            let key = DataKey::Milestone(index);
+            let current: Milestone = persistent.get(&key).unwrap();
+            persistent.set(
+                &key,
+                &MilestoneV1 {
+                    amount: current.amount,
+                    released_amount: current.released_amount,
+                    status: current.status,
+                    delivered_at: current.delivered_at,
+                    funded: current.funded,
+                },
+            );
+        }
+        let whitelist: Vec<Address> = persistent.get(&DataKey::WhitelistedTokens).unwrap();
+        persistent.remove(&DataKey::WhitelistedTokens);
+        instance.set(&DataKey::WhitelistedTokens, &whitelist);
+        instance.remove(&DataKey::SchemaVersion);
+    });
+}
+
+/// Measures each milestone-looping entry point at MAX_MILESTONES. Every flow
+/// runs in a fresh Env, so `cost_estimate` covers only the measured call.
+fn measure_cap_flows() -> std::vec::Vec<Cost> {
+    let mut costs = std::vec::Vec::new();
+    let total = MILESTONE_AMOUNT * MAX_MILESTONES as i128;
+
+    // fund: constant writes since #730, measured at the cap to prove it.
+    let env = new_env();
+    let fx = cap_fixture(&env, FundingMode::Upfront);
+    accept(&fx);
+    fx.escrow.fund(&fx.client_addr);
+    costs.push(measure("fund", &env));
+
+    // fund_milestone: the call that funds the last milestone, which runs the
+    // "all funded" check and stores the job meta.
+    let env = new_env();
+    let fx = cap_fixture(&env, FundingMode::PerMilestone);
+    accept(&fx);
+    for index in 0..MAX_MILESTONES - 1 {
+        fx.escrow.fund_milestone(&fx.client_addr, &index);
+    }
+    fx.escrow
+        .fund_milestone(&fx.client_addr, &(MAX_MILESTONES - 1));
+    costs.push(measure("fund_milestone", &env));
+
+    // fund_milestone, worst case: storage without `FundedCount` (written
+    // before it existed), so the count falls back to reading every milestone.
+    let env = new_env();
+    let fx = cap_fixture(&env, FundingMode::PerMilestone);
+    accept(&fx);
+    for index in 0..MAX_MILESTONES - 1 {
+        fx.escrow.fund_milestone(&fx.client_addr, &index);
+    }
+    env.as_contract(&fx.contract_id, || {
+        env.storage().instance().remove(&DataKey::FundedCount);
+    });
+    fx.escrow
+        .fund_milestone(&fx.client_addr, &(MAX_MILESTONES - 1));
+    costs.push(measure("fund_milestone_legacy", &env));
+
+    // get_job / get_escrow_state: assemble every milestone.
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    fx.escrow.get_job();
+    costs.push(measure("get_job", &env));
+
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    fx.escrow.get_escrow_state();
+    costs.push(measure("get_escrow_state", &env));
+
+    // replace_arbiter: scans every milestone for an open dispute.
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    fx.escrow.replace_arbiter(&Address::generate(&env));
+    costs.push(measure("replace_arbiter", &env));
+
+    // sweep_excess: sums the outstanding obligation of every milestone
+    // (outstanding_escrow_obligations).
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    token::Client::new(&env, &fx.token).transfer(&fx.client_addr, &fx.contract_id, &1);
+    fx.escrow.sweep_excess(&fx.client_addr, &fx.token);
+    costs.push(measure("sweep_excess", &env));
+
+    // withdraw_unaccepted: refunds and rewrites every milestone. Funded
+    // without the parties' acceptance, then the acceptance window passes.
+    let env = new_env();
+    let fx = cap_fixture(&env, FundingMode::Upfront);
+    fx.escrow.fund(&fx.client_addr);
+    env.ledger()
+        .set_timestamp(INITIAL_TIMESTAMP + ACCEPTANCE_WINDOW_SECONDS);
+    fx.escrow.withdraw_unaccepted(&fx.client_addr);
+    costs.push(measure("withdraw_unaccepted", &env));
+
+    // Cancel overrides (settle_all_remaining): settle every milestone.
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    fx.escrow.cancel_escrow(&fx.client_addr);
+    fx.escrow.cancel_escrow(&fx.freelancer_addr);
+    fx.escrow.admin_override_cancel_refund(&fx.admin_addr);
+    costs.push(measure("admin_override_cancel_refund", &env));
+
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    fx.escrow.cancel_escrow(&fx.client_addr);
+    fx.escrow.cancel_escrow(&fx.freelancer_addr);
+    fx.escrow.admin_override_cancel_release(&fx.admin_addr);
+    costs.push(measure("admin_override_cancel_release", &env));
+
+    // Split refunds on the cancel and emergency paths, for the full balance.
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    fx.escrow.cancel_escrow(&fx.client_addr);
+    fx.escrow.cancel_escrow(&fx.freelancer_addr);
+    fx.escrow
+        .cancel_escrow_claim_refund(&fx.admin_addr, &total, &5_000, &5_000);
+    costs.push(measure("cancel_escrow_claim_refund", &env));
+
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    fx.escrow
+        .emergency_pause(&fx.client_addr, &fx.freelancer_addr);
+    fx.escrow
+        .emergency_pause_claim_refund(&fx.admin_addr, &total, &5_000, &5_000);
+    costs.push(measure("emergency_pause_claim_refund", &env));
+
+    // migrate from schema 1: rewrites every milestone.
+    let env = new_env();
+    let fx = funded_cap_fixture(&env);
+    revert_cap_to_schema_1(&env, &fx);
+    fx.escrow.migrate(&fx.admin_addr);
+    costs.push(measure("migrate", &env));
+
+    costs
+}
+
+#[test]
+fn max_milestones_cost_within_network_limits() {
+    let costs = measure_cap_flows();
+
+    println!("\nResource costs at MAX_MILESTONES = {MAX_MILESTONES}");
+    println!(
+        "{:<30} {:>13} {:>10} {:>10} {:>10} {:>10} {:>9} {:>11}",
+        "flow",
+        "instructions",
+        "mem bytes",
+        "read ent.",
+        "disk ent.",
+        "disk bytes",
+        "writes",
+        "write bytes"
+    );
+    for cost in &costs {
+        println!(
+            "{:<30} {:>13} {:>10} {:>10} {:>10} {:>10} {:>9} {:>11}",
+            cost.name,
+            cost.instructions,
+            cost.mem_bytes,
+            cost.memory_read_entries + cost.disk_read_entries,
+            cost.disk_read_entries,
+            cost.disk_read_bytes,
+            cost.write_entries,
+            cost.write_bytes
+        );
+    }
+
+    // Print the whole table before checking, so a failure shows every flow.
+    let mut failures = std::vec::Vec::new();
+    for cost in &costs {
+        let read_entries = cost.memory_read_entries + cost.disk_read_entries;
+        let checks = [
+            ("instructions", cost.instructions, TX_MAX_INSTRUCTIONS),
+            ("memory bytes", cost.mem_bytes, TX_MEMORY_LIMIT_BYTES),
+            (
+                "read entries",
+                read_entries as i64,
+                TX_MAX_READ_ENTRIES as i64,
+            ),
+            (
+                "disk read bytes",
+                cost.disk_read_bytes as i64,
+                TX_MAX_DISK_READ_BYTES as i64,
+            ),
+            (
+                "write entries",
+                cost.write_entries as i64,
+                TX_MAX_WRITE_ENTRIES as i64,
+            ),
+            (
+                "write bytes",
+                cost.write_bytes as i64,
+                TX_MAX_WRITE_BYTES as i64,
+            ),
+        ];
+        for (resource, value, limit) in checks {
+            if !within_headroom(value, limit) {
+                failures.push(std::format!(
+                    "{}: {resource} {value} is over 80% of the {limit} limit",
+                    cost.name
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "flows at MAX_MILESTONES exceed the network-limit headroom:\n{}",
+        failures.join("\n")
+    );
 }
