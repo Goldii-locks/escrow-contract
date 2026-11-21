@@ -175,12 +175,15 @@ fn execute_transfer_swaps_admin_and_emits_event() {
     let pending: Option<PendingAdminTransfer> = client.get_pending_admin_transfer();
     assert!(pending.is_none());
 
-    // Admin key swapped to new_admin.
-    let current_admin: Address = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Admin).unwrap()
-    });
-    assert_eq!(current_admin, new_admin);
-    assert_ne!(current_admin, old_admin);
+    // Two-step (issue #953): the approved admin is installed only on accept.
+    let current_admin = || -> Address {
+        env.as_contract(&contract_id, || {
+            env.storage().instance().get(&DataKey::Admin).unwrap()
+        })
+    };
+    assert_eq!(current_admin(), old_admin);
+    client.accept_admin(&new_admin);
+    assert_eq!(current_admin(), new_admin);
 }
 
 #[test]
@@ -242,6 +245,7 @@ fn new_admin_can_propose_after_transfer_old_admin_cannot() {
     client.multisig_approve(&s1, &1u32);
     client.multisig_approve(&s2, &1u32);
     client.execute_admin_transfer();
+    client.accept_admin(&new_admin);
 
     // Old admin is no longer authorized.
     let another = Address::generate(&env);
@@ -305,6 +309,7 @@ fn execute_transfer_updates_instance_admin_used_by_instance_gated_endpoints() {
     client.multisig_approve(&s1, &1u32);
     client.multisig_approve(&s2, &1u32);
     client.execute_admin_transfer();
+    client.accept_admin(&new_admin);
 
     let instance_admin: Address = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::Admin).unwrap()
@@ -323,6 +328,7 @@ fn transfer_admin_updates_instance_admin_used_by_instance_gated_endpoints() {
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     let new_admin = Address::generate(&env);
     client.transfer_admin(&old_admin, &new_admin);
+    client.accept_admin(&new_admin);
 
     let instance_admin: Address = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::Admin).unwrap()

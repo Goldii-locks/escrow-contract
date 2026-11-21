@@ -12,6 +12,28 @@ See "Verifying the deployed contract" in the README.
 WASM: build with `scripts/build-reproducible.sh <commit>`; CI publishes the
 hash for every commit in the `reproducible-wasm` job summary.
 
+### Changed (#935, #952, #953, #954)
+
+- **Breaking**: admin transfers are two-step (#953). `transfer_admin` and
+  `execute_admin_transfer` record a pending hand-over (`adm_prop`) that the new
+  admin completes with `accept_admin` within 7 days (`adm_acc`, then `admin`).
+  New: `accept_admin`, `cancel_admin_transfer` (`adm_cncl`),
+  `expire_admin_transfer` (`adm_exp`), `get_pending_admin_acceptance`, error
+  `AdminTransferExpired` (58). Clients and runbooks that expect the admin to
+  change in the transfer call must add the acceptance step.
+- Client reputation is credited only for explicit approvals
+  (`approve_milestone`, `approve_milestones`, the final `approve_partial`, a
+  co-signed `payment_streaming_consent`), no longer for overdue auto-releases,
+  disputes the client lost, arbitration splits or admin overrides (#952). The
+  freelancer is still credited on every full release to it.
+- `set_admin_role` rejects the job's client, freelancer and arbiter, and
+  `rotate_freelancer` / `replace_arbiter` reject current role holders
+  (`InvalidParties`, #954).
+- Factory test coverage: explicit-auth failures for `allow_token` and
+  `set_wasm_hash`, wasm-hash isolation between existing and new escrows,
+  `EscrowSettings` propagation, duplicate salts and mismatched milestone
+  vectors (#935).
+
 ### Fixed
 
 - `raise_dispute` now performs zero-address check, `require_auth`, and

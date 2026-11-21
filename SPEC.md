@@ -99,6 +99,80 @@ are not required to settle the escrow.
 - Pause state is per contract instance; unpausing one escrow does not affect
   another.
 
+## Reputation
+
+`get_reputation(address)` returns a count of milestones that ended well for
+that address. Each increment emits a `rep` event (`ReputationChangedEvent`:
+`address`, `new_score`, `milestone_index`, #736). Scores only increase;
+no negative signal is tracked.
+
+Rules (#952):
+
+- **Freelancer:** +1 whenever a milestone reaches `Released` with its whole
+  amount paid to the freelancer, by any path: `approve_milestone`,
+  `approve_milestones`, the final `approve_partial`, `claim_auto_release` /
+  `trigger_auto_release`, `resolve_dispute` in the freelancer's favour, an
+  arbitration split that pays the freelancer everything,
+  `payment_streaming_consent`, and `admin_override_streaming_release`.
+- **Client:** +1 only when the client explicitly approved that release:
+  `approve_milestone`, each milestone released by `approve_milestones`, the
+  `approve_partial` call that releases the rest of a milestone, and a
+  `payment_streaming_consent` the client co-signed that releases it in full.
+- **No client credit** when the client did not approve: an overdue
+  auto-release (the client failed to review in time), a dispute the arbiter
+  decided for the freelancer (the client lost), an arbitration split, or an
+  admin override. Refunds, splits that return money to the client, and
+  partial releases credit nobody.
+
+The client score therefore measures approvals the client gave, and the
+freelancer score measures milestones the freelancer was paid for.
+
+## Admin transfers
+
+Admin hand-over is two-step on both paths (#953):
+
+1. **Propose.** `transfer_admin(current_admin, new_admin)` (single admin), or
+   `execute_admin_transfer()` once a multisig proposal has reached its
+   threshold, records a `PendingAdminAcceptance` and emits `adm_prop` with
+   `expires_at` = now + `ADMIN_ACCEPTANCE_WINDOW_SECONDS` (7 days). The stored
+   admin does **not** change; the current admin keeps every power.
+2. **Accept.** `accept_admin(new_admin)`, signed by `new_admin` itself, at or
+   before `expires_at`, installs `new_admin` as the stored admin, clears the
+   hand-over, and emits `adm_acc` followed by `admin` (`TransferAdminEvent`).
+   Any other address is `Unauthorized`; after `expires_at` it is
+   `AdminTransferExpired`.
+
+A hand-over awaiting acceptance can end two other ways:
+
+- **Cancel.** `cancel_admin_transfer(admin)` by the current admin removes it
+  and emits `adm_cncl`. A cancelled multisig hand-over must be proposed and
+  approved again.
+- **Expire.** After `expires_at`, `expire_admin_transfer()` (anyone) removes
+  it and emits `adm_exp`. A new `transfer_admin` or `propose_admin_transfer`
+  also clears a lapsed hand-over first, emitting `adm_exp`.
+
+While an unexpired hand-over is pending, `transfer_admin` and
+`propose_admin_transfer` return `AdminTransferPending`, so at most one
+transfer is in flight. A legacy same-admin multisig proposal (recorded before
+#771) changes nobody's authority and completes in `execute_admin_transfer`
+without an acceptance step. `get_pending_admin_acceptance()` returns the
+pending hand-over.
+
+Why: a one-step transfer to a mistyped, lost or contract address cannot be
+undone, because the old admin loses control in the same call. Requiring the
+new admin's own signature proves the key works before authority moves, and the
+expiry stops an unclaimed proposal from being accepted much later.
+
+## Admin roles and job parties
+
+`set_admin_role` refuses to delegate `Upgrader`, `Operator`, `FeeManager` or
+`Resolver` to the job's client, freelancer or arbiter (`InvalidParties`,
+#954). Returning a role to the admin is always allowed. `rotate_freelancer` and
+`replace_arbiter` refuse an incoming address that currently holds a delegated
+role (`InvalidParties`). A party with an admin role could pause, re-fee,
+override payouts on, or upgrade the escrow it is a party to, so the two sets
+never overlap.
+
 ## Dispute semantics
 
 A dispute is raised with `raise_dispute(caller, milestone_index, reason_hash)`.

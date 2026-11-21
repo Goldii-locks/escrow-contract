@@ -2,16 +2,19 @@
 //! Unit tests for `get_reputation` and the `increment_reputation` bookkeeping
 //! behind it.
 //!
-//! Reputation is bumped for *both* parties every time a milestone reaches
-//! `Released`, through whichever path got it there. The endpoint had no
-//! coverage at all: the two tests that exercised it were removed when
-//! `test.rs` was rewritten, and nothing replaced them, leaving a public
-//! contract function untested while its snapshots stayed behind.
+//! Semantics (issue #952, see "Reputation" in `SPEC.md`): the freelancer is
+//! credited every time a milestone reaches `Released` with the whole amount
+//! paid to them, through whichever path got it there. The client is credited
+//! only when the client explicitly approved that release (`approve_milestone`,
+//! `approve_milestones`, the final `approve_partial`, or a co-signed
+//! `payment_streaming_consent`), never for an overdue auto-release, a dispute
+//! the arbiter decided for the freelancer, or an admin override.
 
+use crate::test::{decision_hash, dispute_reason_hash};
 use crate::testutils::EscrowFixture;
 use crate::{Error, MilestoneEscrow, MilestoneEscrowClient};
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{vec, Address, Env};
 
 #[test]
 fn test_reputation_tracking() {
@@ -79,10 +82,124 @@ fn test_reputation_auto_release() {
 
     client.claim_auto_release(&freelancer_addr, &0u32);
 
-    // Auto-release is still a release, so it must credit both parties the
-    // same way an explicit approve_milestone does.
-    assert_eq!(client.get_reputation(&client_addr), 1);
+    // Issue #952: an auto-release pays the freelancer because the client did
+    // *not* act, so only the freelancer is credited.
+    assert_eq!(client.get_reputation(&client_addr), 0);
     assert_eq!(client.get_reputation(&freelancer_addr), 1);
+}
+
+#[test]
+fn trigger_auto_release_credits_only_the_freelancer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let fx = EscrowFixture::new(&env).funded().build();
+    fx.escrow.mark_delivered(&fx.freelancer, &0u32);
+    env.ledger().with_mut(|l| {
+        l.timestamp += 604_800 + 1;
+    });
+
+    // Anyone may trigger it; the caller is recorded, not authenticated.
+    fx.escrow
+        .trigger_auto_release(&Address::generate(&env), &0u32);
+
+    assert_eq!(fx.escrow.get_reputation(&fx.client), 0);
+    assert_eq!(fx.escrow.get_reputation(&fx.freelancer), 1);
+}
+
+#[test]
+fn lost_dispute_credits_only_the_freelancer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let fx = EscrowFixture::new(&env).funded().build();
+    fx.escrow.mark_delivered(&fx.freelancer, &0u32);
+    fx.escrow
+        .raise_dispute(&fx.client, &0u32, &dispute_reason_hash(&env));
+    // The arbiter releases to the freelancer: the client lost the dispute.
+    fx.escrow
+        .resolve_dispute(&fx.arbiter, &0u32, &true, &decision_hash(&env));
+
+    assert_eq!(fx.escrow.get_reputation(&fx.client), 0);
+    assert_eq!(fx.escrow.get_reputation(&fx.freelancer), 1);
+}
+
+#[test]
+fn dispute_refunded_to_the_client_credits_nobody() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let fx = EscrowFixture::new(&env).funded().build();
+    fx.escrow.mark_delivered(&fx.freelancer, &0u32);
+    fx.escrow
+        .raise_dispute(&fx.client, &0u32, &dispute_reason_hash(&env));
+    fx.escrow
+        .resolve_dispute(&fx.arbiter, &0u32, &false, &decision_hash(&env));
+
+    assert_eq!(fx.escrow.get_reputation(&fx.client), 0);
+    assert_eq!(fx.escrow.get_reputation(&fx.freelancer), 0);
+}
+
+#[test]
+fn final_partial_approval_credits_the_client() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let fx = EscrowFixture::new(&env).funded().build();
+    fx.escrow.mark_delivered(&fx.freelancer, &0u32);
+
+    // A partial approval releases money but not the milestone: no credit yet.
+    fx.escrow.approve_partial(&fx.client, &0u32, &400_i128);
+    assert_eq!(fx.escrow.get_reputation(&fx.client), 0);
+    assert_eq!(fx.escrow.get_reputation(&fx.freelancer), 0);
+
+    // The approval that releases the rest is the explicit final approval.
+    fx.escrow.approve_partial(&fx.client, &0u32, &600_i128);
+    assert_eq!(fx.escrow.get_reputation(&fx.client), 1);
+    assert_eq!(fx.escrow.get_reputation(&fx.freelancer), 1);
+}
+
+#[test]
+fn batch_approval_credits_the_client_per_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let fx = EscrowFixture::new(&env)
+        .milestones(&[1_000_i128, 500_i128])
+        .funded()
+        .build();
+    fx.escrow.mark_delivered(&fx.freelancer, &0u32);
+    fx.escrow.mark_delivered(&fx.freelancer, &1u32);
+
+    fx.escrow
+        .approve_milestones(&fx.client, &vec![&env, 0u32, 1u32]);
+
+    assert_eq!(fx.escrow.get_reputation(&fx.client), 2);
+    assert_eq!(fx.escrow.get_reputation(&fx.freelancer), 2);
+}
+
+/// An approval after an auto-release on another milestone still credits the
+/// client for the approval alone.
+#[test]
+fn client_score_counts_only_the_approvals() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let fx = EscrowFixture::new(&env)
+        .milestones(&[1_000_i128, 500_i128])
+        .funded()
+        .build();
+    fx.escrow.mark_delivered(&fx.freelancer, &0u32);
+    env.ledger().with_mut(|l| {
+        l.timestamp += 604_800 + 1;
+    });
+    fx.escrow.claim_auto_release(&fx.freelancer, &0u32);
+
+    fx.escrow.mark_delivered(&fx.freelancer, &1u32);
+    fx.escrow.approve_milestone(&fx.client, &1u32);
+
+    assert_eq!(fx.escrow.get_reputation(&fx.client), 1);
+    assert_eq!(fx.escrow.get_reputation(&fx.freelancer), 2);
 }
 
 #[test]

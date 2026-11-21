@@ -136,8 +136,12 @@ either is set. `emergency_unpause` lets the admin lift both.
 
 | Function | Caller | Description |
 |---|---|---|
-| `transfer_admin` | Admin | Transfer admin role |
-| `set_admin_role` | Admin | Assign an administrative role (Upgrader, Operator, FeeManager, Resolver) |
+| `transfer_admin` | Admin | Propose a new admin; it takes effect when the new admin calls `accept_admin` (#953) |
+| `accept_admin` | Proposed admin | Accept a pending admin transfer within 7 days (#953) |
+| `cancel_admin_transfer` | Admin | Withdraw a transfer awaiting `accept_admin` (#953) |
+| `expire_admin_transfer` | Anyone | Clear a transfer whose acceptance window closed (#953) |
+| `get_pending_admin_acceptance` | Anyone | View the transfer awaiting `accept_admin` |
+| `set_admin_role` | Admin | Assign an administrative role (Upgrader, Operator, FeeManager, Resolver); never to the job's client, freelancer or arbiter (#954) |
 | `get_admin_role` | Anyone | Current holder of a role |
 | `add_whitelisted_token` | Admin | Add token to whitelist |
 | `remove_whitelisted_token` | Admin | Remove token from whitelist |
@@ -148,7 +152,7 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `admin_pause_escrow` | Admin | Admin pause (blocks user endpoints) |
 | `admin_resume_escrow` | Admin | Admin resume |
 | `propose_admin_transfer` | Admin | Propose multisig admin transfer |
-| `execute_admin_transfer` | Multisig | Execute proposed admin transfer |
+| `execute_admin_transfer` | Multisig | Execute an approved admin transfer; the new admin must then call `accept_admin` (#953) |
 | `cancel_admin_transfer_proposal` | Admin | Cancel pending admin transfer |
 | `get_pending_admin_transfer` | Anyone | View pending admin transfer |
 
@@ -224,7 +228,7 @@ either is set. `emergency_unpause` lets the admin lift both.
 |---|---|---|
 | `sweep_excess` | Client or Admin | Recover surplus tokens |
 | `get_milestone_spec_hash` | Anyone | Get spec hash for milestone |
-| `get_reputation` | Anyone | Get address reputation |
+| `get_reputation` | Anyone | Get address reputation (see "Reputation" in `SPEC.md`) |
 | `compute_ratio_allocation` | Anyone | Compute ratio allocation (largest remainder) |
 
 Events carry party addresses as extra topics for `getEvents` filtering; see
@@ -304,6 +308,7 @@ action — never a caller-supplied calculation.
 | 55 | `DisputePending` | `replace_arbiter` was called while a milestone is `Disputed` |
 | 56 | `ReviewWindowClosed` | `raise_dispute` or `request_revision` was called on a `Delivered` milestone after its auto-release deadline |
 | 57 | `InvalidDeadline` | `set_milestone_due_dates` got a non-zero due date at or before the current ledger timestamp |
+| 58 | `AdminTransferExpired` | `accept_admin` was called after the pending transfer's acceptance window closed; clear it with `expire_admin_transfer` and propose again |
 
 ## Milestone States
 

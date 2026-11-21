@@ -131,6 +131,8 @@ fn test_admin_accrue_yield_authorizes_against_synced_instance_admin() {
     let new_admin = Address::generate(&env);
 
     client.transfer_admin(&old_admin, &new_admin);
+    // Two-step (issue #953): the new admin must accept.
+    client.accept_admin(&new_admin);
 
     assert_eq!(admin_in(true, &contract_id, &env), Some(new_admin.clone()));
     assert_eq!(admin_in(false, &contract_id, &env), None);
@@ -165,6 +167,7 @@ fn test_admin_accrue_yield_authorizes_against_synced_admin_after_transfer_flow()
     let proposal_id = client.propose_admin_transfer(&old_admin, &new_admin);
     client.multisig_approve(&signer, &proposal_id);
     client.execute_admin_transfer();
+    client.accept_admin(&new_admin);
 
     assert_eq!(admin_in(true, &contract_id, &env), Some(new_admin.clone()));
     assert_eq!(
