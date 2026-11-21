@@ -276,6 +276,243 @@ change no milestone or escrow state.
 | `milestone_time_extensions` | contract, client and freelancer | none | `m_ext` |
 | `time_extensions_consent` | client and freelancer | not paused | `m_extcns` |
 
+### Milestone scope changes, deadlines and revisions
+
+| Entry point | Signer(s) | Guards | Source status | Target status | Token movement | Event |
+|---|---|---|---|---|---|---|
+| `add_milestone` | client and freelancer | `ensure_not_paused`; funded; positive `amount`; fewer than `MAX_MILESTONES` (50) | none | new milestone `Pending` (funded) | client → contract, `amount` | `ms_add` |
+| `reduce_milestone` | client and freelancer | `ensure_not_paused`; funded; `0 < new_amount < amount` | `Pending` | `Pending` | → client, the difference | `ms_reduce` |
+| `increase_milestone` | client and freelancer | `ensure_migrated`; `ensure_not_paused`; `new_amount > amount` | `Pending` | `Pending` | client → contract, the difference (when funded; received amount checked) | `ms_incr` |
+| `set_milestone_due_dates` | client | `ensure_migrated`; not funded; freelancer not yet accepted; one entry per milestone; `0` = no deadline, otherwise in the future | n/a | writes `DueAt(index)` (TTL-extended) | none | none |
+| `reclaim_overdue` | client | `ensure_migrated`; `ensure_not_paused`; milestone funded; `DueAt + OVERDUE_GRACE_SECONDS` (1 day) passed | `Pending` | `Refunded` | → client, remaining | `overdue` |
+| `mark_delivered_with_hash` | freelancer | as `mark_delivered`, plus `ensure_migrated`; stores the 32-byte `deliverable` hash on the milestone | `Pending` | `Delivered` | none | `deliver` |
+| `request_revision` | client | `ensure_migrated`; `ensure_not_paused`; funded; review window open; `revision_count < MAX_REVISIONS` (3) | `Delivered` | `Pending`; clears `delivered_at`; increments `RevCnt` | none | `msrev` |
+| `trigger_auto_release` | anyone (`caller` is recorded, not authorized) | `ensure_not_paused`; milestone funded; auto-release deadline passed | `Delivered` | `Released` | → freelancer (the stored freelancer, never `caller`), remaining | `claim` |
+| `approve_milestones` | client | `ensure_not_paused`; funded; `1..=MAX_BATCH_APPROVALS` (10) distinct indices, each funded | `Delivered` (each) | `Released` (each) | → freelancer, one transfer of the summed remaining | `approve` (one per milestone) |
+
+### Party and arbiter rotation, escalation and recovery
+
+| Entry point | Signer(s) | Guards | Effect | Token movement | Event |
+|---|---|---|---|---|---|
+| `replace_arbiter` | client and freelancer | `ensure_migrated`; `ensure_not_paused`; valid address distinct from client and freelancer; no milestone `Disputed` (`DisputePending`) | replaces the arbiter; the new arbiter must `accept_arbiter` | none | `arbchg` |
+| `rotate_freelancer` | client and current freelancer | valid address distinct from client and arbiter | replaces the freelancer identity and payout destination; owed credits stay with the old address | none | `freerot` |
+| `escalate_dispute` | client or freelancer | `ensure_migrated`; `ensure_not_paused`; funded; dispute timeout elapsed (`DisputeTimeoutNotReached`) | restores the pre-dispute status (keeps `delivered_at`); deletes `DisputeInfo` | none | `dispescal` |
+| `sweep_excess` | client or admin | `ensure_migrated`; `ensure_not_paused`; excess > 0 (`NothingToSweep`); balance covers obligations | none | → client, excess | `sweep` |
+
+### Roles, treasury, multisig configuration, tax recipient and maintenance
+
+| Entry point | Signer(s) | Guards | Effect | Event |
+|---|---|---|---|---|
+| `set_admin_role` | root admin | `ensure_migrated`; valid address | assigns `role` to `new_address` (the root admin's own address resets it) | `rolechg` |
+| `propose_treasury_update` | `FeeManager` | `ensure_migrated`; valid address | stores a pending treasury that matures after `TREASURY_UPDATE_DELAY_SECONDS` (7 days) | none |
+| `apply_treasury_update` | `FeeManager` | `ensure_migrated`; pending update; timelock elapsed | installs the treasury; clears the pending update | `treasury` |
+| `propose_multisig_config` | admin | `ensure_migrated`; multisig initialised; nothing pending (`MultiSigConfigPending`); valid signer set and threshold | stores `PendingMultiSigConfig` and a proposal record; returns the proposal ID | `msigcfgp` |
+| `execute_multisig_config` | anyone | `ensure_migrated`; pending config; its proposal reached the **current** threshold | installs the new signer set; consumes the proposal; clears approvals on a pending admin transfer | `msigcfg` |
+| `cancel_multisig_config_proposal` | admin | `ensure_migrated`; pending config | clears the pending config; consumes the proposal | `msigcfgx` |
+| `set_tax_recipient` | `FeeManager`; **plus client and freelancer once funded** | `ensure_migrated`; valid address; not the contract itself, the client, the freelancer, the arbiter or the acting admin (`InvalidAddress`) | stores `TaxRecipient` (TTL-extended) | `taxrcpt` |
+| `migrate` | `Upgrader` | stored schema below `SCHEMA_VERSION` (`AlreadyMigrated` otherwise) | rewrites legacy storage to the current layout; bumps the schema marker | `migrate` |
+| `extend_storage` | anyone | initialised | extends the instance TTL and every present milestone-, dispute- and governance-related persistent key (see [Storage TTL policy](#storage-ttl-policy)); no other state change, no tokens | none |
+
+`set_tax_recipient` hardening (#957): before funding the `FeeManager` alone
+may set the recipient. After `fund`, the recipient is part of the deal's
+economics and is frozen unless the same transaction is also signed by the
+client and the freelancer (the co-sign model used by
+`set_interest_yield_consent`). Withholdings already recorded keep the
+recipient captured in `TaxWithholdingRecipient(index)` at withholding time.
+
+### Additional calculation endpoint
+
+| Entry point | Signer(s) | Guards | Event |
+|---|---|---|---|
+| `compute_ratio_allocation` | none | at most `MAX_MULTISIG_RATIO_COUNT` ratios (`TooManyParties`); valid inputs | none: pure largest-remainder split with no storage writes or transfers |
+
+## Storage TTL policy
+
+`TTL_THRESHOLD` is 30 days of ledgers (`30 * 24 * 60 * 5`) and `TTL_EXTEND_TO`
+is 365 days (`365 * 24 * 60 * 5`). Every persistent write goes through the
+single helper `set_persistent`, which writes the value **and** extends that
+entry to `TTL_EXTEND_TO`; the `ttl_storage_lint_tests` suite fails if any
+other `persistent().set(` call appears in `lib.rs` (#956).
+
+| Key | Storage | Extended on write | Extended on read | Extended by `extend_storage` |
+|---|---|---|---|---|
+| contract instance (`Job`, `Admin`, pause flags, `TotalOwed`, …) | instance | yes (`bump`) | every state change (`bump`) | yes |
+| `Milestone(i)`, `DueAt(i)`, `TimeExt(i)`, `RevCnt(i)` | persistent | yes | — | yes |
+| `DisputeInfo(i)` | persistent | yes | yes (`submit_evidence`, `resolve_dispute`, timeout checks) | yes |
+| `TaxWithholdingLock(i)`, `TaxWithholdingRecipient(i)`, `MultiSigApproval(i)`, `ArbitrationSplitBps(i)` | persistent | yes | — | yes |
+| `Owed(address)` | persistent | yes | yes (`withdraw`, `withdraw_to`, credit path) | no (not enumerable; every read and write extends it) |
+| `Reputation(address)` | persistent | yes | — | no (not enumerable) |
+| `PendingAdminTransfer`, `AdminProposal(id)` | persistent | yes | yes (`execute_admin_transfer`) | yes (pending transfer and its proposal) |
+| `AdminProposalCounter`, `MultiSigConfig`, `PendingMultiSigConfig` | persistent | yes | — | yes |
+| `WhitelistedTokens`, `PlatformFeeAllocation`, `TaxRecipient`, `YieldConfig`, `YieldAccrued` | persistent | yes | — | yes |
+| legacy persistent `Admin` | persistent | yes when `migrate` copies it; the instance entry is the source of truth since #679 | — | instance bump |
+
+Keepers should call `extend_storage` at least once per `TTL_THRESHOLD`
+window for every active escrow. Pure getters do not extend TTLs, so their
+read-only footprint stays predictable.
+
+## Fees and limits
+
+| Constant | Value | Applies to |
+|---|---|---|
+| `MAX_MILESTONES` | 50 | `__constructor`, `add_milestone` |
+| `MAX_BATCH_APPROVALS` | 10 | `approve_milestones` |
+| `MAX_REVISIONS` | 3 | `request_revision` |
+| `MAX_DISPUTE_EVIDENCE_ENTRIES` | 10 | `submit_evidence` |
+| `MAX_WHITELIST_SIZE` | 50 | `add_whitelisted_token` |
+| `MAX_MULTISIG_RATIO_COUNT` | 255 | `compute_ratio_allocation`, multisig ratio endpoints |
+| `MAX_TREASURY_FEE_BPS` | 2 000 (20 %) | platform fee allocation, treasury share |
+| `MAX_CLIENT_FEE_BPS` | 5 000 (50 %) | platform fee allocation, client share |
+| `MAX_ARBITER_FEE_BPS` | 1 000 (10 %) | arbiter fee set at construction (`get_arbiter_fee_bps`) |
+| `DISPUTE_TIMEOUT_SECONDS` | 30 days (allowed range 1–180 days) | `escalate_dispute` |
+| `MAX_AUTO_RELEASE_SECONDS` | 10 years | `__constructor` |
+| `ACCEPTANCE_WINDOW_SECONDS` | 7 days | `withdraw_unaccepted` |
+| `CANCEL_APPROVAL_TTL_SECONDS` | 7 days | `cancel_escrow` |
+| `OVERDUE_GRACE_SECONDS` | 1 day | `reclaim_overdue` |
+| `TREASURY_UPDATE_DELAY_SECONDS` | 7 days | `apply_treasury_update` |
+
+## Behaviour reference
+
+The sections below were folded in from the former root `SPEC.md` (#958),
+which now only points here.
+
+### Funding modes
+
+The escrow supports two funding modes.
+
+#### Upfront (default)
+
+`initialize` always uses `FundingMode::Upfront`. The client calls `fund(client)` once and transfers the sum of every milestone amount. No milestone may be delivered or settled until that full deposit succeeds. Calling `fund_milestone` in this mode returns `InvalidFundingMode`.
+
+#### PerMilestone
+
+`initialize_with_funding_mode(..., FundingMode::PerMilestone)` lets the client fund each milestone independently with `fund_milestone(client, milestone_index)`.
+
+- Only the selected milestone amount is transferred.
+- Duplicate funding of the same milestone returns `AlreadyFunded`.
+- `fund` is rejected with `InvalidFundingMode`.
+- A milestone that is not funded cannot be delivered, approved, disputed, released, refunded, or auto-released (`NotFunded`).
+- Unrelated unfunded milestones do not block work on a funded milestone.
+- `get_job` exposes each milestone's `funded` flag. `get_funding_mode` returns the mode.
+
+Funding is recorded only after the client balance is confirmed sufficient, so a failed transfer does not mark a milestone funded.
+
+### Conservation
+
+A milestone can never release more than its funded amount. Partial approvals, refunds, and dispute splits operate only against that remaining funded balance.
+
+### Revision workflow
+
+After a milestone is `Delivered`, the authorized client may call
+`request_revision(client, milestone_index, note_hash)`.
+
+- The milestone returns to `Pending`.
+- `delivered_at` is cleared (persistent and temporary), so the previous
+  auto-release window cannot fire.
+- `revision_count` increments by one. `MAX_REVISIONS` is 3.
+- Further revision requests after the cap return `MaxRevisions`; the client
+  must approve, partially approve, or dispute.
+- Once the auto-release deadline has passed, `request_revision` returns
+  `ReviewWindowClosed`.
+- The on-chain event `msrev` carries `milestone_index`, `note_hash`, and
+  `revision_count`. The note itself is not stored.
+- A later `mark_delivered` writes a fresh `delivered_at` and starts a new
+  auto-release window.
+- Revision does not change funding, released amounts, or escrow balances.
+
+### Excess asset recovery
+
+`sweep_excess(caller, token)` lets the **client or admin** recover assets that
+are not required to settle the escrow.
+
+- Escrow token: sweepable amount is `contract_balance - outstanding_obligations`.
+  Obligations are each non-terminal milestone's `amount - released_amount`
+  (Pending, Delivered, PartiallyReleased, Disputed), plus any accrued yield.
+  Terminal statuses (`Released`, `Refunded`, `Split`) are excluded so they
+  cannot be double-counted after settlement.
+- If the contract balance is below obligations, the call returns
+  `InsufficientBalance` and transfers nothing.
+- Zero excess returns `NothingToSweep`.
+- Other tokens: the full contract balance is recoverable (they are not used
+  for milestone settlement).
+- Excess is always sent to the client. Callers cannot pick another recipient.
+- Emits `sweep` with token, amount, and recipient.
+
+### Emergency pause control
+
+- `emergency_pause(client, freelancer)`: both parties must authorize. Sets a
+  party-owned pause (`EpParty = true`).
+- `emergency_unpause_parties(client, freelancer)`: both parties must authorize
+  to lift a pause **they jointly created**. One party acting alone is
+  `Unauthorized`. This path cannot lift an admin pause.
+- `emergency_unpause(admin)`: admin recovery for any pause.
+- `admin_pause_escrow(admin)` / `admin_resume_escrow(admin)`: the single admin
+  pause (`Paused`). A party unpause cannot lift it.
+- `emergency_pause_admin_override(admin)`: deprecated alias that sets the admin
+  pause (`Paused`).
+- There are two pauses, admin and party, and every entry point checks them
+  through one helper; either one blocks the guarded endpoints.
+- Unpausing a running escrow returns `NotPaused`.
+- Pause state is per contract instance; unpausing one escrow does not affect
+  another.
+
+### Dispute semantics
+
+A dispute is raised with `raise_dispute(caller, milestone_index, reason_hash)`.
+Either the client or the freelancer may raise it, and the caller must authorize
+the call. `reason_hash` is a 32-byte commitment to the off-chain statement that
+explains the dispute; it is stored on-chain and echoed in the `dispute` event so
+arbiters can anchor the claim without trusting off-chain metadata (#712).
+Raise-able statuses and their intended meaning:
+
+| Status at raise time | Allowed? | Meaning                                                                 |
+| -------------------- | -------- | ----------------------------------------------------------------------- |
+| `Pending`            | No       | Nothing has been delivered to arbitrate — returns `InvalidStatus` (#774, #784). |
+| `Delivered`          | Yes      | **Delivery (quality) dispute** on submitted work.                        |
+| `PartiallyReleased`  | Yes      | **Remainder dispute** over the not-yet-released balance.                 |
+| `Disputed`           | No       | Already disputed — returns `InvalidStatus` (see `DisputeAlreadyRaised` for the lock path). |
+| `Released`           | No       | Terminal — returns `InvalidStatus`.                                      |
+| `Refunded`           | No       | Terminal — returns `InvalidStatus`.                                      |
+| `Split`              | No       | Terminal — returns `InvalidStatus`.                                      |
+
+Notes:
+
+- Raising a dispute moves the milestone to `Disputed` and freezes it. While
+  `Disputed`, `mark_delivered` is refused (`mark_delivered` only accepts
+  `Pending`), so the way forward is the arbiter, or escalation after the
+  dispute timeout (below).
+- The arbiter resolves a `Disputed` milestone with one of:
+  - `resolve_dispute(release_to_freelancer = true)` → `Released`
+  - `resolve_dispute(release_to_freelancer = false)` → `Refunded`
+  - `apply_dispute_arbitration_split(client_refund_bps)` → `Split` (full
+    refund becomes `Refunded`, full freelancer award becomes `Released`).
+  Both closing calls also take a 32-byte `decision_hash`, a commitment to the
+  arbiter's written decision that stays off-chain in escrow-backend storage,
+  keyed by that hash. The hash is echoed in the `resolve` event (and `arbsplit`
+  for a split); it changes neither the outcome nor the fund distribution
+  (#1015).
+- While a milestone is `Disputed`, either party may anchor evidence with
+  `submit_evidence(caller, milestone_index, evidence_hash)`. Each hash is
+  appended to the dispute record (at most `MAX_DISPUTE_EVIDENCE_ENTRIES` = 10,
+  then `EvidenceLimitReached`), timestamped, and published as an `evidence`
+  event. `get_dispute_info` returns the reason hash, `raised_by` (the party
+  that called `raise_dispute`, #997), `disputed_at`, the pre-dispute status
+  and every evidence entry; the record is deleted when the
+  dispute closes, so evidence never outlives the dispute it belongs to (#712).
+- If the arbiter has not acted within the escrow's dispute timeout (30 days
+  by default, set with `initialize_with_dispute_timeout`), either party may
+  call `escalate_dispute` to return the milestone to its pre-dispute status;
+  a restored `Delivered` milestone keeps its original auto-release deadline
+  (`delivered_at` is not reset), so a dispute → escalate → dispute loop cannot
+  extend the review window.
+- Once a `Delivered` milestone's auto-release deadline has passed,
+  `raise_dispute` returns `ReviewWindowClosed`; the freelancer may claim.
+- A freelancer who never delivers is handled by the escrow delivery deadline
+  and the cancellation / auto-release paths — `raise_dispute` is not the
+  mechanism for non-delivery.
+- When a dispute is rejected, no milestone or storage state is mutated.
+
+
 ## Invariants
 
 1. **Conservation.** For every milestone, the amount paid to the freelancer plus
@@ -320,4 +557,21 @@ These neither change state nor publish events: `get_job`, `get_reputation`,
 `get_platform_fee_allocation`, `is_multisig_approved`,
 `get_pending_admin_transfer`, `is_escrow_interest_yield_locked`,
 `get_escrow_interest_yield`, `get_yield_info`, `is_multisig_locked`,
-`get_dispute_info`.
+`get_dispute_info`, `get_arbiter_fee_bps`, `get_funding_mode`,
+`get_milestone_due_at`, `get_revision_count`, `get_admin_role`,
+`get_pending_multisig_config`, `schema_version`, `get_milestone`,
+`get_escrow_state`, `get_milestone_spec_hash` and `get_tax_recipient`.
+
+| Read-only endpoint | Returns |
+|---|---|
+| `get_arbiter_fee_bps` | arbiter fee in bps; `0` when none was set |
+| `get_funding_mode` | `Upfront` or `PerMilestone` (missing storage = `Upfront`) |
+| `get_milestone_due_at` | delivery deadline of one milestone; `0` = none (`InvalidMilestone` out of range) |
+| `get_revision_count` | revisions requested for one milestone |
+| `get_admin_role` | the role's assignee, or the root admin |
+| `get_pending_multisig_config` | the pending signer-set change, if any |
+| `schema_version` | stored layout version; below `SCHEMA_VERSION` until `migrate` runs |
+| `get_milestone` | one milestone, without assembling the job |
+| `get_escrow_state` | job, admin, pause flags, cancel state, per-milestone extensions and deadlines, fee allocation and version in one read |
+| `get_milestone_spec_hash` | the off-chain description hash committed for one milestone |
+| `get_tax_recipient` | the configured tax recipient, or `None` |

@@ -89,6 +89,24 @@ The admin is the platform. It is set by `initialize` and can be replaced with
    ([#676](https://github.com/Goldii-locks/escrow-contract/issues/676)).
 5. **`initialize` is called by the intended admin immediately after deployment**
    ([#665](https://github.com/Goldii-locks/escrow-contract/issues/665)).
+6. **The `FeeManager` is trusted to pick a disinterested tax recipient, but
+   only until funding.** `set_tax_recipient` decides where withheld tax is
+   paid, so a compromised or conflicted `FeeManager` could redirect it.
+   Mitigations ([#957](https://github.com/Goldii-locks/escrow-contract/issues/957)):
+   the call requires `ensure_migrated`; it rejects the escrow contract
+   itself, the client, the freelancer, the arbiter and the acting admin as
+   recipient (`InvalidAddress`); and once the escrow is funded the recipient
+   is frozen unless the client **and** the freelancer co-sign the change. A
+   withholding already recorded keeps the recipient captured at withholding
+   time (`TaxWithholdingRecipient`). Residual risk: before funding the
+   `FeeManager` alone chooses the recipient, so parties should check
+   `get_tax_recipient` before calling `fund`.
+7. **Someone keeps active storage alive.** Every persistent write extends the
+   entry's TTL to about a year, and long-lived reads (`Owed`, `DisputeInfo`,
+   pending admin transfer) extend it again. An escrow left untouched for
+   longer than that still needs a keeper to call the permissionless
+   `extend_storage` (or a manual restore)
+   ([#956](https://github.com/Goldii-locks/escrow-contract/issues/956)).
 
 ## Factory-created escrow admin pinning
 
