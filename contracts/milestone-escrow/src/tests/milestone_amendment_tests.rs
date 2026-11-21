@@ -605,3 +605,59 @@ fn increase_milestone_rejects_unfunded_upfront_escrow() {
     let res = escrow.try_increase_milestone(&client_addr, &freelancer_addr, &0u32, &1_500_i128);
     assert_eq!(res, Err(Ok(Error::NotFunded)));
 }
+
+#[test]
+fn add_milestone_under_per_milestone_appends_unfunded_and_leaves_meta_unfunded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, token_addr, contract_id, escrow) = setup_per_milestone(&env);
+    // Initially milestones 0 and 1 are unfunded. Fund milestone 0 so the job has funding.
+    escrow.fund_milestone(&client_addr, &0u32);
+
+    let initial_balance = balance(&env, &token_addr, &contract_id);
+    let initial_client_balance = balance(&env, &token_addr, &client_addr);
+    assert_eq!(initial_balance, 1_000);
+
+    // Add milestone under PerMilestone mode.
+    escrow.add_milestone(&client_addr, &freelancer_addr, &500_i128);
+
+    let job = escrow.get_job();
+    assert_eq!(job.milestones.len(), 3);
+    let added = job.milestones.get(2).expect("third milestone exists");
+    assert_eq!(added.amount, 500);
+    assert_eq!(added.released_amount, 0);
+    assert_eq!(added.status, MilestoneStatus::Pending);
+    assert_eq!(added.funded, false);
+
+    let meta = job_meta(&env, &contract_id);
+    assert_eq!(meta.milestone_count, 3);
+    assert_eq!(meta.total_amount, 3_500);
+    assert_eq!(meta.funded, false);
+
+    // No funds transferred from client upon add_milestone under PerMilestone
+    assert_eq!(balance(&env, &token_addr, &contract_id), initial_balance);
+    assert_eq!(balance(&env, &token_addr, &client_addr), initial_client_balance);
+
+    // Now fund the added milestone through fund_milestone
+    escrow.fund_milestone(&client_addr, &2u32);
+    let funded_added = escrow.get_job().milestones.get(2).unwrap();
+    assert_eq!(funded_added.funded, true);
+    assert_eq!(balance(&env, &token_addr, &contract_id), initial_balance + 500);
+}
+
+#[test]
+fn reduce_milestone_under_per_milestone_with_funding_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, token_addr, contract_id, escrow) = setup_per_milestone(&env);
+    // Fund milestone 0
+    escrow.fund_milestone(&client_addr, &0u32);
+
+    let client_balance_before = balance(&env, &token_addr, &client_addr);
+    escrow.reduce_milestone(&client_addr, &freelancer_addr, &0u32, &600_i128);
+
+    let m0 = escrow.get_job().milestones.get(0).unwrap();
+    assert_eq!(m0.amount, 600);
+    assert_eq!(balance(&env, &token_addr, &contract_id), 600);
+    assert_eq!(balance(&env, &token_addr, &client_addr), client_balance_before + 400);
+}

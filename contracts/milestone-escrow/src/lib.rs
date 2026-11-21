@@ -4278,9 +4278,7 @@ impl MilestoneEscrow {
         client.require_auth();
         freelancer.require_auth();
 
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
+        Self::require_escrow_has_funding(&env, &meta)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -4293,6 +4291,9 @@ impl MilestoneEscrow {
             .ok_or(Error::InvalidAmount)?;
         let new_index = meta.milestone_count;
 
+        let funding_mode = Self::load_funding_mode(&env);
+        let funded = funding_mode == FundingMode::Upfront;
+
         Self::store_milestone(
             &env,
             new_index,
@@ -4301,7 +4302,7 @@ impl MilestoneEscrow {
                 released_amount: 0,
                 status: MilestoneStatus::Pending,
                 delivered_at: 0,
-                funded: true,
+                funded,
                 spec_hash: BytesN::from_array(&env, &[0u8; 32]),
                 deliverable: BytesN::from_array(&env, &[0u8; 32]),
             },
@@ -4310,15 +4311,20 @@ impl MilestoneEscrow {
         // sees the updated count/total (mirrors `fund`).
         meta.milestone_count = new_index + 1;
         meta.total_amount = new_total;
+        if funding_mode == FundingMode::PerMilestone {
+            meta.funded = false;
+        }
         Self::store_job_meta(&env, &meta);
-        // The job is funded, so every milestone, including this one, holds
-        // its deposit (#999).
-        env.storage()
-            .instance()
-            .set(&DataKey::FundedCount, &meta.milestone_count);
 
-        let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(&client, env.current_contract_address(), &amount);
+        if funded {
+            // In upfront mode, every milestone, including this one, holds its deposit (#999).
+            env.storage()
+                .instance()
+                .set(&DataKey::FundedCount, &meta.milestone_count);
+
+            let token_client = token::Client::new(&env, &meta.token);
+            token_client.transfer(&client, env.current_contract_address(), &amount);
+        }
 
         env.events().publish(
             (symbol_short!("ms_add"), client.clone(), freelancer.clone()),
@@ -4380,9 +4386,7 @@ impl MilestoneEscrow {
         client.require_auth();
         freelancer.require_auth();
 
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
+        Self::require_escrow_has_funding(&env, &meta)?;
         if milestone_index >= meta.milestone_count {
             return Err(Error::InvalidMilestone);
         }
