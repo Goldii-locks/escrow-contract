@@ -14,8 +14,8 @@
 use crate::test::{setup_funded_escrow, setup_unfunded_escrow};
 use crate::{
     all_event_tuples, DataKey, Error, FundingMode, JobMeta, MilestoneAddedEvent, MilestoneEscrow,
-    MilestoneEscrowClient, MilestoneIncreasedEvent, MilestoneReducedEvent, MilestoneStatus,
-    MAX_MILESTONES,
+    MilestoneEscrowClient, MilestoneIncreasedEvent, MilestoneReducedEvent, MilestoneRemovedEvent,
+    MilestoneStatus, MAX_MILESTONES,
 };
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{symbol_short, token, vec, Address, Env, FromVal, IntoVal, Symbol, Val};
@@ -678,4 +678,112 @@ fn reduce_milestone_under_per_milestone_with_funding_succeeds() {
     assert_eq!(m0.amount, 600);
     assert_eq!(balance(&env, &token_addr, &contract_id), 600);
     assert_eq!(balance(&env, &token_addr, &client_addr), client_balance_before + 400);
+}
+
+// ── remove_milestone tests (#946) ──────────────────────────────────────────
+
+#[test]
+fn remove_milestone_happy_path_refunds_and_marks_refunded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, token_addr, contract_id, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 2_000_i128]);
+
+    assert_eq!(balance(&env, &token_addr, &contract_id), 3_000);
+    assert_eq!(balance(&env, &token_addr, &client_addr), 0);
+
+    escrow.remove_milestone(&client_addr, &freelancer_addr, &0u32);
+
+    assert_eq!(topic_count(&env, symbol_short!("ms_remove")), 1);
+    let event: MilestoneRemovedEvent = last_event_payload(&env);
+    assert_eq!(event.milestone_index, 0);
+    assert_eq!(event.amount, 1_000);
+    assert_eq!(event.refunded, 1_000);
+    assert_eq!(event.total_amount, 2_000);
+    assert_eq!(event.milestone_count, 2);
+
+    // Balance refunded to client
+    assert_eq!(balance(&env, &token_addr, &client_addr), 1_000);
+    assert_eq!(balance(&env, &token_addr, &contract_id), 2_000);
+
+    // Indexes are stable: milestone 0 is still at index 0 with status Refunded
+    let job = escrow.get_job();
+    assert_eq!(job.milestones.len(), 2);
+    let m0 = job.milestones.get(0).unwrap();
+    assert_eq!(m0.status, MilestoneStatus::Refunded);
+    assert_eq!(m0.amount, 1_000);
+
+    let m1 = job.milestones.get(1).unwrap();
+    assert_eq!(m1.status, MilestoneStatus::Pending);
+    assert_eq!(m1.amount, 2_000);
+}
+
+#[test]
+fn remove_milestone_rejects_non_pending_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 2_000_i128]);
+
+    // Deliver milestone 0
+    let deliverable = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    escrow.deliver_milestone(&freelancer_addr, &0u32, &deliverable);
+
+    let res = escrow.try_remove_milestone(&client_addr, &freelancer_addr, &0u32);
+    assert_eq!(res, Err(Ok(Error::InvalidStatus)));
+}
+
+#[test]
+fn remove_milestone_rejects_single_signature() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, _, _, _, contract_id, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 2_000_i128]);
+
+    let invoke = MockAuthInvoke {
+        contract: &contract_id,
+        fn_name: "remove_milestone",
+        args: (&client_addr, &freelancer_addr, &0u32).into_val(&env),
+        sub_invokes: &[],
+    };
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &client_addr,
+            invoke: &invoke,
+        }])
+        .try_remove_milestone(&client_addr, &freelancer_addr, &0u32);
+    assert!(matches!(result, Err(Err(_))));
+
+    let result = escrow
+        .mock_auths(&[MockAuth {
+            address: &freelancer_addr,
+            invoke: &invoke,
+        }])
+        .try_remove_milestone(&client_addr, &freelancer_addr, &0u32);
+    assert!(matches!(result, Err(Err(_))));
+}
+
+#[test]
+fn remove_milestone_per_milestone_unfunded_does_not_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, token_addr, contract_id, escrow) = setup_per_milestone(&env);
+    // Milestone 0 funded, Milestone 1 unfunded
+    escrow.fund_milestone(&client_addr, &0u32);
+
+    let client_balance_before = balance(&env, &token_addr, &client_addr);
+    let contract_balance_before = balance(&env, &token_addr, &contract_id);
+
+    // Remove unfunded milestone 1
+    escrow.remove_milestone(&client_addr, &freelancer_addr, &1u32);
+
+    // Balances unchanged
+    assert_eq!(balance(&env, &token_addr, &client_addr), client_balance_before);
+    assert_eq!(balance(&env, &token_addr, &contract_id), contract_balance_before);
+
+    let m1 = escrow.get_job().milestones.get(1).unwrap();
+    assert_eq!(m1.status, MilestoneStatus::Refunded);
+
+    let event: MilestoneRemovedEvent = last_event_payload(&env);
+    assert_eq!(event.refunded, 0);
 }

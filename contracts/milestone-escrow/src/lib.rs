@@ -875,6 +875,20 @@ pub struct MilestoneReducedEvent {
     pub milestone_count: u32,
 }
 
+/// Emitted by `remove_milestone` when both parties consent to removing a
+/// `Pending` milestone (issue #946).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneRemovedEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestone_index: u32,
+    pub amount: i128,
+    pub refunded: i128,
+    pub total_amount: i128,
+    pub milestone_count: u32,
+}
+
 /// Emitted by `increase_milestone` when both parties consent to raising a
 /// `Pending` milestone's amount (issue #1020).
 #[contracttype]
@@ -4447,6 +4461,78 @@ impl MilestoneEscrow {
                 old_amount: new_amount + refund,
                 new_amount,
                 refund,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Jointly remove a `Pending` milestone and refund its deposited amount (if any)
+    /// to the client (issue #946).
+    ///
+    /// Both parties must sign. Marks the milestone with terminal status `Refunded`
+    /// without shifting milestone indexes.
+    pub fn remove_milestone(
+        env: Env,
+        client: Address,
+        freelancer: Address,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        Self::ensure_not_paused(&env)?;
+
+        let mut meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
+        Self::require_escrow_has_funding(&env, &meta)?;
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        if milestone.status != MilestoneStatus::Pending {
+            return Err(Error::InvalidStatus);
+        }
+
+        let funded = Self::milestone_is_funded(&meta, &milestone);
+        let refund = if funded {
+            let amount = milestone.amount;
+            let token_client = token::Client::new(&env, &meta.token);
+            if Self::available_balance(&env, &token_client) < amount {
+                return Err(Error::InsufficientBalance);
+            }
+            Self::pay_or_credit(&env, &token_client, &client, &amount)?;
+            amount
+        } else {
+            0
+        };
+
+        let old_amount = milestone.amount;
+        milestone.status = MilestoneStatus::Refunded;
+        Self::store_milestone(&env, milestone_index, &milestone);
+
+        if refund > 0 {
+            meta.total_amount -= refund;
+            Self::store_job_meta(&env, &meta);
+        }
+
+        env.events().publish(
+            (
+                symbol_short!("ms_remove"),
+                client.clone(),
+                freelancer.clone(),
+            ),
+            MilestoneRemovedEvent {
+                client,
+                freelancer,
+                milestone_index,
+                amount: old_amount,
+                refunded: refund,
                 total_amount: meta.total_amount,
                 milestone_count: meta.milestone_count,
             },
