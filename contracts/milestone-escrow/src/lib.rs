@@ -270,6 +270,7 @@ const MAX_REVISIONS: u32 = 3;
 /// party cannot grow it without limit (and therefore cannot inflate the
 /// ledger-rent footprint of the dispute record) by submitting repeatedly.
 pub const MAX_DISPUTE_EVIDENCE_ENTRIES: u32 = 10;
+pub const MAX_DISPUTE_EVIDENCE_PER_PARTY: u32 = 5;
 
 const MAX_TREASURY_FEE_BPS: u32 = 2000;
 const MAX_CLIENT_FEE_BPS: u32 = 5000;
@@ -6132,6 +6133,16 @@ impl MilestoneEscrow {
             .get(&key)
             .ok_or(Error::InvalidStatus)?;
         if dispute_info.evidence.len() >= MAX_DISPUTE_EVIDENCE_ENTRIES {
+            return Err(Error::EvidenceLimitReached);
+        }
+
+        let mut caller_count: u32 = 0;
+        for entry in dispute_info.evidence.iter() {
+            if entry.submitter == caller {
+                caller_count = caller_count.saturating_add(1);
+            }
+        }
+        if caller_count >= MAX_DISPUTE_EVIDENCE_PER_PARTY {
             return Err(Error::EvidenceLimitReached);
         }
 
