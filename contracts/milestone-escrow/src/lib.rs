@@ -2077,6 +2077,49 @@ impl MilestoneEscrow {
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 
+    /// The single write path for persistent storage (issue #956).
+    ///
+    /// Writes `value` under `key` **and** extends that entry's TTL to
+    /// `TTL_EXTEND_TO` in the same invocation, so no persistent key can be
+    /// created or updated at the minimum TTL and silently become eligible
+    /// for archival while the escrow is still active. Milestone entries
+    /// always had this treatment via `store_milestone`; every other
+    /// persistent key (`Owed`, `DisputeInfo`, `RevCnt`, `TimeExt`,
+    /// `PendingAdminTransfer`, `AdminProposal`, `MultiSigConfig`,
+    /// `WhitelistedTokens`, `PlatformFeeAllocation`, `TaxRecipient`,
+    /// `YieldConfig`, `YieldAccrued`, …) now goes through here too.
+    ///
+    /// A lint test (`ttl_storage_lint_tests`) fails the build if any direct
+    /// `persistent().set(` / `persistent.set(` call appears outside this
+    /// function, so the guarantee cannot regress.
+    fn set_persistent<V>(env: &Env, key: &DataKey, value: &V)
+    where
+        V: IntoVal<Env, Val>,
+    {
+        env.storage().persistent().set(key, value);
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+
+    /// Read a long-lived persistent entry and extend its TTL on read
+    /// (issue #956), so a key that is read by an active settlement path can
+    /// never be archived underneath it. Returns `None` for an absent entry,
+    /// in which case nothing is written.
+    ///
+    /// Used only on paths that already mutate (or are keeper-facing); the
+    /// pure getters keep their read-only footprint guarantees and rely on
+    /// [`Self::extend_storage`] for TTL maintenance.
+    fn get_persistent<V>(env: &Env, key: &DataKey) -> Option<V>
+    where
+        V: TryFromVal<Env, Val>,
+    {
+        let persistent = env.storage().persistent();
+        let value = persistent.get::<_, V>(key)?;
+        persistent.extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        Some(value)
+    }
+
     /// Load the single source of truth for the admin: the **instance** entry.
     ///
     /// Pre-#679 deployments also carry a legacy persistent `DataKey::Admin`
@@ -2120,10 +2163,7 @@ impl MilestoneEscrow {
     /// Reject while milestone `index`'s dispute is younger than the dispute
     /// timeout, so a resolver cannot pre-empt the arbiter (issue #761).
     fn assert_dispute_timeout_elapsed(env: &Env, index: u32) -> Result<(), Error> {
-        let Some(info) = env
-            .storage()
-            .persistent()
-            .get::<_, DisputeInfo>(&DataKey::DisputeInfo(index))
+        let Some(info) = Self::get_persistent::<DisputeInfo>(env, &DataKey::DisputeInfo(index))
         else {
             return Ok(());
         };
@@ -2186,7 +2226,7 @@ impl MilestoneEscrow {
         };
         let persistent = env.storage().persistent();
         if !persistent.has(key) {
-            persistent.set(key, &value);
+            Self::set_persistent(env, key, &value);
         }
         instance.remove(key);
         true
@@ -2410,17 +2450,14 @@ impl MilestoneEscrow {
         }
 
         let key = DataKey::Owed(to.clone());
-        let owed = env
-            .storage()
-            .persistent()
-            .get::<_, i128>(&key)
+        let owed = Self::get_persistent::<i128>(env, &key)
             .unwrap_or(0)
             .checked_add(*amount)
             .ok_or(Error::ArithmeticOverflow)?;
         let total_owed = Self::load_total_owed(env)
             .checked_add(*amount)
             .ok_or(Error::ArithmeticOverflow)?;
-        env.storage().persistent().set(&key, &owed);
+        Self::set_persistent(&env, &key, &owed);
         env.storage()
             .instance()
             .set(&DataKey::TotalOwed, &total_owed);
@@ -2547,9 +2584,7 @@ impl MilestoneEscrow {
 
     #[cfg(test)]
     fn store_interest_yield_state(env: &Env, state: &EscrowInterestYieldState) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::InterestYieldState, state);
+        Self::set_persistent(&env, &DataKey::InterestYieldState, state);
     }
 
     /// Calculate net distributions for a split refund by applying the platform
@@ -2948,14 +2983,8 @@ impl MilestoneEscrow {
     }
 
     fn store_milestone(env: &Env, index: u32, milestone: &Milestone) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Milestone(index), milestone);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Milestone(index),
-            TTL_THRESHOLD,
-            TTL_EXTEND_TO,
-        );
+        // `set_persistent` writes the entry and extends its TTL (#956).
+        Self::set_persistent(&env, &DataKey::Milestone(index), milestone);
         Self::bump(env);
     }
 
@@ -3109,7 +3138,7 @@ impl MilestoneEscrow {
         let key = DataKey::Reputation(address.clone());
         let current: u32 = env.storage().persistent().get(&key).unwrap_or(0);
         let new_score = current + 1;
-        env.storage().persistent().set(&key, &new_score);
+        Self::set_persistent(&env, &key, &new_score);
         env.events().publish(
             (symbol_short!("rep"),),
             ReputationChangedEvent {
@@ -3607,7 +3636,8 @@ impl MilestoneEscrow {
         // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Ep, &false);
-        env.storage().persistent().set(
+        Self::set_persistent(
+            &env,
             &DataKey::PlatformFeeAllocation,
             &PlatformFeeAllocation {
                 client_bps: 0,
@@ -3619,9 +3649,7 @@ impl MilestoneEscrow {
 
         let mut whitelist: Vec<Address> = Vec::new(&env);
         whitelist.push_back(token.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::WhitelistedTokens, &whitelist);
+        Self::set_persistent(&env, &DataKey::WhitelistedTokens, &whitelist);
         if dispute_timeout_seconds != DISPUTE_TIMEOUT_SECONDS {
             env.storage()
                 .instance()
@@ -3968,9 +3996,7 @@ impl MilestoneEscrow {
         }
 
         whitelist.push_back(token.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::WhitelistedTokens, &whitelist);
+        Self::set_persistent(&env, &DataKey::WhitelistedTokens, &whitelist);
 
         env.events().publish(
             (symbol_short!("wtok"),),
@@ -4028,9 +4054,7 @@ impl MilestoneEscrow {
             whitelist.set(index, last_elem);
         }
         whitelist.pop_back();
-        env.storage()
-            .persistent()
-            .set(&DataKey::WhitelistedTokens, &whitelist);
+        Self::set_persistent(&env, &DataKey::WhitelistedTokens, &whitelist);
 
         env.events().publish(
             (symbol_short!("wldel"),),
@@ -4851,10 +4875,8 @@ impl MilestoneEscrow {
             if due_at == 0 {
                 env.storage().persistent().remove(&key);
             } else {
-                env.storage().persistent().set(&key, &due_at);
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+                // `set_persistent` writes the entry and extends its TTL (#956).
+                Self::set_persistent(&env, &key, &due_at);
             }
         }
         Ok(())
@@ -5093,9 +5115,7 @@ impl MilestoneEscrow {
             return Err(Error::MaxRevisions);
         }
         let revision_count = current + 1;
-        env.storage()
-            .persistent()
-            .set(&DataKey::RevCnt(milestone_index), &revision_count);
+        Self::set_persistent(&env, &DataKey::RevCnt(milestone_index), &revision_count);
 
         milestone.status = MilestoneStatus::Pending;
         milestone.delivered_at = 0;
@@ -5173,9 +5193,7 @@ impl MilestoneEscrow {
             .ok_or(Error::InvalidExtension)?;
         let delivered_at = milestone.delivered_at;
         let new_deadline = Self::auto_release_deadline(&meta, delivered_at, new_extension)?;
-        env.storage()
-            .persistent()
-            .set(&DataKey::TimeExt(milestone_index), &new_extension);
+        Self::set_persistent(&env, &DataKey::TimeExt(milestone_index), &new_extension);
 
         env.events().publish(
             (
@@ -5625,7 +5643,7 @@ impl MilestoneEscrow {
         let meta = Self::load_job_meta(&env)?;
 
         let key = DataKey::Owed(caller.clone());
-        let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let amount: i128 = Self::get_persistent(&env, &key).unwrap_or(0);
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -5686,7 +5704,7 @@ impl MilestoneEscrow {
         let meta = Self::load_job_meta(&env)?;
 
         let key = DataKey::Owed(caller.clone());
-        let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let amount: i128 = Self::get_persistent(&env, &key).unwrap_or(0);
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -5938,7 +5956,8 @@ impl MilestoneEscrow {
         Self::assert_review_window_open(env, &meta, milestone_index, &milestone)?;
 
         let disputed_at = env.ledger().timestamp();
-        env.storage().persistent().set(
+        Self::set_persistent(
+            &env,
             &DataKey::DisputeInfo(milestone_index),
             &DisputeInfo {
                 disputed_at,
@@ -6017,11 +6036,8 @@ impl MilestoneEscrow {
         }
 
         let key = DataKey::DisputeInfo(milestone_index);
-        let mut dispute_info: DisputeInfo = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::InvalidStatus)?;
+        let mut dispute_info: DisputeInfo =
+            Self::get_persistent(&env, &key).ok_or(Error::InvalidStatus)?;
         if dispute_info.evidence.len() >= MAX_DISPUTE_EVIDENCE_ENTRIES {
             return Err(Error::EvidenceLimitReached);
         }
@@ -6032,7 +6048,7 @@ impl MilestoneEscrow {
             evidence_hash: evidence_hash.clone(),
             submitted_at,
         });
-        env.storage().persistent().set(&key, &dispute_info);
+        Self::set_persistent(&env, &key, &dispute_info);
 
         env.events().publish(
             (symbol_short!("evidence"),),
@@ -6111,11 +6127,9 @@ impl MilestoneEscrow {
         if milestone.status != MilestoneStatus::Disputed {
             return Err(Error::InvalidStatus);
         }
-        let dispute_info: DisputeInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DisputeInfo(milestone_index))
-            .ok_or(Error::InvalidStatus)?;
+        let dispute_info: DisputeInfo =
+            Self::get_persistent(&env, &DataKey::DisputeInfo(milestone_index))
+                .ok_or(Error::InvalidStatus)?;
         let timeout = env
             .storage()
             .instance()
@@ -7081,7 +7095,7 @@ impl MilestoneEscrow {
                     deliverable: zero.clone(),
                 }
             };
-            persistent.set(&key, &migrated);
+            Self::set_persistent(env, &key, &migrated);
         }
         Ok(())
     }
@@ -7102,7 +7116,8 @@ impl MilestoneEscrow {
                 continue;
             }
             let old: DisputeInfoV3 = persistent.get(&key).ok_or(Error::InvalidStatus)?;
-            persistent.set(
+            Self::set_persistent(
+                env,
                 &key,
                 &DisputeInfo {
                     disputed_at: old.disputed_at,
@@ -7143,7 +7158,8 @@ impl MilestoneEscrow {
         if let (Some(signers), Some(threshold)) = (legacy_signers, legacy_threshold) {
             let persistent = env.storage().persistent();
             if !persistent.has(&DataKey::MultiSigConfig) {
-                persistent.set(
+                Self::set_persistent(
+                    env,
                     &DataKey::MultiSigConfig,
                     &MultiSigConfig(signers, threshold),
                 );
@@ -7513,7 +7529,8 @@ impl MilestoneEscrow {
                 return Err(Error::InvalidStatus);
             }
 
-            env.storage().persistent().set(
+            Self::set_persistent(
+                &env,
                 &DataKey::PlatformFeeAllocation,
                 &PlatformFeeAllocation {
                     client_bps,
@@ -7594,9 +7611,7 @@ impl MilestoneEscrow {
             );
 
             current.locked = true;
-            env.storage()
-                .persistent()
-                .set(&DataKey::PlatformFeeAllocation, &current);
+            Self::set_persistent(&env, &DataKey::PlatformFeeAllocation, &current);
             Ok(())
         })()
     }
@@ -7636,7 +7651,8 @@ impl MilestoneEscrow {
 
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
 
-        env.storage().persistent().set(
+        Self::set_persistent(
+            &env,
             &DataKey::PlatformFeeAllocation,
             &PlatformFeeAllocation {
                 client_bps,
@@ -8123,9 +8139,7 @@ impl MilestoneEscrow {
         let delivered_at = milestone.delivered_at;
         let new_deadline = Self::auto_release_deadline(&meta, delivered_at, new_extension)?;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::TimeExt(milestone_index), &new_extension);
+        Self::set_persistent(&env, &DataKey::TimeExt(milestone_index), &new_extension);
 
         env.events().publish(
             (symbol_short!("m_extcns"),),
@@ -8359,9 +8373,7 @@ impl MilestoneEscrow {
 
         let signers_clone = signers.clone();
         let config = MultiSigConfig(signers, threshold);
-        env.storage()
-            .persistent()
-            .set(&DataKey::MultiSigConfig, &config);
+        Self::set_persistent(&env, &DataKey::MultiSigConfig, &config);
 
         // Structured event for indexers / auditors (issue #455).  The two
         // payload fields are taken from the local variables that were just
@@ -8520,9 +8532,7 @@ impl MilestoneEscrow {
         let bitmap = record.approvals_bitmap;
         if bitmap & mask == 0 {
             record.approvals_bitmap = bitmap.checked_add(mask).ok_or(Error::ArithmeticOverflow)?;
-            env.storage()
-                .persistent()
-                .set(&DataKey::AdminProposal(proposal_id), &record);
+            Self::set_persistent(&env, &DataKey::AdminProposal(proposal_id), &record);
         }
         // Re-read after the conditional write so the state returned (and the
         // event) always carries the bitmap as stored, new bit included.
@@ -8734,7 +8744,8 @@ impl MilestoneEscrow {
         // the same invocation as the two record writes below, so the assigned
         // ID can never be handed out twice.
         let proposal_id = Self::open_proposal_record(&env, &new_admin)?;
-        env.storage().persistent().set(
+        Self::set_persistent(
+            &env,
             &DataKey::PendingAdminTransfer,
             &PendingAdminTransfer {
                 new_admin: new_admin.clone(),
@@ -8767,8 +8778,9 @@ impl MilestoneEscrow {
             .unwrap_or(0u32)
             .checked_add(1)
             .ok_or(Error::ArithmeticOverflow)?;
-        persistent.set(&DataKey::AdminProposalCounter, &proposal_id);
-        persistent.set(
+        Self::set_persistent(env, &DataKey::AdminProposalCounter, &proposal_id);
+        Self::set_persistent(
+            env,
             &DataKey::AdminProposal(proposal_id),
             &AdminTransferProposal {
                 proposal_id,
@@ -8806,22 +8818,21 @@ impl MilestoneEscrow {
         // any pending-transfer or approval storage is read or written.
         let old_admin = Self::load_admin(&env)?;
 
-        let pending: PendingAdminTransfer = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PendingAdminTransfer)
-            .ok_or(Error::NoPendingAdminTransfer)?;
+        // The pending transfer is long-lived storage (#956): the read itself
+        // extends the entry's TTL so a keeper-maintained escrow can always
+        // finish an in-flight transfer.
+        let pending: PendingAdminTransfer =
+            Self::get_persistent(&env, &DataKey::PendingAdminTransfer)
+                .ok_or(Error::NoPendingAdminTransfer)?;
 
         // Issue #785: execution is bound to the proposal record for exactly
         // this pending ID.  The record carries the approvals next to the
         // `new_admin` they authorize installing, so approvals collected for
         // any other proposal can never satisfy this one, and a legacy pending
         // entry with no record (pre-upgrade) cannot be executed at all.
-        let mut record: AdminTransferProposal = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AdminProposal(pending.proposal_id))
-            .ok_or(Error::InvalidStatus)?;
+        let mut record: AdminTransferProposal =
+            Self::get_persistent(&env, &DataKey::AdminProposal(pending.proposal_id))
+                .ok_or(Error::InvalidStatus)?;
         if record.status != AdminProposalStatus::Pending {
             return Err(Error::InvalidStatus);
         }
@@ -8855,9 +8866,7 @@ impl MilestoneEscrow {
         // every approval it held — permanently unusable.
         record.status = AdminProposalStatus::Executed;
         record.approvals_bitmap = 0;
-        env.storage()
-            .persistent()
-            .set(&DataKey::AdminProposal(pending.proposal_id), &record);
+        Self::set_persistent(&env, &DataKey::AdminProposal(pending.proposal_id), &record);
 
         env.events().publish(
             (symbol_short!("adminexc"),),
@@ -8908,7 +8917,7 @@ impl MilestoneEscrow {
         {
             record.status = AdminProposalStatus::Cancelled;
             record.approvals_bitmap = 0;
-            env.storage().persistent().set(&record_key, &record);
+            Self::set_persistent(&env, &record_key, &record);
         }
 
         env.events().publish(
@@ -8970,7 +8979,8 @@ impl MilestoneEscrow {
         }
 
         let proposal_id = Self::open_proposal_record(&env, &admin)?;
-        persistent.set(
+        Self::set_persistent(
+            &env,
             &DataKey::PendingMultiSigConfig,
             &PendingMultiSigConfig {
                 signers: new_signers.clone(),
@@ -9022,7 +9032,8 @@ impl MilestoneEscrow {
             return Err(Error::MultiSigThresholdNotMet);
         }
 
-        persistent.set(
+        Self::set_persistent(
+            &env,
             &DataKey::MultiSigConfig,
             &MultiSigConfig(pending.signers.clone(), pending.threshold),
         );
@@ -9036,7 +9047,7 @@ impl MilestoneEscrow {
 
         record.status = AdminProposalStatus::Executed;
         record.approvals_bitmap = 0;
-        persistent.set(&DataKey::AdminProposal(pending.proposal_id), &record);
+        Self::set_persistent(&env, &DataKey::AdminProposal(pending.proposal_id), &record);
 
         // Approvals for a pending admin transfer were given by the old signer
         // set; their bits would name different addresses now.
@@ -9047,7 +9058,7 @@ impl MilestoneEscrow {
             if let Some(mut transfer_record) = persistent.get::<_, AdminTransferProposal>(&key) {
                 if transfer_record.approvals_bitmap != 0 {
                     transfer_record.approvals_bitmap = 0;
-                    persistent.set(&key, &transfer_record);
+                    Self::set_persistent(&env, &key, &transfer_record);
                 }
             }
         }
@@ -9085,7 +9096,7 @@ impl MilestoneEscrow {
         if let Some(mut record) = persistent.get::<_, AdminTransferProposal>(&key) {
             record.status = AdminProposalStatus::Cancelled;
             record.approvals_bitmap = 0;
-            persistent.set(&key, &record);
+            Self::set_persistent(&env, &key, &record);
         }
 
         env.events().publish(
@@ -9194,6 +9205,92 @@ impl MilestoneEscrow {
     /// then.  Read-only; `1` on deployments that predate the marker.
     pub fn schema_version(env: Env) -> u32 {
         Self::read_schema_version(&env)
+    }
+
+    /// Permissionless keeper entry point (issue #956): bump the
+    /// contract-instance TTL and extend the TTL of every long-lived
+    /// milestone-, dispute- and governance-related persistent key, so a
+    /// keeper (or anyone) can keep an active escrow from being archived
+    /// without a manual contract-restore operation.
+    ///
+    /// # What is extended
+    /// * the contract-instance entry (same `bump` every state change does);
+    /// * per milestone `0..milestone_count`: `Milestone`, `DueAt`, `TimeExt`,
+    ///   `RevCnt`, `DisputeInfo`, `TaxWithholdingRecipient`,
+    ///   `TaxWithholdingLock`, `MultiSigApproval` and `ArbitrationSplitBps`;
+    /// * the global configuration keys: `WhitelistedTokens`,
+    ///   `MultiSigConfig`, `PendingMultiSigConfig`,
+    ///   `PlatformFeeAllocation`, `TaxRecipient`, `YieldConfig`,
+    ///   `YieldAccrued`, `PendingAdminTransfer`, `AdminProposalCounter`
+    ///   and the `AdminProposal` of a pending transfer (when one exists).
+    ///
+    /// Absent keys are skipped, so calling this on a fresh or settled
+    /// escrow is a cheap no-op apart from the instance bump.
+    /// `Owed(address)` and `Reputation(address)` are keyed by address and
+    /// cannot be enumerated; they are TTL-extended by every read and write
+    /// through `get_persistent` / `set_persistent`.
+    ///
+    /// Requires no authorization on purpose: extending a TTL grants no
+    /// economic or state-changing power, and a permissionless keeper is
+    /// the cheapest reliable operator for a cron-style call.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Contract not initialised, so there is no
+    ///   milestone set to keep alive.
+    pub fn extend_storage(env: Env) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
+        Self::bump(&env);
+
+        let meta = Self::load_job_meta(&env)?;
+        let persistent = env.storage().persistent();
+
+        let global_keys = [
+            &DataKey::WhitelistedTokens,
+            &DataKey::MultiSigConfig,
+            &DataKey::PendingMultiSigConfig,
+            &DataKey::PlatformFeeAllocation,
+            &DataKey::TaxRecipient,
+            &DataKey::YieldConfig,
+            &DataKey::YieldAccrued,
+            &DataKey::PendingAdminTransfer,
+            &DataKey::AdminProposalCounter,
+        ];
+        for key in global_keys {
+            if persistent.has(key) {
+                persistent.extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+            }
+        }
+
+        for index in 0..meta.milestone_count {
+            let per_milestone_keys = [
+                &DataKey::Milestone(index),
+                &DataKey::DueAt(index),
+                &DataKey::TimeExt(index),
+                &DataKey::RevCnt(index),
+                &DataKey::DisputeInfo(index),
+                &DataKey::TaxWithholdingRecipient(index),
+                &DataKey::TaxWithholdingLock(index),
+                &DataKey::MultiSigApproval(index),
+                &DataKey::ArbitrationSplitBps(index),
+            ];
+            for key in per_milestone_keys {
+                if persistent.has(key) {
+                    persistent.extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+                }
+            }
+        }
+
+        // Keep a pending admin transfer's proposal record alive alongside it.
+        if let Some(pending) =
+            persistent.get::<_, PendingAdminTransfer>(&DataKey::PendingAdminTransfer)
+        {
+            let key = DataKey::AdminProposal(pending.proposal_id);
+            if persistent.has(&key) {
+                persistent.extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+            }
+        }
+
+        Ok(())
     }
 
     fn read_schema_version(env: &Env) -> u32 {
@@ -10087,7 +10184,8 @@ impl MilestoneEscrow {
             .map(|config: YieldConfig| config.yield_rate)
             .unwrap_or(0);
 
-        env.storage().persistent().set(
+        Self::set_persistent(
+            &env,
             &DataKey::YieldConfig,
             &YieldConfig {
                 yield_rate: rate_bps,
@@ -10173,9 +10271,7 @@ impl MilestoneEscrow {
             .checked_add(accrued_amount)
             .ok_or(Error::InvalidAmount)?;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldAccrued, &new_total);
+        Self::set_persistent(&env, &DataKey::YieldAccrued, &new_total);
 
         env.events().publish(
             (symbol_short!("yldacc"),),
@@ -10292,9 +10388,7 @@ impl MilestoneEscrow {
             .unwrap_or(0)
             != 0
         {
-            env.storage()
-                .persistent()
-                .set(&DataKey::YieldAccrued, &0_i128);
+            Self::set_persistent(&env, &DataKey::YieldAccrued, &0_i128);
         }
 
         let token_client = token::Client::new(&env, &meta.token);
@@ -10412,9 +10506,7 @@ impl MilestoneEscrow {
             .unwrap_or(0)
             != 0
         {
-            env.storage()
-                .persistent()
-                .set(&DataKey::YieldAccrued, &0_i128);
+            Self::set_persistent(&env, &DataKey::YieldAccrued, &0_i128);
         }
 
         let token_client = token::Client::new(&env, &meta.token);
@@ -10673,17 +10765,47 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Contract not initialised.
+    /// * `MigrationRequired` – Storage layout predates `SCHEMA_VERSION`.
     /// * `Unauthorized`    – `admin` is neither the `FeeManager` delegate nor, if none is set, the
     ///   stored admin.
-    /// * `InvalidAddress`  – `recipient` is a zero address.
+    /// * `InvalidAddress`  – `recipient` is a zero address, the contract
+    ///   itself, a job party (client, freelancer or arbiter), or the acting
+    ///   admin (issue #957: the recipient must never be able to redirect
+    ///   withheld tax to an address with a conflict of interest in the job).
+    /// * Host auth error – The escrow is funded and the transaction is not
+    ///   also signed by the client and the freelancer (issue #957); after
+    ///   funding the recipient is frozen without both parties' consent.
     pub fn set_tax_recipient(env: Env, admin: Address, recipient: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
 
         Self::validate_address(&env, &recipient)?;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::TaxRecipient, &recipient);
+        let meta = Self::load_job_meta(&env)?;
+
+        // Issue #957: the tax recipient must be disinterested.  A party to
+        // the job (or the contract itself) could redirect withheld tax into
+        // a payout path it already controls; the acting admin is rejected as
+        // well so a FeeManager cannot quietly become its own tax sink.
+        if recipient == meta.client
+            || recipient == meta.freelancer
+            || recipient == meta.arbiter
+            || recipient == admin
+        {
+            return Err(Error::InvalidAddress);
+        }
+
+        // Issue #957: once the escrow is funded, the tax recipient is part
+        // of the deal's economics, so neither the admin alone nor a single
+        // party may move it.  Both the client and the freelancer must sign
+        // the transaction — the same co-sign model `set_interest_yield_consent`
+        // and `require_fee_allocation_change_allowed` use.
+        if meta.funded {
+            meta.client.require_auth();
+            meta.freelancer.require_auth();
+        }
+
+        Self::set_persistent(&env, &DataKey::TaxRecipient, &recipient);
 
         env.events().publish(
             (symbol_short!("taxrcpt"),),
@@ -10893,9 +11015,7 @@ impl MilestoneEscrow {
 
         // Persist the record so admin override endpoints can read it without
         // recomputing tax arithmetic.
-        env.storage()
-            .persistent()
-            .set(&DataKey::TaxWithholdingLock(milestone_index), &record);
+        Self::set_persistent(&env, &DataKey::TaxWithholdingLock(milestone_index), &record);
 
         // Capture the recipient that will receive this tax (issue #788).
         // Reading the global recipient at this point is fine, since we just
@@ -10908,7 +11028,8 @@ impl MilestoneEscrow {
             .persistent()
             .get::<DataKey, Address>(&DataKey::TaxRecipient)
         {
-            env.storage().persistent().set(
+            Self::set_persistent(
+                &env,
                 &DataKey::TaxWithholdingRecipient(milestone_index),
                 &recipient,
             );
