@@ -261,7 +261,16 @@ pub enum Error {
     /// A non-zero milestone due date was not in the future at the time
     /// `set_milestone_due_dates` was called.
     InvalidDeadline = 57,
+    /// `accept_admin` was called after the pending admin transfer's
+    /// acceptance window closed (issue #953). Clear it with
+    /// `expire_admin_transfer` and propose again.
+    AdminTransferExpired = 58,
 }
+
+/// How long the incoming admin has to call `accept_admin` after a transfer is
+/// proposed (`transfer_admin`) or approved (`execute_admin_transfer`), in
+/// seconds of ledger time (issue #953).
+pub const ADMIN_ACCEPTANCE_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 const MAX_REVISIONS: u32 = 3;
 
@@ -565,6 +574,14 @@ pub enum AdminRole {
     Resolver,
 }
 
+/// Every [`AdminRole`], in declaration order (issue #954).
+const ADMIN_ROLES: [AdminRole; 4] = [
+    AdminRole::Upgrader,
+    AdminRole::Operator,
+    AdminRole::FeeManager,
+    AdminRole::Resolver,
+];
+
 #[contracttype]
 pub enum DataKey {
     Job,
@@ -801,6 +818,9 @@ pub enum DataKey {
     Treasury,
     /// Instance: admin-timelocked treasury change awaiting execution.
     PendingTreasury,
+    /// Instance: an admin hand-over awaiting the incoming admin's
+    /// `accept_admin` signature (issue #953).
+    PendingAdminAcceptance,
 }
 
 #[contracttype]
@@ -1745,6 +1765,62 @@ pub struct PendingAdminTransfer {
     pub proposal_id: u32,
 }
 
+/// An admin hand-over waiting for the incoming admin to sign `accept_admin`
+/// (issue #953). Written by `transfer_admin` and by `execute_admin_transfer`;
+/// until it is accepted, `old_admin` stays the stored admin with all its
+/// powers. Returned by `get_pending_admin_acceptance`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAdminAcceptance {
+    /// The admin that proposed (or whose signers approved) the hand-over.
+    pub old_admin: Address,
+    /// The only address that can accept.
+    pub new_admin: Address,
+    /// Last ledger timestamp at which `accept_admin` succeeds.
+    pub expires_at: u64,
+    /// `0` for `transfer_admin`; the multisig proposal ID for
+    /// `execute_admin_transfer`.
+    pub proposal_id: u32,
+}
+
+/// `adm_prop`: an admin hand-over awaits `accept_admin` (issue #953).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptanceProposedEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+    pub expires_at: u64,
+    pub proposal_id: u32,
+}
+
+/// `adm_acc`: the incoming admin accepted and is now the stored admin.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptedEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+    pub proposal_id: u32,
+}
+
+/// `adm_exp`: a hand-over lapsed without acceptance and was cleared.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptanceExpiredEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+    pub expires_at: u64,
+    pub proposal_id: u32,
+}
+
+/// `adm_cncl`: the current admin withdrew a hand-over before acceptance.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptanceCancelledEvent {
+    pub admin: Address,
+    pub new_admin: Address,
+    pub proposal_id: u32,
+}
+
 /// A signer-set change awaiting approval by the current signers, recorded by
 /// `propose_multisig_config` and applied by `execute_multisig_config`.
 #[contracttype]
@@ -2115,6 +2191,19 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
         Ok(())
+    }
+
+    /// Whether `address` is an explicit delegate of any [`AdminRole`]
+    /// (issue #954). Only assignments count: an unassigned role is held by the
+    /// root admin, which the party checks already reject on their own. Role
+    /// keys live in instance storage, so this reads no extra ledger entries.
+    fn holds_delegated_role(env: &Env, address: &Address) -> bool {
+        let instance = env.storage().instance();
+        ADMIN_ROLES.iter().any(|role| {
+            instance
+                .get::<_, Address>(&DataKey::AdminRole(*role))
+                .is_some_and(|holder| holder == *address)
+        })
     }
 
     /// Reject while milestone `index`'s dispute is younger than the dispute
@@ -3790,11 +3879,14 @@ impl MilestoneEscrow {
         Ok(fee.min(available))
     }
 
-    /// Transfer admin control of the contract to a new address.
+    /// Propose handing admin control of the contract to a new address.
     ///
-    /// The new admin immediately gains access to all admin-only endpoints
-    /// (whitelist management, pause/resume, emergency overrides, etc.); the
-    /// previous admin loses that access.
+    /// Two-step (issue #953): this records a [`PendingAdminAcceptance`] that
+    /// expires after `ADMIN_ACCEPTANCE_WINDOW_SECONDS` and emits `adm_prop`;
+    /// the stored admin does not change. The hand-over completes only when
+    /// `new_admin` signs `accept_admin`, so a mistyped or unusable address can
+    /// never become admin. Until then `current_admin` keeps every admin power
+    /// and can withdraw the proposal with `cancel_admin_transfer`.
     ///
     /// # Checks (in order)
     /// 1. `current_admin.require_auth()` — SDK-level signature check.
@@ -3821,8 +3913,9 @@ impl MilestoneEscrow {
     ///                            use the multisig proposal flow instead).
     /// * `InvalidAddress`       – `new_admin` is a zero address, the contract
     ///                            itself, or the current admin.
-    /// * `AdminTransferPending` – A multisig admin-transfer proposal is already
-    ///                            pending; execute or cancel it first.
+    /// * `AdminTransferPending` – A multisig admin-transfer proposal, or an
+    ///                            unexpired hand-over awaiting `accept_admin`,
+    ///                            is already pending; settle or cancel it first.
     pub fn transfer_admin(
         env: Env,
         current_admin: Address,
@@ -3865,18 +3958,182 @@ impl MilestoneEscrow {
             return Err(Error::AdminTransferPending);
         }
 
-        // Single source of truth: instance storage only (#679).
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        // Issue #953: record the hand-over; `accept_admin` performs the swap.
+        Self::open_admin_acceptance(&env, &current_admin, &new_admin, 0)
+    }
 
+    /// Refuse while an unexpired hand-over awaits acceptance; clear a lapsed
+    /// one (emitting `adm_exp`) so a new proposal can take its place.
+    fn ensure_no_live_admin_acceptance(env: &Env) -> Result<(), Error> {
+        let instance = env.storage().instance();
+        let Some(pending) =
+            instance.get::<_, PendingAdminAcceptance>(&DataKey::PendingAdminAcceptance)
+        else {
+            return Ok(());
+        };
+        if env.ledger().timestamp() <= pending.expires_at {
+            return Err(Error::AdminTransferPending);
+        }
+        Self::clear_expired_admin_acceptance(env, pending);
+        Ok(())
+    }
+
+    fn clear_expired_admin_acceptance(env: &Env, pending: PendingAdminAcceptance) {
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminAcceptance);
+        env.events().publish(
+            (symbol_short!("adm_exp"),),
+            AdminAcceptanceExpiredEvent {
+                old_admin: pending.old_admin,
+                new_admin: pending.new_admin,
+                expires_at: pending.expires_at,
+                proposal_id: pending.proposal_id,
+            },
+        );
+    }
+
+    /// Record a hand-over from `old_admin` to `new_admin` that `new_admin` must
+    /// accept within `ADMIN_ACCEPTANCE_WINDOW_SECONDS` (issue #953). Instance
+    /// storage, like `DataKey::Admin`, so no ledger entry is added to the
+    /// footprint of the transfer paths.
+    fn open_admin_acceptance(
+        env: &Env,
+        old_admin: &Address,
+        new_admin: &Address,
+        proposal_id: u32,
+    ) -> Result<(), Error> {
+        Self::ensure_no_live_admin_acceptance(env)?;
+        let expires_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(ADMIN_ACCEPTANCE_WINDOW_SECONDS)
+            .ok_or(Error::ArithmeticOverflow)?;
+        env.storage().instance().set(
+            &DataKey::PendingAdminAcceptance,
+            &PendingAdminAcceptance {
+                old_admin: old_admin.clone(),
+                new_admin: new_admin.clone(),
+                expires_at,
+                proposal_id,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("adm_prop"),),
+            AdminAcceptanceProposedEvent {
+                old_admin: old_admin.clone(),
+                new_admin: new_admin.clone(),
+                expires_at,
+                proposal_id,
+            },
+        );
+        Ok(())
+    }
+
+    /// Complete a pending admin hand-over (issue #953). Only the proposed
+    /// `new_admin` can accept, by signing this call, and only until the
+    /// acceptance window closes. On success `new_admin` becomes the stored
+    /// admin, the pending hand-over is cleared, and `adm_acc` and `admin`
+    /// (`TransferAdminEvent`, the record of the admin entry changing) are
+    /// emitted. Applies to both `transfer_admin` and the multisig
+    /// `execute_admin_transfer` path.
+    ///
+    /// # Errors
+    /// * `MigrationRequired`      – Storage predates this code; call `migrate`.
+    /// * `NoPendingAdminTransfer` – No hand-over awaits acceptance.
+    /// * `Unauthorized`           – `new_admin` is not the proposed admin.
+    /// * `AdminTransferExpired`   – The acceptance window has closed; clear it
+    ///   with `expire_admin_transfer` and propose again.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        new_admin.require_auth();
+        let instance = env.storage().instance();
+        let pending: PendingAdminAcceptance = instance
+            .get(&DataKey::PendingAdminAcceptance)
+            .ok_or(Error::NoPendingAdminTransfer)?;
+        if pending.new_admin != new_admin {
+            return Err(Error::Unauthorized);
+        }
+        if env.ledger().timestamp() > pending.expires_at {
+            return Err(Error::AdminTransferExpired);
+        }
+
+        // Single source of truth: instance storage only (#679).
+        instance.set(&DataKey::Admin, &new_admin);
+        instance.remove(&DataKey::PendingAdminAcceptance);
+
+        env.events().publish(
+            (symbol_short!("adm_acc"),),
+            AdminAcceptedEvent {
+                old_admin: pending.old_admin.clone(),
+                new_admin: new_admin.clone(),
+                proposal_id: pending.proposal_id,
+            },
+        );
         env.events().publish(
             (symbol_short!("admin"),),
             TransferAdminEvent {
-                old_admin: current_admin,
+                old_admin: pending.old_admin,
                 new_admin,
             },
         );
-
         Ok(())
+    }
+
+    /// Withdraw a hand-over before it is accepted (issue #953). Current admin
+    /// only. Emits `adm_cncl`. A multisig transfer that was cancelled here must
+    /// be proposed and approved again.
+    ///
+    /// # Errors
+    /// * `MigrationRequired`      – Storage predates this code; call `migrate`.
+    /// * `NotInitialized`         – No admin is stored.
+    /// * `Unauthorized`           – `admin` is not the stored admin.
+    /// * `NoPendingAdminTransfer` – No hand-over awaits acceptance.
+    pub fn cancel_admin_transfer(env: Env, admin: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::require_admin(&env, &admin)?;
+        let instance = env.storage().instance();
+        let pending: PendingAdminAcceptance = instance
+            .get(&DataKey::PendingAdminAcceptance)
+            .ok_or(Error::NoPendingAdminTransfer)?;
+        instance.remove(&DataKey::PendingAdminAcceptance);
+        env.events().publish(
+            (symbol_short!("adm_cncl"),),
+            AdminAcceptanceCancelledEvent {
+                admin,
+                new_admin: pending.new_admin,
+                proposal_id: pending.proposal_id,
+            },
+        );
+        Ok(())
+    }
+
+    /// Clear a hand-over whose acceptance window has closed and emit `adm_exp`
+    /// (issue #953). Anyone may call it. A new `transfer_admin` or
+    /// `propose_admin_transfer` also clears a lapsed hand-over on its own.
+    ///
+    /// # Errors
+    /// * `NoPendingAdminTransfer` – No hand-over awaits acceptance.
+    /// * `DeadlineNotPassed`      – The acceptance window is still open.
+    pub fn expire_admin_transfer(env: Env) -> Result<(), Error> {
+        let pending: PendingAdminAcceptance = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminAcceptance)
+            .ok_or(Error::NoPendingAdminTransfer)?;
+        if env.ledger().timestamp() <= pending.expires_at {
+            return Err(Error::DeadlineNotPassed);
+        }
+        Self::clear_expired_admin_acceptance(&env, pending);
+        Ok(())
+    }
+
+    /// The hand-over awaiting `accept_admin`, if any (issue #953). It may have
+    /// expired: compare `expires_at` with the ledger time.
+    pub fn get_pending_admin_acceptance(env: Env) -> Option<PendingAdminAcceptance> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PendingAdminAcceptance)
     }
 
     /// Add a token contract address to the escrow's settlement-token whitelist.
@@ -4643,6 +4900,11 @@ impl MilestoneEscrow {
         {
             return Err(Error::InvalidParties);
         }
+        // Issue #954: a job party never holds an admin role, so the incoming
+        // arbiter must not be a current role delegate either.
+        if Self::holds_delegated_role(&env, &new_arbiter) {
+            return Err(Error::InvalidParties);
+        }
 
         // ── Dispute-active guard: an arbiter cannot be swapped out from
         // under an open dispute. Scanned before any write so a refused call
@@ -4696,6 +4958,8 @@ impl MilestoneEscrow {
         if new_freelancer == meta.client
             || new_freelancer == meta.arbiter
             || new_freelancer == admin
+            // Issue #954: nor a current admin-role delegate.
+            || Self::holds_delegated_role(&env, &new_freelancer)
         {
             return Err(Error::InvalidParties);
         }
@@ -5328,7 +5592,9 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(env, milestone_index, &milestone);
         Self::clear_time_ext(env, milestone_index);
-        Self::increment_reputation(env, &meta.client, milestone_index);
+        // Issue #952: only the freelancer is credited:
+        // an overdue auto-release happens because the client did not act.
+        // Client reputation counts explicit approvals only.
         Self::increment_reputation(env, &meta.freelancer, milestone_index);
 
         // INTERACTION: Token transfer is the sole external call and executes only
@@ -6263,7 +6529,9 @@ impl MilestoneEscrow {
             if payout > 0 {
                 Self::pay_freelancer_with_fee(&env, &meta, &token_client, &payout)?;
             }
-            Self::increment_reputation(&env, &meta.client, milestone_index);
+            // Issue #952: only the freelancer is credited:
+            // the client lost this dispute; the arbiter released the funds.
+            // Client reputation counts explicit approvals only.
             Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         } else {
             milestone.status = MilestoneStatus::Refunded;
@@ -6441,7 +6709,9 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::increment_reputation(&env, &meta.client, milestone_index);
+            // Issue #952: only the freelancer is credited:
+            // the arbiter's split decided this release, not the client.
+            // Client reputation counts explicit approvals only.
             Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
@@ -8632,6 +8902,9 @@ impl MilestoneEscrow {
     /// * `Unauthorized`      – `admin` is not the root admin.
     /// * `InvalidAddress`    – `new_address` is a zero address or this
     ///   contract.
+    /// * `InvalidParties`    – `new_address` is the job's client, freelancer
+    ///   or arbiter (issue #954): a party holding an admin role could pause,
+    ///   re-fee, override or upgrade the escrow it is a party to.
     pub fn set_admin_role(
         env: Env,
         admin: Address,
@@ -8641,6 +8914,17 @@ impl MilestoneEscrow {
         Self::ensure_migrated(&env)?;
         Self::require_admin(&env, &admin)?;
         Self::validate_address(&env, &new_address)?;
+        // Returning a role to the admin is always allowed; any other holder
+        // must be independent of the job's parties.
+        if new_address != admin {
+            let meta = Self::load_job_meta(&env)?;
+            if new_address == meta.client
+                || new_address == meta.freelancer
+                || new_address == meta.arbiter
+            {
+                return Err(Error::InvalidParties);
+            }
+        }
 
         let instance = env.storage().instance();
         let key = DataKey::AdminRole(role);
@@ -8727,6 +9011,8 @@ impl MilestoneEscrow {
         {
             return Err(Error::AdminTransferPending);
         }
+        // Issue #953: nor while an approved hand-over awaits `accept_admin`.
+        Self::ensure_no_live_admin_acceptance(&env)?;
 
         // Issue #785: assign the ID ourselves.  `checked_add` reports an
         // exhausted counter as a typed error instead of trapping under the
@@ -8790,6 +9076,11 @@ impl MilestoneEscrow {
     /// marked `Executed` with its bitmap cleared, so neither the ID nor its
     /// approvals can ever run again.
     ///
+    /// Two-step (issue #953): execution does not change the stored admin. It
+    /// records a [`PendingAdminAcceptance`] for the approved `new_admin`
+    /// (`adm_prop`), which must sign `accept_admin` within
+    /// `ADMIN_ACCEPTANCE_WINDOW_SECONDS`.
+    ///
     /// # Errors
     /// * `NotInitialized`          – Contract has never been initialised, so
     ///   there is no admin to transfer from.
@@ -8840,11 +9131,13 @@ impl MilestoneEscrow {
         // still be pending after an upgrade. Such a proposal does not need to
         // rewrite the Admin ledger entry; it still emits the event and clears
         // the pending proposal.
+        //
+        // Issue #953: approvals no longer install the new admin. They open a
+        // hand-over that the new admin must accept with `accept_admin` (its
+        // `adm_prop` event comes before `adminexc`). A legacy same-admin
+        // proposal changes nobody's authority, so it needs no acceptance.
         if old_admin != pending.new_admin {
-            // Single source of truth: instance storage only (#679).
-            env.storage()
-                .instance()
-                .set(&DataKey::Admin, &pending.new_admin);
+            Self::open_admin_acceptance(&env, &old_admin, &pending.new_admin, pending.proposal_id)?;
         }
         env.storage()
             .persistent()
@@ -10521,7 +10814,9 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::increment_reputation(&env, &meta.client, milestone_index);
+            // Issue #952: only the freelancer is credited:
+            // an admin override released this milestone, not the client.
+            // Client reputation counts explicit approvals only.
             Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 

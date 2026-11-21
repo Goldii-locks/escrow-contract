@@ -151,10 +151,15 @@ fn transfer_still_accepts_a_distinct_new_admin() {
 
     let new_admin = Address::generate(&env);
     assert_eq!(client.try_transfer_admin(&admin, &new_admin), Ok(Ok(())));
-    let stored: Address = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Admin).unwrap()
-    });
-    assert_eq!(stored, new_admin);
+    // Two-step (issue #953): unchanged until the new admin accepts.
+    let stored_admin = || -> Address {
+        env.as_contract(&contract_id, || {
+            env.storage().instance().get(&DataKey::Admin).unwrap()
+        })
+    };
+    assert_eq!(stored_admin(), admin);
+    client.accept_admin(&new_admin);
+    assert_eq!(stored_admin(), new_admin);
 }
 
 #[test]

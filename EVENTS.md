@@ -86,6 +86,10 @@ freelancer when the client acts and the client otherwise:
 | `adminprp` | `AdminTransferProposedEvent`     | state change      |
 | `admincxl` | `AdminTransferCancelledEvent`    | state change      |
 | `adminexc` | `AdminTransferExecutedEvent`     | state change      |
+| `adm_prop` | `AdminAcceptanceProposedEvent`   | state change      |
+| `adm_acc`  | `AdminAcceptedEvent`             | state change      |
+| `adm_exp`  | `AdminAcceptanceExpiredEvent`    | state change      |
+| `adm_cncl` | `AdminAcceptanceCancelledEvent`  | state change      |
 | `adcovls`  | `AdminCancelOverrideReleaseEvent`| state change      |
 | `adcovrf`  | `AdminCancelOverrideRefundEvent` | state change      |
 | `admovrls` | `AdminOverrideReleaseEvent`      | state change      |

@@ -12,7 +12,7 @@ PRs that add, remove or change a transition must update this file (see
 
 | Actor | Set by | Notes |
 |---|---|---|
-| Admin | `__constructor`, `transfer_admin`, `execute_admin_transfer` | Platform operator. Controls overrides, pauses, fees, yield, whitelist and upgrades. |
+| Admin | `__constructor`, `accept_admin` (after `transfer_admin` or `execute_admin_transfer`) | Platform operator. Controls overrides, pauses, fees, yield, whitelist and upgrades. |
 | Client | `__constructor` | Funds the job and approves milestones. |
 | Freelancer | `__constructor` | Delivers milestones and receives payouts. |
 | Arbiter | `__constructor` | Resolves disputed milestones. |
@@ -234,9 +234,12 @@ overwritten, so the original approver must opt in again. `cxlappr` carries
 
 | Entry point | Signer(s) | Guards | Effect | Event |
 |---|---|---|---|---|
-| `transfer_admin` | current admin | no pending admin transfer | replaces admin | `admin` |
-| `propose_admin_transfer` | admin | no pending admin transfer | stores pending transfer | `adminprp` |
-| `execute_admin_transfer` | anyone | pending transfer; its proposal reached the multisig threshold | replaces admin; clears pending transfer | `adminexc` |
+| `transfer_admin` | current admin | no multisig regime; no pending transfer or live hand-over | records a hand-over expiring in 7 days; admin unchanged (#953) | `adm_prop` (plus `adm_exp` if it cleared a lapsed one) |
+| `accept_admin` | the proposed new admin | hand-over pending and not expired | replaces admin; clears hand-over | `adm_acc`, `admin` |
+| `cancel_admin_transfer` | admin | hand-over pending | clears hand-over | `adm_cncl` |
+| `expire_admin_transfer` | anyone | hand-over pending and expired | clears hand-over | `adm_exp` |
+| `propose_admin_transfer` | admin | no pending transfer or live hand-over | stores pending transfer | `adminprp` |
+| `execute_admin_transfer` | anyone | pending transfer; its proposal reached the multisig threshold | records a hand-over for the approved admin (admin unchanged until `accept_admin`, #953); clears pending transfer | `adm_prop`, then `adminexc` |
 | `cancel_admin_transfer_proposal` | admin | pending transfer | clears pending transfer | `admincxl` |
 | `multisig_approval_init` | admin | not already initialised; valid signer set and threshold | stores signer set and threshold | `msiginit` |
 | `multisig_approve` | registered signer | signer registered | sets the signer's bit for the proposal | `msigappr` |

@@ -28,6 +28,7 @@ mod admin_override_streaming_release_tests;
 mod admin_pause_escrow_tests;
 mod admin_proposal_binding_tests;
 mod admin_resume_escrow_footprint_tests;
+mod admin_role_party_tests;
 mod admin_role_tests;
 mod admin_set_yield_rate_tests;
 mod admin_tax_withholding_guards_tests;
@@ -140,6 +141,7 @@ mod time_ext_persistence_tests;
 mod time_until_auto_release_tests;
 mod treasury_fee_tests;
 mod trigger_auto_release_tests;
+mod two_step_admin_transfer_tests;
 mod unlock_escrow_interest_yield_event_tests;
 mod upgrade_wasm_tests;
 mod version_tests;
@@ -7467,6 +7469,8 @@ fn test_add_whitelisted_token_old_admin_rejected_after_transfer() {
     );
 
     client.transfer_admin(&admin_addr, &new_admin_addr);
+    // Two-step (issue #953): the hand-over completes when the new admin accepts.
+    client.accept_admin(&new_admin_addr);
 
     // Old admin must now be rejected.
     let old_result = client.try_add_whitelisted_token(&admin_addr, &token2);

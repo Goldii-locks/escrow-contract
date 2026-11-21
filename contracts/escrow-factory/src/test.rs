@@ -407,3 +407,344 @@ fn create_escrow_needs_only_the_client_signature() {
     let job = escrow::Client::new(&env, &escrow).get_job();
     assert_eq!(job.client, client);
 }
+
+// ── Issue #935: factory coverage ─────────────────────────────────────────────
+
+/// Full escrow wasm plus a `v2_only` entrypoint (see
+/// `milestone-escrow/testdata/escrow_v2`): a second, distinguishable wasm for
+/// the factory to deploy after `set_wasm_hash`.
+const ESCROW_V2_WASM: &[u8] = include_bytes!("../../milestone-escrow/testdata/escrow_v2.wasm");
+
+/// The single factory call `fn_name(args)` a signer authorizes.
+fn factory_call<'a>(
+    factory: &'a Address,
+    fn_name: &'a str,
+    args: soroban_sdk::Vec<soroban_sdk::Val>,
+) -> soroban_sdk::testutils::MockAuthInvoke<'a> {
+    soroban_sdk::testutils::MockAuthInvoke {
+        contract: factory,
+        fn_name,
+        args,
+        sub_invokes: &[],
+    }
+}
+
+#[test]
+fn allow_token_rejects_a_non_admin_even_when_it_signs() {
+    use soroban_sdk::IntoVal;
+
+    let (env, fid, _admin, _token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let stranger = Address::generate(&env);
+    let new_token = Address::generate(&env);
+
+    let args = (stranger.clone(), new_token.clone()).into_val(&env);
+    let result = factory
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &stranger,
+            invoke: &factory_call(&fid, "allow_token", args),
+        }])
+        .try_allow_token(&stranger, &new_token);
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert!(!factory.get_allowed_tokens().contains(&new_token));
+}
+
+#[test]
+fn allow_token_rejects_the_admin_address_without_its_signature() {
+    use soroban_sdk::IntoVal;
+
+    let (env, fid, admin, _token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let new_token = Address::generate(&env);
+
+    // Nobody signs.
+    assert!(factory
+        .mock_auths(&[])
+        .try_allow_token(&admin, &new_token)
+        .is_err());
+
+    // Someone else signs a call that names the admin.
+    let impostor = Address::generate(&env);
+    let args = (admin.clone(), new_token.clone()).into_val(&env);
+    assert!(factory
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &impostor,
+            invoke: &factory_call(&fid, "allow_token", args),
+        }])
+        .try_allow_token(&admin, &new_token)
+        .is_err());
+
+    assert!(!factory.get_allowed_tokens().contains(&new_token));
+}
+
+#[test]
+fn set_wasm_hash_rejects_a_non_admin_even_when_it_signs() {
+    use soroban_sdk::IntoVal;
+
+    let (env, fid, _admin, _token, wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let stranger = Address::generate(&env);
+    let other_hash = BytesN::from_array(&env, &[9u8; 32]);
+
+    let args = (stranger.clone(), other_hash.clone()).into_val(&env);
+    let result = factory
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &stranger,
+            invoke: &factory_call(&fid, "set_wasm_hash", args),
+        }])
+        .try_set_wasm_hash(&stranger, &other_hash);
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(factory.get_wasm_hash(), wasm_hash);
+}
+
+#[test]
+fn set_wasm_hash_rejects_the_admin_address_without_its_signature() {
+    use soroban_sdk::IntoVal;
+
+    let (env, fid, admin, _token, wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let other_hash = BytesN::from_array(&env, &[9u8; 32]);
+
+    assert!(factory
+        .mock_auths(&[])
+        .try_set_wasm_hash(&admin, &other_hash)
+        .is_err());
+
+    let impostor = Address::generate(&env);
+    let args = (admin.clone(), other_hash.clone()).into_val(&env);
+    assert!(factory
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &impostor,
+            invoke: &factory_call(&fid, "set_wasm_hash", args),
+        }])
+        .try_set_wasm_hash(&admin, &other_hash)
+        .is_err());
+
+    assert_eq!(factory.get_wasm_hash(), wasm_hash);
+}
+
+#[test]
+fn admin_signed_allow_token_and_set_wasm_hash_succeed() {
+    use soroban_sdk::IntoVal;
+
+    let (env, fid, admin, _token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let new_token = Address::generate(&env);
+    let new_hash = env.deployer().upload_contract_wasm(ESCROW_V2_WASM);
+
+    let args = (admin.clone(), new_token.clone()).into_val(&env);
+    factory
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &factory_call(&fid, "allow_token", args),
+        }])
+        .allow_token(&admin, &new_token);
+    assert!(factory.get_allowed_tokens().contains(&new_token));
+
+    let args = (admin.clone(), new_hash.clone()).into_val(&env);
+    factory
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &factory_call(&fid, "set_wasm_hash", args),
+        }])
+        .set_wasm_hash(&admin, &new_hash);
+    assert_eq!(factory.get_wasm_hash(), new_hash);
+}
+
+#[test]
+fn set_wasm_hash_applies_to_new_escrows_only() {
+    use soroban_sdk::Symbol;
+
+    let (env, fid, admin, token, v1_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let amounts = vec![&env, 1_000_i128];
+    let hashes = zero_hashes(&env, 1);
+    let create = |client: &Address, salt: u8| {
+        factory.create_escrow(
+            client,
+            &freelancer,
+            &arbiter,
+            &token,
+            &604800u64,
+            &amounts,
+            &hashes,
+            &default_settings(),
+            &BytesN::from_array(&env, &[salt; 32]),
+        )
+    };
+
+    let old_client = Address::generate(&env);
+    let old_escrow = create(&old_client, 21);
+
+    let v2_hash = env.deployer().upload_contract_wasm(ESCROW_V2_WASM);
+    assert_ne!(v2_hash, v1_hash);
+    factory.set_wasm_hash(&admin, &v2_hash);
+
+    let new_client = Address::generate(&env);
+    let new_escrow = create(&new_client, 22);
+    let (_, data) = last_event(&env);
+    assert_eq!(EscrowCreatedEvent::from_val(&env, &data).wasm_hash, v2_hash);
+
+    // The new escrow runs the v2 code ...
+    let v2_only = Symbol::new(&env, "v2_only");
+    let no_args = soroban_sdk::Vec::<soroban_sdk::Val>::new(&env);
+    let version: u32 = env.invoke_contract(&new_escrow, &v2_only, no_args.clone());
+    assert_eq!(version, 2);
+
+    // ... the existing one still runs the code it was deployed with.
+    assert!(env
+        .try_invoke_contract::<u32, soroban_sdk::Error>(&old_escrow, &v2_only, no_args)
+        .is_err());
+    assert_eq!(
+        escrow::Client::new(&env, &old_escrow).get_job().client,
+        old_client
+    );
+    assert_eq!(
+        escrow::Client::new(&env, &new_escrow).get_job().client,
+        new_client
+    );
+}
+
+#[test]
+fn escrow_settings_propagate_to_the_deployed_escrow() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, fid, _admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let amounts = vec![&env, 1_000_i128, 2_000_i128];
+    let two_days: u64 = 2 * 24 * 60 * 60;
+    let settings = EscrowSettings {
+        funding_mode: FundingMode::PerMilestone,
+        dispute_timeout_seconds: two_days,
+        arbiter_fee_bps: 250,
+    };
+    env.ledger().set_timestamp(1_700_000_000);
+
+    let escrow_id = factory.create_escrow(
+        &client,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604800u64,
+        &amounts,
+        &zero_hashes(&env, 2),
+        &settings,
+        &BytesN::from_array(&env, &[31u8; 32]),
+    );
+    let escrow = escrow::Client::new(&env, &escrow_id);
+
+    // Read back through the escrow's own getters.
+    assert_eq!(escrow.get_funding_mode(), escrow::FundingMode::PerMilestone);
+    assert_eq!(escrow.get_arbiter_fee_bps(), 250);
+    let job = escrow.get_job();
+    assert_eq!(job.client, client);
+    assert_eq!(job.milestones.len(), 2);
+
+    // PerMilestone: one milestone can be funded on its own.
+    token::StellarAssetClient::new(&env, &token).mint(&client, &1_000_i128);
+    escrow.accept_job(&freelancer);
+    escrow.accept_arbiter(&arbiter);
+    escrow.fund_milestone(&client, &0u32);
+
+    // The dispute timeout has no getter; it shows in when escalation opens.
+    escrow.mark_delivered(&freelancer, &0u32);
+    escrow.raise_dispute(&client, &0u32, &BytesN::from_array(&env, &[5u8; 32]));
+    env.ledger().set_timestamp(1_700_000_000 + two_days - 1);
+    assert!(escrow.try_escalate_dispute(&client, &0u32).is_err());
+    // Two days, far short of the 30-day default, is enough.
+    env.ledger().set_timestamp(1_700_000_000 + two_days);
+    escrow.escalate_dispute(&client, &0u32);
+}
+
+#[test]
+fn create_escrow_rejects_a_reused_salt_for_the_same_client() {
+    let (env, fid, _admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let amounts = vec![&env, 1_000_i128];
+    let hashes = zero_hashes(&env, 1);
+    let salt = BytesN::from_array(&env, &[41u8; 32]);
+
+    let first = factory.create_escrow(
+        &client,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604800u64,
+        &amounts,
+        &hashes,
+        &default_settings(),
+        &salt,
+    );
+
+    // The deployment address is already taken.
+    assert!(factory
+        .try_create_escrow(
+            &client,
+            &freelancer,
+            &arbiter,
+            &token,
+            &604800u64,
+            &amounts,
+            &hashes,
+            &default_settings(),
+            &salt,
+        )
+        .is_err());
+
+    // The first escrow is untouched.
+    assert_eq!(escrow::Client::new(&env, &first).get_job().client, client);
+}
+
+#[test]
+fn create_escrow_rejects_mismatched_milestone_and_spec_hash_lengths() {
+    let (env, fid, _admin, token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let amounts = vec![&env, 1_000_i128, 2_000_i128];
+    let salt = BytesN::from_array(&env, &[51u8; 32]);
+
+    // Two amounts, one hash; and two amounts, three hashes.
+    for hash_count in [1u32, 3u32] {
+        assert!(factory
+            .try_create_escrow(
+                &client,
+                &freelancer,
+                &arbiter,
+                &token,
+                &604800u64,
+                &amounts,
+                &zero_hashes(&env, hash_count),
+                &default_settings(),
+                &salt,
+            )
+            .is_err());
+    }
+
+    // The rejected constructor left nothing at the address: the same salt
+    // works once the lengths match.
+    let predicted = factory.escrow_address(&client, &salt);
+    let deployed = factory.create_escrow(
+        &client,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604800u64,
+        &amounts,
+        &zero_hashes(&env, 2),
+        &default_settings(),
+        &salt,
+    );
+    assert_eq!(deployed, predicted);
+}

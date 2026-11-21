@@ -71,6 +71,26 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 | Execute an approved admin transfer | `execute_admin_transfer` | Succeeds only once the pending proposal has reached the multisig threshold. |
 | Send tokens directly to the contract | token `transfer` | Tokens not deposited through `fund` are not tracked by any milestone and cannot be recovered. See [#760](https://github.com/Goldii-locks/escrow-contract/issues/760). |
 
+### Admin succession and role separation
+
+- **Two-step admin transfer (#953).** `transfer_admin` and
+  `execute_admin_transfer` only propose; the stored admin changes when the
+  proposed address signs `accept_admin` within 7 days. A typo or an address
+  without a usable key can no longer take the admin out of reach, and an
+  unclaimed proposal expires instead of staying redeemable. The current admin
+  keeps full authority, including `cancel_admin_transfer`, until acceptance.
+  Residual risk: a compromised admin can still propose a transfer to itself or
+  an accomplice, which then completes on acceptance; the multisig regime
+  (#786) is the control for that.
+- **Parties never hold admin roles (#954).** `set_admin_role` rejects the
+  client, freelancer and arbiter, and `rotate_freelancer` / `replace_arbiter`
+  reject role holders, so a party cannot pause, re-fee, override or upgrade its
+  own escrow through a delegated role.
+- **Reputation (#952).** The client is credited only for releases it approved,
+  so an auto-release it failed to review or a dispute it lost cannot inflate
+  its score. Reputation is a counter, not an access control: nothing in the
+  contract grants rights based on it.
+
 ## Trust assumptions
 
 1. **The admin is trusted not to steal.** The admin can upgrade the code

@@ -21,7 +21,9 @@ are listed at the bottom as **No auth required**.
 | `initialize_with_dispute_timeout` | `admin` | `admin.require_auth()` |
 | `initialize_with_funding_mode` | `admin` | `admin.require_auth()` |
 | `set_admin_role` | root `admin` | `require_admin_from_instance` |
-| `transfer_admin` | `current_admin` | `current_admin.require_auth()` |
+| `transfer_admin` | `current_admin` | `current_admin.require_auth()`; only proposes, see `accept_admin` (#953) |
+| `accept_admin` | the proposed `new_admin` | `new_admin.require_auth()`; must match the pending hand-over (#953) |
+| `cancel_admin_transfer` | `admin` | `require_admin` (#953) |
 | `add_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `remove_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `upgrade` | `Upgrader` role (root `admin` by default) | `require_role(AdminRole::Upgrader)` |
@@ -111,7 +113,9 @@ are listed at the bottom as **No auth required**.
 | `get_revision_count` | Pure read |
 | `time_until_auto_release` | Pure read |
 | `dispute_arbitration_split` | Pure calculation (no storage write) |
-| `execute_admin_transfer` | Controlled by multisig threshold, no caller auth |
+| `execute_admin_transfer` | Controlled by multisig threshold, no caller auth; opens a hand-over that `accept_admin` completes (#953) |
+| `expire_admin_transfer` | No caller auth; only clears a hand-over whose acceptance window closed (#953) |
+| `get_pending_admin_acceptance` | Pure read |
 | `is_emergency_paused` | Pure read |
 | `get_platform_fee_allocation` | Pure read |
 | `calculate_platform_fee_split` | Pure calculation |
