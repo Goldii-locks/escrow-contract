@@ -263,8 +263,8 @@ change no milestone or escrow state.
 | `escrow_interest_yield` | none | valid inputs | `intyield` |
 | `interest_yield_split_refund` | none | not paused; yield state unlocked | `iyspltref` |
 | `tax_withholding_split_refund` | none | valid inputs | `twspltref` |
-| `cancel_escrow_split_refund` | none | `ensure_not_paused`; `assert_not_paused` | `cxlspref` |
-| `cancel_escrow_claim_refund` | admin | `CancelLock` set | `cxlspref` |
+| `cancel_escrow_split_refund` | none | `ensure_not_paused`; `assert_not_paused` | none |
+| `cancel_escrow_claim_refund` | admin | `CancelLock` set | `cxlsettle` |
 | `multisig_split_refund` | admin | `MultisigLocked` set | `splitref` |
 | `multisig_transfer_admin` | admin | valid ratios | `msigtrx` |
 | `admin_tax_withholding_deductions` | admin | funded | `taxwh` |
