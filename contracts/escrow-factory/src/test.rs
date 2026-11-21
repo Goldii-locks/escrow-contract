@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::{
     symbol_short, testutils::Address as _, token, vec, Address, BytesN, Env, FromVal, TryIntoVal,
 };
@@ -85,6 +86,42 @@ fn initialize_and_getters() {
     let tokens = factory.get_allowed_tokens();
     assert_eq!(tokens.len(), 1);
     assert_eq!(tokens.get(0).unwrap(), token);
+}
+
+#[test]
+fn admin_transfer_propose_accept_cancel_and_reject_factory() {
+    let (env, fid, old_admin, _, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let new_admin = Address::generate(&env);
+
+    factory.propose_admin(&old_admin, &new_admin);
+    assert_eq!(
+        factory.try_accept_admin(&Address::generate(&env)),
+        Err(Ok(Error::Unauthorized))
+    );
+    factory.accept_admin(&new_admin);
+    assert_eq!(factory.get_admin(), new_admin);
+
+    let proposed = Address::generate(&env);
+    assert_eq!(
+        factory.try_propose_admin(&new_admin, &fid),
+        Err(Ok(Error::Unauthorized))
+    );
+    factory.propose_admin(&new_admin, &proposed);
+    factory.cancel_admin_proposal(&new_admin);
+    assert_eq!(factory.get_admin(), new_admin);
+}
+
+#[test]
+fn bump_keeps_factory_instance_alive_after_sequence_advance() {
+    let (env, fid, admin, _, _) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    env.ledger().set_sequence_number(10_000_000);
+    factory.bump();
+    assert_eq!(factory.get_admin(), admin);
+    env.ledger().set_sequence_number(20_000_000);
+    factory.bump();
+    assert_eq!(factory.get_admin(), admin);
 }
 
 #[test]

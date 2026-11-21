@@ -15,6 +15,10 @@ pub enum Error {
     InvalidDisputeTimeout = 6,
 }
 
+/// Keep active factory state available for roughly one year of ledger time.
+const TTL_THRESHOLD: u32 = 30 * 24 * 60 * 5;
+const TTL_EXTEND_TO: u32 = 365 * 24 * 60 * 5;
+
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
 pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
 /// Mirrors `milestone_escrow::MAX_DISPUTE_TIMEOUT_SECONDS` (180 days).
@@ -25,6 +29,35 @@ enum DataKey {
     Admin,
     WasmHash,
     AllowedTokens,
+    PendingAdmin,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAdmin {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposedEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptedEvent {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposalCancelledEvent {
+    pub admin: Address,
+    pub proposed_admin: Address,
 }
 
 /// Mirrors `milestone_escrow::FundingMode`; the two encode identically.
@@ -80,6 +113,17 @@ impl EscrowFactory {
         env.storage()
             .instance()
             .set(&DataKey::AllowedTokens, &Vec::<Address>::new(&env));
+        Self::bump_instance(&env);
+    }
+
+    /// Permissionlessly extend the factory instance TTL.
+    pub fn bump(env: Env) -> Result<(), Error> {
+        env.storage()
+            .instance()
+            .get::<_, Address>(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        Self::bump_instance(&env);
+        Ok(())
     }
 
     /// Allow a token to be used in escrows created by this factory.
@@ -93,6 +137,7 @@ impl EscrowFactory {
                 .set(&DataKey::AllowedTokens, &tokens);
             env.events().publish((symbol_short!("allowed"), token), ());
         }
+        Self::bump_instance(&env);
         Ok(())
     }
 
@@ -108,6 +153,7 @@ impl EscrowFactory {
                 .instance()
                 .set(&DataKey::AllowedTokens, &tokens);
         }
+        Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("disallowd"), token), ());
         Ok(())
@@ -117,6 +163,7 @@ impl EscrowFactory {
     pub fn set_wasm_hash(env: Env, admin: Address, wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
         env.storage().instance().set(&DataKey::WasmHash, &wasm_hash);
+        Self::bump_instance(&env);
         Ok(())
     }
 
@@ -212,8 +259,80 @@ impl EscrowFactory {
                 wasm_hash,
             },
         );
+        Self::bump_instance(&env);
 
         Ok(escrow)
+    }
+
+    /// Propose a two-step factory admin transfer.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if new_admin == env.current_contract_address() {
+            return Err(Error::Unauthorized);
+        }
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(
+            &DataKey::PendingAdmin,
+            &PendingAdmin {
+                old_admin: admin.clone(),
+                new_admin: new_admin.clone(),
+            },
+        );
+        Self::bump_instance(&env);
+        env.events().publish(
+            (symbol_short!("admprop"),),
+            AdminProposedEvent {
+                old_admin: admin,
+                new_admin,
+            },
+        );
+        Ok(())
+    }
+
+    /// Accept a pending factory admin transfer as the proposed admin.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: PendingAdmin = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NotInitialized)?;
+        if pending.new_admin != new_admin {
+            return Err(Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::bump_instance(&env);
+        env.events().publish(
+            (symbol_short!("admacpt"),),
+            AdminAcceptedEvent {
+                old_admin: pending.old_admin,
+                new_admin,
+            },
+        );
+        Ok(())
+    }
+
+    /// Cancel a pending transfer. Only the current admin may cancel.
+    pub fn cancel_admin_proposal(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        let pending: PendingAdmin = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NotInitialized)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::bump_instance(&env);
+        env.events().publish(
+            (symbol_short!("admcancel"),),
+            AdminProposalCancelledEvent {
+                admin,
+                proposed_admin: pending.new_admin,
+            },
+        );
+        Ok(())
     }
 
     /// Predict the escrow address for a `(client, salt)` pair without
@@ -263,6 +382,12 @@ impl EscrowFactory {
             return Err(Error::Unauthorized);
         }
         Ok(())
+    }
+
+    fn bump_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 
     fn load_tokens(env: &Env) -> Result<Vec<Address>, Error> {
