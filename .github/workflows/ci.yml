@@ -63,6 +63,12 @@ jobs:
       - name: Run tests
         run: cargo test --manifest-path contracts/milestone-escrow/Cargo.toml
 
+      - name: Build escrow WASM for factory tests
+        run: stellar contract build --manifest-path contracts/milestone-escrow/Cargo.toml --out-dir target/wasm32v1-none/release
+
+      - name: Run factory tests
+        run: cargo test --manifest-path contracts/escrow-factory/Cargo.toml
+
       - name: Golden snapshots unchanged
         # golden_snapshot_tests rewrites contracts/milestone-escrow/golden_snapshots/
         # on every run. A diff means a flow now stores or emits something

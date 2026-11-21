@@ -123,7 +123,8 @@ freelancer when the client acts and the client otherwise:
 | `taxrcpt`  | `TaxRecipientSetEvent`           | state change      |
 | `taxpaid`  | `TaxPaidEvent`                   | state change      |
 | `taxwh`    | `TaxWithholdingDeductionsEvent`  | calculation       |
-| `cxlspref` | `CancelSplitRefundCalculatedEvent` | calculation     |
+| `cxlsettle` | `CancellationSettledEvent` | state change |
+| `epsettle` | `EmergencyPauseClaimRefundEvent` | state change |
 
 ## Dispute records
 
