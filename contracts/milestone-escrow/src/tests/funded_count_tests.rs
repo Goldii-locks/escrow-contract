@@ -105,13 +105,13 @@ fn add_milestone_keeps_the_counter_equal_to_the_count() {
     let (client_addr, freelancer_addr, escrow) = setup(
         &env,
         vec![&env, 100_i128, 200_i128],
-        FundingMode::PerMilestone,
+        FundingMode::Upfront,
     );
-    escrow.fund_milestone(&client_addr, &0);
-    escrow.fund_milestone(&client_addr, &1);
+    escrow.fund(&client_addr);
     assert_eq!(funded_count(&env, &escrow), Some(2));
 
-    escrow.add_milestone(&client_addr, &freelancer_addr, &300);
+    let spec_hash = BytesN::from_array(&env, &[1u8; 32]);
+    escrow.add_milestone(&client_addr, &freelancer_addr, &300, &spec_hash, &0);
     assert_eq!(funded_count(&env, &escrow), Some(3));
     assert_eq!(escrow.get_job().milestones.len(), 3);
 

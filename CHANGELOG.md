@@ -14,6 +14,7 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Fixed
 
+- `add_milestone` signature updated to accept `spec_hash: BytesN<32>` and `due_at: u64` parameters so amended milestones commit an on-chain spec hash and optional deadline (#945).
 - `raise_dispute` now performs zero-address check, `require_auth`, and
   identity validation **before** writing the re-entrancy lock (#566), matching
   the authorization pattern used by `fund`, `approve_milestone`, and

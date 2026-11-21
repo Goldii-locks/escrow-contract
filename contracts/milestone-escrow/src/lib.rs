@@ -853,6 +853,8 @@ pub struct MilestoneAddedEvent {
     pub total_amount: i128,
     /// Milestone count after the addition.
     pub milestone_count: u32,
+    pub spec_hash: BytesN<32>,
+    pub due_at: u64,
 }
 
 /// Emitted by `reduce_milestone` when both parties consent to lowering a
@@ -4268,6 +4270,8 @@ impl MilestoneEscrow {
         client: Address,
         freelancer: Address,
         amount: i128,
+        spec_hash: BytesN<32>,
+        due_at: u64,
     ) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
 
@@ -4284,6 +4288,10 @@ impl MilestoneEscrow {
         }
         if meta.milestone_count >= MAX_MILESTONES {
             return Err(Error::TooManyMilestones);
+        }
+        let now = env.ledger().timestamp();
+        if due_at != 0 && due_at <= now {
+            return Err(Error::InvalidDeadline);
         }
         let new_total = meta
             .total_amount
@@ -4303,10 +4311,19 @@ impl MilestoneEscrow {
                 status: MilestoneStatus::Pending,
                 delivered_at: 0,
                 funded,
-                spec_hash: BytesN::from_array(&env, &[0u8; 32]),
+                spec_hash: spec_hash.clone(),
                 deliverable: BytesN::from_array(&env, &[0u8; 32]),
             },
         );
+
+        if due_at != 0 {
+            let key = DataKey::DueAt(new_index);
+            env.storage().persistent().set(&key, &due_at);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        }
+
         // Persist amended state BEFORE the token transfer so a reentrant call
         // sees the updated count/total (mirrors `fund`).
         meta.milestone_count = new_index + 1;
@@ -4335,6 +4352,8 @@ impl MilestoneEscrow {
                 amount,
                 total_amount: new_total,
                 milestone_count: meta.milestone_count,
+                spec_hash,
+                due_at,
             },
         );
 
