@@ -2664,3 +2664,127 @@ fn sweep_excess_admin_signer_rejected_as_wrong_role() {
     let res = escrow.try_sweep_excess(&admin, &token);
     assert!(res.is_err());
 }
+
+// ─── set_milestone_due_dates ──────────────────────────────────────────────────
+
+#[test]
+fn set_milestone_due_dates_wrong_signer_fails() {
+    let env = Env::default();
+    let (contract_id, _admin, client, _freelancer, _arbiter, _token, escrow) = setup(&env);
+    let attacker = Address::generate(&env);
+    let due_dates = soroban_sdk::vec![&env, 2_000u64, 3_000u64];
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_milestone_due_dates",
+            args: (client.clone(), due_dates.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let res = escrow.try_set_milestone_due_dates(&client, &due_dates);
+    assert!(
+        res.is_err(),
+        "set_milestone_due_dates must fail when client auth is missing"
+    );
+}
+
+#[test]
+fn set_milestone_due_dates_correct_signer_succeeds_and_auths_match() {
+    let env = Env::default();
+    let (contract_id, _admin, client, _freelancer, _arbiter, _token, escrow) = setup(&env);
+    env.ledger().set_timestamp(1_000);
+    let due_dates = soroban_sdk::vec![&env, 2_000u64, 3_000u64];
+
+    env.mock_auths(&[MockAuth {
+        address: &client,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_milestone_due_dates",
+            args: (client.clone(), due_dates.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    escrow.set_milestone_due_dates(&client, &due_dates);
+    let auths = env.auths();
+    assert_eq!(auths[0].0, client);
+    assert_eq!(
+        auths[0].1.function,
+        AuthorizedFunction::Contract((
+            contract_id.clone(),
+            Symbol::new(&env, "set_milestone_due_dates"),
+            (client.clone(), due_dates).into_val(&env),
+        ))
+    );
+}
+
+// ─── reclaim_overdue ──────────────────────────────────────────────────────────
+
+#[test]
+fn reclaim_overdue_wrong_signer_fails() {
+    let env = Env::default();
+    let (contract_id, _admin, client, freelancer, arbiter, token, escrow) = setup(&env);
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    escrow.set_milestone_due_dates(&client, &soroban_sdk::vec![&env, 2_000u64, 0u64]);
+    escrow.accept_job(&freelancer);
+    escrow.accept_arbiter(&arbiter);
+    let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    token_admin.mint(&client, &1_000);
+    escrow.fund(&client);
+    env.ledger()
+        .set_timestamp(2_000 + crate::OVERDUE_GRACE_SECONDS + 1);
+
+    let attacker = Address::generate(&env);
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "reclaim_overdue",
+            args: (client.clone(), 0u32).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let res = escrow.try_reclaim_overdue(&client, &0u32);
+    assert!(
+        res.is_err(),
+        "reclaim_overdue must fail when client auth is missing"
+    );
+}
+
+#[test]
+fn reclaim_overdue_correct_signer_succeeds_and_auths_match() {
+    let env = Env::default();
+    let (contract_id, _admin, client, freelancer, arbiter, token, escrow) = setup(&env);
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    escrow.set_milestone_due_dates(&client, &soroban_sdk::vec![&env, 2_000u64, 0u64]);
+    escrow.accept_job(&freelancer);
+    escrow.accept_arbiter(&arbiter);
+    let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    token_admin.mint(&client, &1_000);
+    escrow.fund(&client);
+    env.ledger()
+        .set_timestamp(2_000 + crate::OVERDUE_GRACE_SECONDS + 1);
+
+    env.mock_auths(&[MockAuth {
+        address: &client,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "reclaim_overdue",
+            args: (client.clone(), 0u32).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    escrow.reclaim_overdue(&client, &0u32);
+    let auths = env.auths();
+    assert_eq!(auths[0].0, client);
+    assert_eq!(
+        auths[0].1.function,
+        AuthorizedFunction::Contract((
+            contract_id.clone(),
+            Symbol::new(&env, "reclaim_overdue"),
+            (client.clone(), 0u32).into_val(&env),
+        ))
+    );
+}
