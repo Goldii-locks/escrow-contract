@@ -6664,6 +6664,42 @@ impl MilestoneEscrow {
         if new_mask == 3 {
             env.storage().instance().remove(&DataKey::CancelApproval);
             env.storage().instance().set(&DataKey::CancelLock, &true);
+
+            // Settle all non-terminal milestones by refunding client immediately.
+            let mut total_refunded: i128 = 0;
+            for index in 0..meta.milestone_count {
+                let mut milestone = Self::load_milestone(&env, index)?;
+                if !Self::milestone_is_funded(&meta, &milestone) {
+                    continue;
+                }
+                if Self::is_terminal_status(&milestone.status) {
+                    continue;
+                }
+                if milestone.amount < 0 || milestone.released_amount < 0 {
+                    return Err(Error::InvalidAmount);
+                }
+                let remaining = milestone
+                    .amount
+                    .checked_sub(milestone.released_amount)
+                    .ok_or(Error::InvalidAmount)?;
+                if remaining > 0 {
+                    total_refunded = total_refunded
+                        .checked_add(remaining)
+                        .ok_or(Error::InvalidAmount)?;
+                    milestone.status = MilestoneStatus::Refunded;
+                    Self::store_milestone(&env, index, &milestone);
+                    Self::clear_time_ext(&env, index);
+                }
+            }
+
+            if env.storage().persistent().has(&DataKey::YieldAccrued) {
+                env.storage().persistent().remove(&DataKey::YieldAccrued);
+            }
+
+            if total_refunded > 0 {
+                Self::pay_or_credit(&env, &token_client, &meta.client, &total_refunded)?;
+            }
+
             env.events().publish(
                 (symbol_short!("cancel"), caller.clone(), counterparty),
                 CancelEscrowInitiatedEvent {
