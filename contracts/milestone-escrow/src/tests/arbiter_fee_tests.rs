@@ -170,3 +170,52 @@ fn fee_is_readable_after_construction() {
     let f = disputed_escrow(&env, 1_000);
     assert_eq!(f.escrow.get_arbiter_fee_bps(), 1_000);
 }
+
+use proptest::prelude::*;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(50))]
+    #[test]
+    fn property_test_released_milestone_invariant_with_arbiter_fee(
+        amount in 100_i128..1_000_000_i128,
+        fee_bps in 0_u32..=1_000_u32,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client_addr = Address::generate(&env);
+        let freelancer_addr = Address::generate(&env);
+        let arbiter_addr = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_admin = token::StellarAssetClient::new(&env, &sac.address());
+        token_admin.mint(&client_addr, &amount);
+
+        let escrow = MilestoneEscrowClient::new(&env, &env.register(MilestoneEscrow, ()));
+        let amounts = vec![&env, amount];
+        escrow.initialize_with_arbiter_fee(
+            &admin,
+            &client_addr,
+            &freelancer_addr,
+            &arbiter_addr,
+            &sac.address(),
+            &604_800u64,
+            &amounts,
+            &crate::spec_hashes_for(&amounts),
+            &fee_bps,
+        );
+        escrow.accept_job(&freelancer_addr);
+        escrow.accept_arbiter(&arbiter_addr);
+        escrow.fund(&client_addr);
+        escrow.mark_delivered(&freelancer_addr, &0);
+        escrow.raise_dispute(&client_addr, &0, &dispute_reason_hash(&env));
+
+        escrow.resolve_dispute(&arbiter_addr, &0, &true, &decision_hash(&env));
+
+        let ms = escrow.get_job().milestones.get(0).unwrap();
+        prop_assert_eq!(ms.status, MilestoneStatus::Released);
+        let expected_fee = (amount * fee_bps as i128) / 10_000;
+        let expected_payout = amount - expected_fee;
+        prop_assert_eq!(ms.released_amount, expected_payout);
+        prop_assert_eq!(ms.released_amount + expected_fee, ms.amount);
+    }
+}
