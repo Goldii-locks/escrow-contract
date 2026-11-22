@@ -93,7 +93,7 @@ fn fund_topics_keep_event_name_and_index_all_parties() {
 }
 
 #[test]
-fn approve_topics_keep_event_name_and_index_client() {
+fn approve_topics_index_client_then_freelancer() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, freelancer, _, _, _, _, escrow) =
@@ -101,7 +101,7 @@ fn approve_topics_keep_event_name_and_index_client() {
     escrow.mark_delivered(&freelancer, &0);
     escrow.approve_milestone(&client, &0);
 
-    assert_topics(&env, symbol_short!("approve"), &[client]);
+    assert_topics(&env, symbol_short!("approve"), &[client, freelancer]);
 }
 
 #[test]
@@ -302,3 +302,4 @@ fn cancelrev_topics_index_caller_then_counterparty() {
 
     assert_topics(&env, symbol_short!("cancelrev"), &[freelancer, client]);
 }
+
