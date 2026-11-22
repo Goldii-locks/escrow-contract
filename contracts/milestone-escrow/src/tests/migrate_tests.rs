@@ -229,4 +229,39 @@ fn uninitialized_contract_reports_not_initialized() {
         escrow.try_accept_job(&someone),
         Err(Ok(Error::NotInitialized))
     );
+#[test]
+fn mutating_entry_points_reject_v1_storage() {
+    let env = test_env();
+    let e = setup(&env);
+    revert_to_schema_1(&env, &e.contract_id);
+
+    let stranger = Address::generate(&env);
+    let indices = vec![&env, 0u32, 1u32];
+
+    // All mutating entry points listed in #936 must fail closed on v1
+    // storage instead of decoding old entries with the new types.
+    assert_eq!(
+        e.escrow.try_add_milestone(&e.client, &e.freelancer, &500),
+        Err(Ok(Error::MigrationRequired))
+    );
+    assert_eq!(
+        e.escrow.try_reduce_milestone(&e.client, &e.freelancer, &0, &100),
+        Err(Ok(Error::MigrationRequired))
+    );
+    assert_eq!(
+        e.escrow.try_rotate_freelancer(&stranger),
+        Err(Ok(Error::MigrationRequired))
+    );
+    assert_eq!(
+        e.escrow.try_trigger_auto_release(&stranger, &0),
+        Err(Ok(Error::MigrationRequired))
+    );
+    assert_eq!(
+        e.escrow.try_approve_milestones(&e.client, &indices),
+        Err(Ok(Error::MigrationRequired))
+    );
+    assert_eq!(
+        e.escrow.try_submit_evidence(&e.client, &0, &BytesN::from_array(&env, &[0x55; 32])),
+        Err(Ok(Error::MigrationRequired))
+    );
 }
