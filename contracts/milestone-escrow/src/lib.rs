@@ -5952,7 +5952,7 @@ impl MilestoneEscrow {
         Self::store_milestone(env, milestone_index, &milestone);
 
         env.events().publish(
-            (symbol_short!("dispute"), caller.clone()),
+            (symbol_short!("dispute"), caller.clone(), meta.arbiter.clone()),
             DisputeRaisedEvent {
                 milestone_index,
                 caller,
@@ -6035,7 +6035,7 @@ impl MilestoneEscrow {
         env.storage().persistent().set(&key, &dispute_info);
 
         env.events().publish(
-            (symbol_short!("evidence"),),
+            (symbol_short!("evidence"), caller.clone()),
             EvidenceSubmittedEvent {
                 milestone_index,
                 caller,
@@ -6136,7 +6136,7 @@ impl MilestoneEscrow {
             .remove(&DataKey::DisputeInfo(milestone_index));
 
         env.events().publish(
-            (symbol_short!("dispescal"),),
+            (symbol_short!("dispescal"), caller.clone()),
             DisputeEscalatedEvent {
                 milestone_index,
                 caller,
@@ -6278,8 +6278,14 @@ impl MilestoneEscrow {
             .remove(&DataKey::DisputeInfo(milestone_index));
         Self::clear_time_ext(&env, milestone_index);
 
+        let recipient = if release_to_freelancer {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
+
         env.events().publish(
-            (symbol_short!("resolve"),),
+            (symbol_short!("resolve"), meta.arbiter.clone(), recipient),
             DisputeResolvedEvent {
                 milestone_index,
                 arbiter: meta.arbiter.clone(),
@@ -6462,8 +6468,14 @@ impl MilestoneEscrow {
             .checked_add(freelancer_payout)
             .ok_or(Error::InvalidAmount)?;
 
+        let recipient = if freelancer_payout > 0 {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
+
         env.events().publish(
-            (symbol_short!("resolve"),),
+            (symbol_short!("resolve"), meta.arbiter.clone(), recipient),
             DisputeResolvedEvent {
                 milestone_index,
                 arbiter: meta.arbiter.clone(),
