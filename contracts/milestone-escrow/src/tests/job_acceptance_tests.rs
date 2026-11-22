@@ -274,3 +274,209 @@ fn test_withdraw_unaccepted_refunds_only_funded_milestones() {
         MilestoneStatus::Pending
     );
 }
+
+#[test]
+fn test_withdraw_unaccepted_window_boundary_and_only_arbiter_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _freelancer_addr, arbiter_addr, token_client, client, contract_id) =
+        setup_unaccepted_escrow(&env);
+    let funded_at = env.ledger().timestamp();
+
+    // Only arbiter accepted (issue #983: only one party accepted)
+    client.accept_arbiter(&arbiter_addr);
+
+    // Exact boundary check: one second earlier gives DeadlineNotPassed
+    env.ledger()
+        .with_mut(|l| l.timestamp = funded_at + WINDOW - 1);
+    assert_eq!(
+        client.try_withdraw_unaccepted(&client_addr),
+        Err(Ok(Error::DeadlineNotPassed))
+    );
+
+    // Exact window boundary: now == funded_at + WINDOW succeeds
+    env.ledger().with_mut(|l| l.timestamp = funded_at + WINDOW);
+    client.withdraw_unaccepted(&client_addr);
+
+    assert_eq!(token_client.balance(&client_addr), 1_500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_withdraw_unaccepted_funded_at_fallback_to_created_at() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, _, _, token_client, client, contract_id) = setup_unaccepted_escrow(&env);
+    let created_at = env.ledger().timestamp();
+
+    // Remove FundedAt key to test fallback to meta.created_at
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&crate::DataKey::FundedAt);
+    });
+
+    // One second before created_at + WINDOW fails
+    env.ledger()
+        .with_mut(|l| l.timestamp = created_at + WINDOW - 1);
+    assert_eq!(
+        client.try_withdraw_unaccepted(&client_addr),
+        Err(Ok(Error::DeadlineNotPassed))
+    );
+
+    // Exactly at created_at + WINDOW succeeds
+    env.ledger()
+        .with_mut(|l| l.timestamp = created_at + WINDOW);
+    client.withdraw_unaccepted(&client_addr);
+
+    assert_eq!(token_client.balance(&client_addr), 1_500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_withdraw_unaccepted_per_milestone_with_refunded_milestone_and_unaccref_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(admin_addr.clone())
+        .address();
+    token::StellarAssetClient::new(&env, &token_id).mint(&client_addr, &2_000);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize_with_funding_mode(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_id,
+        &604800,
+        &vec![&env, 600_i128, 800_i128, 600_i128],
+        &crate::spec_hashes_for(&vec![&env, 600_i128, 800_i128, 600_i128]),
+        &crate::FundingMode::PerMilestone,
+    );
+
+    // Fund milestone 0 and milestone 1 (milestone 2 remains unfunded)
+    client.fund_milestone(&client_addr, &0u32);
+    client.fund_milestone(&client_addr, &1u32);
+    assert_eq!(token_client.balance(&client_addr), 600);
+
+    // Simulate milestone 0 already being Refunded
+    env.as_contract(&contract_id, || {
+        let mut m0 = MilestoneEscrow::load_milestone(&env, 0).unwrap();
+        m0.status = MilestoneStatus::Refunded;
+        MilestoneEscrow::store_milestone(&env, 0, &m0);
+    });
+
+    env.ledger().with_mut(|l| l.timestamp += WINDOW);
+    client.withdraw_unaccepted(&client_addr);
+
+    // Only milestone 1 (800) should be refunded in this call
+    assert_eq!(token_client.balance(&client_addr), 1_400);
+
+    let job = client.get_job();
+    // Milestone 0 was already Refunded and remained Refunded
+    assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Refunded);
+    // Milestone 1 was refunded
+    assert_eq!(job.milestones.get(1).unwrap().status, MilestoneStatus::Refunded);
+    // Milestone 2 was unfunded and remained Pending
+    assert_eq!(job.milestones.get(2).unwrap().status, MilestoneStatus::Pending);
+
+    // Verify unaccref event payload
+    let events = crate::all_event_tuples(&env);
+    let mut found_unaccref = false;
+    for (_, topics, data) in events.iter() {
+        if let Some(topic_val) = topics.get(0) {
+            let topic: soroban_sdk::Symbol = topic_val.try_into_val(&env).unwrap();
+            if topic == symbol_short!("unaccref") {
+                let event = crate::UnacceptedWithdrawnEvent::from_val(&env, data);
+                assert_eq!(event.client, client_addr);
+                assert_eq!(event.token, token_id);
+                assert_eq!(event.amount, 800);
+                found_unaccref = true;
+            }
+        }
+    }
+    assert!(found_unaccref, "unaccref event must be published with refunded amount");
+}
+
+#[test]
+fn test_withdraw_unaccepted_failed_transfer_credited_to_owed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let arbiter_addr = Address::generate(&env);
+    let admin_addr = Address::generate(&env);
+
+    let sac = env.register_stellar_asset_contract_v2(admin_addr.clone());
+    sac.issuer().set_flag(soroban_sdk::testutils::IssuerFlags::RevocableFlag);
+    let token_id = sac.address();
+    let token_admin = token::StellarAssetClient::new(&env, &token_id);
+    let token_client = token::Client::new(&env, &token_id);
+    token_admin.mint(&client_addr, &1_000);
+
+    let contract_id = env.register(MilestoneEscrow, ());
+    let client = MilestoneEscrowClient::new(&env, &contract_id);
+    client.initialize(
+        &admin_addr,
+        &client_addr,
+        &freelancer_addr,
+        &arbiter_addr,
+        &token_id,
+        &604800,
+        &vec![&env, 1_000_i128],
+        &crate::spec_hashes_for(&vec![&env, 1_000_i128]),
+    );
+    client.fund(&client_addr);
+
+    // Deauthorize client so transfer will fail and enter credit path
+    token_admin.set_authorized(&client_addr, &false);
+
+    env.ledger().with_mut(|l| l.timestamp += WINDOW);
+    // Must succeed without reverting, recording credit
+    client.withdraw_unaccepted(&client_addr);
+
+    assert_eq!(token_client.balance(&client_addr), 0);
+    assert_eq!(token_client.balance(&contract_id), 1_000);
+
+    // Re-authorizing allows client to claim credit through withdraw
+    token_admin.set_authorized(&client_addr, &true);
+    client.withdraw(&client_addr);
+    assert_eq!(token_client.balance(&client_addr), 1_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_withdraw_unaccepted_paused_and_cancel_locked_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // 1. Paused
+    let (client_addr, _, _, _, client, _) = setup_unaccepted_escrow(&env);
+    env.ledger().with_mut(|l| l.timestamp += WINDOW);
+
+    client.admin_pause_escrow(&client.get_admin_role(&crate::AdminRole::Operator));
+    assert_eq!(
+        client.try_withdraw_unaccepted(&client_addr),
+        Err(Ok(Error::ContractPaused))
+    );
+
+    client.admin_resume_escrow(&client.get_admin_role(&crate::AdminRole::Operator));
+    // 2. Cancel locked
+    let freelancer_addr = client.get_job().freelancer;
+    client.cancel_escrow(&client_addr);
+    client.cancel_escrow(&freelancer_addr);
+
+    assert_eq!(
+        client.try_withdraw_unaccepted(&client_addr),
+        Err(Ok(Error::EscrowLocked))
+    );
+}
