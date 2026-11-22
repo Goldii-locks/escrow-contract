@@ -419,6 +419,17 @@ pub struct DisputeInfo {
     pub raised_by: Address,
 }
 
+/// Compact historical record of a resolved dispute retained in contract storage (#950).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRecord {
+    pub disputed_at: u64,
+    pub resolved_at: u64,
+    pub reason_hash: BytesN<32>,
+    pub evidence: Vec<EvidenceRecord>,
+    pub outcome: MilestoneStatus,
+}
+
 /// `DisputeInfo` as stored by schema version 3, before `raised_by`.
 /// Only `migrate` and `get_dispute_info` read it.
 #[contracttype]
@@ -801,6 +812,8 @@ pub enum DataKey {
     Treasury,
     /// Instance: admin-timelocked treasury change awaiting execution.
     PendingTreasury,
+    /// Persistent: compact historical record of a resolved dispute.
+    DisputeRecord(u32),
 }
 
 #[contracttype]
@@ -6077,6 +6090,17 @@ impl MilestoneEscrow {
         })
     }
 
+    /// Read the historical resolved record for a milestone dispute (#950).
+    ///
+    /// # Errors
+    /// * [`Error::InvalidStatus`] – No resolved dispute record exists for the milestone.
+    pub fn get_dispute_record(env: Env, milestone_index: u32) -> Result<DisputeRecord, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DisputeRecord(milestone_index))
+            .ok_or(Error::InvalidStatus)
+    }
+
     /// Escalate an unresolved dispute after its configured timeout by
     /// restoring the milestone to the status it had before the dispute.
     ///
@@ -6273,6 +6297,22 @@ impl MilestoneEscrow {
                 Self::pay_or_credit(&env, &token_client, &meta.client, &payout)?;
             }
         }
+        let stored_dispute_info: Option<DisputeInfo> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputeInfo(milestone_index));
+        if let Some(info) = stored_dispute_info {
+            let record = DisputeRecord {
+                disputed_at: info.disputed_at,
+                resolved_at: env.ledger().timestamp(),
+                reason_hash: info.reason_hash,
+                evidence: info.evidence,
+                outcome: milestone.status.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::DisputeRecord(milestone_index), &record);
+        }
         env.storage()
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
@@ -6452,6 +6492,22 @@ impl MilestoneEscrow {
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
+        let stored_dispute_info: Option<DisputeInfo> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputeInfo(milestone_index));
+        if let Some(info) = stored_dispute_info {
+            let record = DisputeRecord {
+                disputed_at: info.disputed_at,
+                resolved_at: env.ledger().timestamp(),
+                reason_hash: info.reason_hash,
+                evidence: info.evidence,
+                outcome: milestone.status.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::DisputeRecord(milestone_index), &record);
+        }
         env.storage()
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
@@ -10291,6 +10347,22 @@ impl MilestoneEscrow {
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
+        let stored_dispute_info: Option<DisputeInfo> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputeInfo(milestone_index));
+        if let Some(info) = stored_dispute_info {
+            let record = DisputeRecord {
+                disputed_at: info.disputed_at,
+                resolved_at: env.ledger().timestamp(),
+                reason_hash: info.reason_hash,
+                evidence: info.evidence,
+                outcome: milestone.status.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::DisputeRecord(milestone_index), &record);
+        }
         env.storage()
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
@@ -10410,6 +10482,22 @@ impl MilestoneEscrow {
         // CEI: commit state before external call.
         milestone.status = MilestoneStatus::Refunded;
         Self::store_milestone(&env, milestone_index, &milestone);
+        let stored_dispute_info: Option<DisputeInfo> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputeInfo(milestone_index));
+        if let Some(info) = stored_dispute_info {
+            let record = DisputeRecord {
+                disputed_at: info.disputed_at,
+                resolved_at: env.ledger().timestamp(),
+                reason_hash: info.reason_hash,
+                evidence: info.evidence,
+                outcome: milestone.status.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::DisputeRecord(milestone_index), &record);
+        }
         env.storage()
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
@@ -10538,6 +10626,22 @@ impl MilestoneEscrow {
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
+        let stored_dispute_info: Option<DisputeInfo> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputeInfo(milestone_index));
+        if let Some(info) = stored_dispute_info {
+            let record = DisputeRecord {
+                disputed_at: info.disputed_at,
+                resolved_at: env.ledger().timestamp(),
+                reason_hash: info.reason_hash,
+                evidence: info.evidence,
+                outcome: milestone.status.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::DisputeRecord(milestone_index), &record);
+        }
         env.storage()
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
