@@ -3,7 +3,7 @@
 //! `ApprovedEvent` payload it shares with the single-milestone paths (#742).
 
 use crate::testutils::{Escrow, EscrowFixture};
-use crate::{ApprovedEvent, Error, MilestoneStatus};
+use crate::{ApprovedEvent, DataKey, Error, MilestoneStatus};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, Val};
 
@@ -275,4 +275,21 @@ fn approve_milestone_emits_slim_event() {
             status: MilestoneStatus::Released,
         }
     );
+#[test]
+fn batch_approval_clears_time_extension() {
+    let env = Env::default();
+    let fx = delivered(&env, &[100, 200]);
+    fx.escrow.extend_milestone_deadline(&fx.client, &0, &1_000);
+
+    assert!(env.as_contract(&fx.contract_id, || env
+        .storage()
+        .persistent()
+        .has(&DataKey::TimeExt(0))));
+
+    fx.escrow.approve_milestones(&fx.client, &vec![&env, 0u32]);
+
+    assert!(!env.as_contract(&fx.contract_id, || env
+        .storage()
+        .persistent()
+        .has(&DataKey::TimeExt(0))));
 }
