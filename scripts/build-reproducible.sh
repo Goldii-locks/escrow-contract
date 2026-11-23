@@ -16,10 +16,10 @@
 #                                                     # on Windows CRLF checkouts it will
 #                                                     # not match a Linux build)
 #   scripts/build-reproducible.sh --check-testdata [<commit>]
-#                                                     # also verify the committed
-#                                                     # upgrade-test fixture wasm by
-#                                                     # rebuilding it from the commit
-#                                                     # that last updated that fixture
+#                                                     # also rebuild the upgrade-test
+#                                                     # fixture from that commit and
+#                                                     # compare it with the committed
+#                                                     # fixture wasm
 #
 # Output (in dist/):
 #   milestone_escrow.wasm
@@ -85,18 +85,13 @@ else
   git -c core.autocrlf=false -c core.eol=lf archive "$commit" | tar -xf - -C "$src"
 fi
 
-fixture_commit=""
 if [ "$check_testdata" -eq 1 ]; then
-  # The fixture is a frozen "v2" artifact, not the escrow at HEAD. Rebuild it
-  # from the commit that committed the wasm so a later escrow change does not
-  # silently invalidate the upgrade test (issue #940).
-  fixture_commit=$(git log -1 --format=%H -- "$testdata_wasm")
-  [ -n "$fixture_commit" ] || {
-    echo "ERROR: no commit found for $testdata_wasm" >&2
-    exit 1
-  }
-  echo "Checking upgrade-test fixture from commit $fixture_commit"
-  git -c core.autocrlf=false -c core.eol=lf archive "$fixture_commit" | tar -xf - -C "$fixture_src"
+  # The fixture links the escrow source at $commit through a path dependency.
+  # It must therefore be rebuilt from the same commit that CI is testing: if a
+  # constructor or storage-layout change lands without regenerating the
+  # committed wasm, this check fails (issue #940).
+  echo "Building upgrade-test fixture from commit $commit"
+  git -c core.autocrlf=false -c core.eol=lf archive "$commit" | tar -xf - -C "$fixture_src"
 fi
 
 image="milestone-escrow-build:$(sha256 "$dockerfile" | cut -c1-12)"
@@ -130,8 +125,12 @@ docker run --rm --platform linux/amd64 \
   -v "$(host_path "$fixture_src"):/fixture" \
   "$image" sh /build/build-in-container.sh
 
+mkdir -p "$out_dir"
 if [ "$check_testdata" -eq 1 ]; then
-  if ! cmp -s "$fixture_src/$testdata_wasm_rel" "$testdata_wasm"; then
+  # Always publish the rebuilt bytes so a mismatch can be fixed by committing
+  # the artifact produced by the very same pinned toolchain.
+  cp "$fixture_src/$testdata_wasm_rel" "$out_dir/escrow_v2.rebuilt.wasm"
+  if ! cmp -s "$out_dir/escrow_v2.rebuilt.wasm" "$testdata_wasm"; then
     cat >&2 <<'EOF'
 ERROR: committed contracts/milestone-escrow/testdata/escrow_v2.wasm differs from
 the rebuild with the pinned toolchain. Rebuild and commit it with:
@@ -144,8 +143,6 @@ EOF
   fi
   echo "upgrade-test fixture matches the pinned-container rebuild"
 fi
-
-mkdir -p "$out_dir"
 cp "$src/$wasm_rel" "$out_dir/milestone_escrow.wasm"
 hash=$(sha256 "$out_dir/milestone_escrow.wasm")
 echo "$hash  milestone_escrow.wasm" > "$out_dir/milestone_escrow.wasm.sha256"

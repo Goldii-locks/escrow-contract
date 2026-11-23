@@ -288,19 +288,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          # The fixture check needs the history to find the commit that last
-          # updated testdata/escrow_v2.wasm (issue #940).
-          fetch-depth: 0
 
       - name: Reproducible build
         run: bash scripts/build-reproducible.sh "$GITHUB_SHA"
 
       - name: Verify upgrade-test fixture
-        # Rebuilds the committed escrow_v2.wasm from the commit that last
-        # updated it, with the same pinned container (issue #940). A mismatch
-        # prints the exact rebuild command from the fixture's doc comment.
+        # Rebuilds the committed escrow_v2.wasm from the source under test with
+        # the same pinned container (issue #940). A constructor or storage
+        # layout change without a fixture rebuild therefore fails CI.
         run: bash scripts/build-reproducible.sh --check-testdata "$GITHUB_SHA"
+
+      - name: Upload rebuilt fixture for mismatch triage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: escrow_v2-rebuilt-${{ github.sha }}
+          path: dist/escrow_v2.rebuilt.wasm
+          if-no-files-found: ignore
 
       - name: Publish hash
         run: |
