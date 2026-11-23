@@ -390,8 +390,11 @@ history of behavioural changes is in [CHANGELOG.md](CHANGELOG.md).
 
 `contracts/escrow-factory` deploys one escrow per job (issue #666). It is
 deployed with `--admin <platform-admin> --wasm_hash <escrow-wasm-hash>`
-constructor arguments. The admin allows tokens with `allow_token`, removes
-them again with `disallow_token`, and can point the factory at a new escrow
+constructor arguments. `FundingMode` and `EscrowSettings` live in the shared
+`contracts/escrow-types` crate and are re-exported by both contracts, so the
+factory cannot drift from the escrow constructor ABI. The admin allows tokens
+with `allow_token`, removes them again with `disallow_token`, and can point the
+factory at a new escrow
 build with `propose_wasm_hash(admin, hash, wasm)`, which uploads and verifies
 the bytecode and waits `WASM_HASH_DELAY` (7 days) before `create_escrow` uses
 it. `cancel_wasm_hash_proposal` withdraws a pending change and

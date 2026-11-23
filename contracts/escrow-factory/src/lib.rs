@@ -4,6 +4,9 @@ use soroban_sdk::{
     BytesN, ContractExecutable, Env, Vec,
 };
 
+// The escrow's constructor ABI lives in one crate so it cannot drift here.
+pub use escrow_types::{EscrowSettings, FundingMode};
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -35,24 +38,6 @@ enum DataKey {
     AllowedTokens,
     PendingWasmHash,
     Paused,
-}
-
-/// Mirrors `milestone_escrow::FundingMode`; the two encode identically.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FundingMode {
-    Upfront,
-    PerMilestone,
-}
-
-/// Mirrors `milestone_escrow::EscrowSettings`, the escrow constructor's last
-/// argument; the two encode identically.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct EscrowSettings {
-    pub funding_mode: FundingMode,
-    pub dispute_timeout_seconds: u64,
-    pub arbiter_fee_bps: u32,
 }
 
 /// Payload of the factory's `tokallow` event. The token is in the data rather

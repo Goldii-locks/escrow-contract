@@ -3,7 +3,9 @@
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger as _},
-    token, vec, Address, Bytes, BytesN, Env, FromVal, TryIntoVal, Val,
+    token, vec,
+    xdr::ToXdr,
+    Address, Bytes, BytesN, Env, FromVal, TryIntoVal, Val,
 };
 
 use crate::{
@@ -714,4 +716,33 @@ fn only_admin_can_toggle_pause() {
     assert!(factory.is_paused());
     assert_eq!(factory.try_unpause(&intruder), Err(Ok(Error::Unauthorized)));
     assert!(factory.is_paused());
+}
+
+/// The factory passes these types straight into the escrow constructor. They
+/// come from `escrow-types` now, so this test fails to compile if either
+/// contract stops using the shared definition; the XDR assertion additionally
+/// guards the runtime wire format.
+#[test]
+fn shared_settings_xdr_matches_milestone_escrow() {
+    let env = Env::default();
+
+    for mode in [FundingMode::Upfront, FundingMode::PerMilestone] {
+        let factory_settings = EscrowSettings {
+            funding_mode: mode,
+            dispute_timeout_seconds: 30 * 24 * 60 * 60,
+            arbiter_fee_bps: 25,
+        };
+        let escrow_settings: milestone_escrow::EscrowSettings = EscrowSettings {
+            funding_mode: mode,
+            dispute_timeout_seconds: 30 * 24 * 60 * 60,
+            arbiter_fee_bps: 25,
+        };
+        assert_eq!(factory_settings.to_xdr(&env), escrow_settings.to_xdr(&env));
+    }
+
+    let escrow_mode: milestone_escrow::FundingMode = FundingMode::PerMilestone;
+    assert_eq!(
+        FundingMode::PerMilestone.to_xdr(&env),
+        escrow_mode.to_xdr(&env)
+    );
 }
