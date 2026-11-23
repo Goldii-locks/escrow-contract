@@ -400,6 +400,11 @@ it. `cancel_wasm_hash_proposal` withdraws a pending change and
 (the token is the second topic); removing an absent token is a no-op. Existing
 escrows keep their own token and are unaffected.
 
+For incident response, `pause` blocks new `create_escrow` calls with
+`Error::Paused`; `unpause` re-enables them and `is_paused` reports the current
+flag. Only the admin can toggle the switch, and existing escrows keep running.
+Changes emit `paused` and `unpaused` events.
+
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
 client's signature. It deploys the escrow with the platform admin as its

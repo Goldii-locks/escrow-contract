@@ -175,6 +175,8 @@ against the factory's `lib.rs`.
 | `whashprp`  | `WasmHashProposedEvent` | state change |
 | `whashcxl`  | `WasmHashCancelledEvent`| state change |
 | `whashact`  | `WasmHashActivatedEvent`| state change |
+| `paused`    | `()`                    | state change |
+| `unpaused`  | `()`                    | state change |
 
 ### `created`
 
@@ -258,3 +260,13 @@ that same deployment uses the new code.
 **Data (`WasmHashActivatedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
 The `created` event emitted later in the same invocation carries the same
 `hash` in its `wasm_hash` field.
+
+### `paused` and `unpaused`
+
+Emitted by `pause` and `unpause` when the factory's incident switch changes.
+Both have a single topic and empty data. Repeated calls that do not change the
+flag emit nothing.
+
+While paused, `create_escrow` returns `Error::Paused` before deploying or
+emitting `created`. Existing escrows keep running: the switch only blocks new
+deployments through the factory. `is_paused` exposes the current flag.

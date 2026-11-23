@@ -612,3 +612,106 @@ fn create_escrow_needs_only_the_client_signature() {
     let job = escrow::Client::new(&env, &escrow).get_job();
     assert_eq!(job.client, client);
 }
+
+#[test]
+fn pause_blocks_new_escrows_but_not_existing_ones() {
+    let (env, fid, admin, _default_tok, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let tok = mint_token(&env, &client, 1_000);
+    factory.allow_token(&admin, &tok);
+
+    let amounts = vec![&env, 1_000_i128];
+    let hashes = zero_hashes(&env, 1);
+    let existing = factory.create_escrow(
+        &client,
+        &freelancer,
+        &arbiter,
+        &tok,
+        &604800u64,
+        &amounts,
+        &hashes,
+        &default_settings(),
+        &BytesN::from_array(&env, &[30u8; 32]),
+    );
+
+    assert!(!factory.is_paused());
+    factory.pause(&admin);
+    assert!(factory.is_paused());
+
+    // A deployed escrow keeps working while the factory is paused.
+    escrow::Client::new(&env, &existing).accept_job(&freelancer);
+
+    assert_eq!(
+        factory.try_create_escrow(
+            &client,
+            &freelancer,
+            &arbiter,
+            &tok,
+            &604800u64,
+            &amounts,
+            &hashes,
+            &default_settings(),
+            &BytesN::from_array(&env, &[31u8; 32]),
+        ),
+        Err(Ok(Error::Paused))
+    );
+
+    factory.unpause(&admin);
+    assert!(!factory.is_paused());
+    let created = factory.create_escrow(
+        &client,
+        &freelancer,
+        &arbiter,
+        &tok,
+        &604800u64,
+        &amounts,
+        &hashes,
+        &default_settings(),
+        &BytesN::from_array(&env, &[31u8; 32]),
+    );
+    assert_ne!(created, existing);
+}
+
+#[test]
+fn pause_and_unpause_emit_events_and_are_idempotent() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, fid, admin, _token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+
+    factory.pause(&admin);
+    let (topics, _) = last_event(&env);
+    assert_eq!(topics.len(), 1);
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("paused"));
+
+    factory.pause(&admin);
+    assert!(env.events().all().events().is_empty());
+
+    factory.unpause(&admin);
+    let (topics, _) = last_event(&env);
+    assert_eq!(topics.len(), 1);
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("unpaused"));
+
+    factory.unpause(&admin);
+    assert!(env.events().all().events().is_empty());
+}
+
+#[test]
+fn only_admin_can_toggle_pause() {
+    let (env, fid, admin, _token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let intruder = Address::generate(&env);
+
+    assert_eq!(factory.try_pause(&intruder), Err(Ok(Error::Unauthorized)));
+    assert!(!factory.is_paused());
+
+    factory.pause(&admin);
+    assert!(factory.is_paused());
+    assert_eq!(factory.try_unpause(&intruder), Err(Ok(Error::Unauthorized)));
+    assert!(factory.is_paused());
+}
