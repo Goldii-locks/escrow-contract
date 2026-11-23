@@ -524,6 +524,31 @@ Anyone can check which source a deployed contract was built from:
 The two hashes must be identical. If they differ, the deployed code is not the
 reviewed source at that commit.
 
+## Fuzz Testing
+
+The milestone escrow state machine is fuzzed using `cargo-fuzz` (`libfuzzer-sys` + `arbitrary`) to explore complex operation sequences and verify state invariants.
+
+### Running the Fuzzer Locally
+
+Prerequisites: a Rust nightly toolchain and `cargo-fuzz`.
+
+```bash
+cargo install cargo-fuzz --locked
+cargo +nightly fuzz run state_machine
+```
+
+### Reproducing a Crash
+
+When a fuzz run uncovers an invariant violation or crash, `cargo-fuzz` writes the reproducer input to `fuzz/artifacts/state_machine/crash-<hash>`.
+
+To reproduce the failure:
+
+```bash
+cargo +nightly fuzz run state_machine fuzz/artifacts/state_machine/crash-<hash>
+```
+
+CI runs the state machine fuzzer weekly on a scheduled workflow (`.github/workflows/fuzz.yml`) and uploads any crash artifacts.
+
 ## License
 
 MIT
