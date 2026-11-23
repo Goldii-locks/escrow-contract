@@ -13,6 +13,7 @@ pub enum Error {
     TokenNotAllowed = 4,
     InvalidAmount = 5,
     InvalidDisputeTimeout = 6,
+    Paused = 7,
 }
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
@@ -25,6 +26,7 @@ enum DataKey {
     Admin,
     WasmHash,
     AllowedTokens,
+    Paused,
 }
 
 /// Mirrors `milestone_escrow::FundingMode`; the two encode identically.
@@ -80,6 +82,7 @@ impl EscrowFactory {
         env.storage()
             .instance()
             .set(&DataKey::AllowedTokens, &Vec::<Address>::new(&env));
+        env.storage().instance().set(&DataKey::Paused, &false);
     }
 
     /// Allow a token to be used in escrows created by this factory.
@@ -113,6 +116,30 @@ impl EscrowFactory {
         Ok(())
     }
 
+    /// Stop new escrows from being deployed. Existing escrows are unaffected.
+    /// Calling this while already paused is a no-op.
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if Self::paused(&env) {
+            return Ok(());
+        }
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.events().publish((symbol_short!("paused"),), ());
+        Ok(())
+    }
+
+    /// Allow new escrows to be deployed again. Calling this while not paused
+    /// is a no-op.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        if !Self::paused(&env) {
+            return Ok(());
+        }
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish((symbol_short!("unpaused"),), ());
+        Ok(())
+    }
+
     /// Update the wasm hash (e.g. after an escrow contract upgrade).
     pub fn set_wasm_hash(env: Env, admin: Address, wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
@@ -142,6 +169,10 @@ impl EscrowFactory {
         salt: BytesN<32>,
     ) -> Result<Address, Error> {
         client.require_auth();
+
+        if Self::paused(&env) {
+            return Err(Error::Paused);
+        }
 
         if milestone_amounts.is_empty() {
             return Err(Error::InvalidAmount);
@@ -250,6 +281,18 @@ impl EscrowFactory {
 
     pub fn get_allowed_tokens(env: Env) -> Result<Vec<Address>, Error> {
         Self::load_tokens(&env)
+    }
+
+    /// Whether new escrow deployments are currently blocked.
+    pub fn is_paused(env: Env) -> bool {
+        Self::paused(&env)
+    }
+
+    fn paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {

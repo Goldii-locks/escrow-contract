@@ -162,13 +162,20 @@ emits `migrate` with `from_version` 3 and `to_version` 4 when it stamps them.
 
 ## Escrow factory events
 
-The `escrow-factory` contract (`contracts/escrow-factory`) emits a single
-event. It is documented separately because it comes from a different contract
-than the topics above and is not covered by `event_docs_sync_tests`.
+The `escrow-factory` contract (`contracts/escrow-factory`) emits the events
+below. They are documented separately because they come from a different
+contract than the topics above. `event_docs_sync_tests` checks this section
+against the factory's `lib.rs`.
 
-| Topic     | Event struct         | Kind         |
-| --------- | -------------------- | ------------ |
-| `created` | `EscrowCreatedEvent` | state change |
+| Topic       | Event struct         | Kind         |
+| ----------- | -------------------- | ------------ |
+| `created`   | `EscrowCreatedEvent` | state change |
+| `allowed`   | `()`                 | state change |
+| `disallowd` | `()`                 | state change |
+| `paused`    | `()`                 | state change |
+| `unpaused`  | `()`                 | state change |
+
+### `created`
 
 Emitted by `create_escrow` after the escrow has been deployed and its
 constructor has run.
@@ -197,3 +204,19 @@ added. Consumers that decoded `client`, `freelancer` or `arbiter` from the data
 must read them from the topics instead. `wasm_hash` lets an indexer tell which
 escrow build an address runs without calling the factory, which matters because
 `set_wasm_hash` changes the hash for later escrows.
+
+### `allowed` and `disallowd`
+
+Emitted by `allow_token` and `disallow_token`. The token address is topic 1 and
+the data is empty. `allow_token` emits nothing when the token is already
+allowed; `disallow_token` emits `disallowd` even when the token was absent.
+
+### `paused` and `unpaused`
+
+Emitted by `pause` and `unpause` when the factory's incident switch changes.
+Both have a single topic and empty data. Repeated calls that do not change the
+flag emit nothing.
+
+While paused, `create_escrow` returns `Error::Paused` before deploying or
+emitting `created`. Existing escrows keep running: the switch only blocks new
+deployments through the factory. `is_paused` exposes the current flag.
