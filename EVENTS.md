@@ -162,13 +162,21 @@ emits `migrate` with `from_version` 3 and `to_version` 4 when it stamps them.
 
 ## Escrow factory events
 
-The `escrow-factory` contract (`contracts/escrow-factory`) emits a single
-event. It is documented separately because it comes from a different contract
-than the topics above and is not covered by `event_docs_sync_tests`.
+The `escrow-factory` contract (`contracts/escrow-factory`) emits the events
+below. They are documented separately because they come from a different
+contract than the topics above. `event_docs_sync_tests` checks this section
+against the factory's `lib.rs`.
 
-| Topic     | Event struct         | Kind         |
-| --------- | -------------------- | ------------ |
-| `created` | `EscrowCreatedEvent` | state change |
+| Topic       | Event struct            | Kind         |
+| ----------- | ----------------------- | ------------ |
+| `created`   | `EscrowCreatedEvent`    | state change |
+| `allowed`   | `()`                    | state change |
+| `disallowd` | `()`                    | state change |
+| `whashprp`  | `WasmHashProposedEvent` | state change |
+| `whashcxl`  | `WasmHashCancelledEvent`| state change |
+| `whashact`  | `WasmHashActivatedEvent`| state change |
+
+### `created`
 
 Emitted by `create_escrow` after the escrow has been deployed and its
 constructor has run.
@@ -189,11 +197,50 @@ are indexed so RPC `getEvents` can filter by participant, as for the escrow's
 | `settings`             | `EscrowSettings` | `funding_mode`, `dispute_timeout_seconds`, `arbiter_fee_bps` exactly as passed to the constructor. |
 | `wasm_hash`            | `BytesN<32>`     | Escrow WASM hash the factory used for this deployment.     |
 
-**Breaking change for indexers.** Before this change the event had one topic
-(`created`) and data `{ escrow, client, freelancer, arbiter, token }`. The
-party addresses moved from the data into topics 1 to 3, and `total_amount`,
-`milestone_count`, `auto_release_seconds`, `settings` and `wasm_hash` were
-added. Consumers that decoded `client`, `freelancer` or `arbiter` from the data
-must read them from the topics instead. `wasm_hash` lets an indexer tell which
-escrow build an address runs without calling the factory, which matters because
-`set_wasm_hash` changes the hash for later escrows.
+Before an earlier change the event had one topic (`created`) and data
+`{ escrow, client, freelancer, arbiter, token }`. The party addresses moved
+from the data into topics 1 to 3, and `total_amount`, `milestone_count`,
+`auto_release_seconds`, `settings` and `wasm_hash` were added. Consumers that
+decoded `client`, `freelancer` or `arbiter` from the data must read them from
+the topics instead. `wasm_hash` lets an indexer tell which escrow build an
+address runs without calling the factory, which is why the hash-change events
+below matter.
+
+### `allowed` and `disallowd`
+
+Emitted by `allow_token` and `disallow_token`. The token address is topic 1 and
+the data is empty. `allow_token` emits nothing when the token is already
+allowed; `disallow_token` emits `disallowd` even when the token was absent.
+
+### `whashprp`
+
+Emitted by `propose_wasm_hash` after the WASM bytes have been uploaded and
+their hash verified.
+
+**Topics:** `whashprp`.
+
+**Data (`WasmHashProposedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+`effective_at` is the ledger timestamp at which the proposal may first be
+used. It is `WASM_HASH_DELAY` (7 days) after the proposal.
+
+### `whashcxl`
+
+Emitted by `cancel_wasm_hash_proposal` when a pending proposal is withdrawn.
+The currently active hash is unchanged.
+
+**Topics:** `whashcxl`.
+
+**Data (`WasmHashCancelledEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`
+— the cancelled proposal.
+
+### `whashact`
+
+Emitted by `create_escrow` on the first deployment at or after a proposal's
+`effective_at`. The proposal is applied to the stored hash and removed, and
+that same deployment uses the new code.
+
+**Topics:** `whashact`.
+
+**Data (`WasmHashActivatedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+The `created` event emitted later in the same invocation carries the same
+`hash` in its `wasm_hash` field.

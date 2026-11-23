@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, BytesN,
-    ContractExecutable, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
+    BytesN, ContractExecutable, Env, Vec,
 };
 
 #[contracterror]
@@ -13,18 +13,25 @@ pub enum Error {
     TokenNotAllowed = 4,
     InvalidAmount = 5,
     InvalidDisputeTimeout = 6,
+    ArithmeticOverflow = 7,
+    NoPendingWasmHash = 8,
+    InvalidWasmHash = 9,
 }
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
 pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
 /// Mirrors `milestone_escrow::MAX_DISPUTE_TIMEOUT_SECONDS` (180 days).
 pub const MAX_DISPUTE_TIMEOUT_SECONDS: u64 = 180 * 24 * 60 * 60;
+/// A proposed escrow WASM hash becomes active this long after it is proposed.
+/// Seven days matches the escrow's treasury-update delay.
+pub const WASM_HASH_DELAY: u64 = 7 * 24 * 60 * 60;
 
 #[contracttype]
 enum DataKey {
     Admin,
     WasmHash,
     AllowedTokens,
+    PendingWasmHash,
 }
 
 /// Mirrors `milestone_escrow::FundingMode`; the two encode identically.
@@ -43,6 +50,40 @@ pub struct EscrowSettings {
     pub funding_mode: FundingMode,
     pub dispute_timeout_seconds: u64,
     pub arbiter_fee_bps: u32,
+}
+
+/// A hash proposed by `propose_wasm_hash` and not yet active. Also returned by
+/// the `get_pending_wasm_hash` view.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingWasmHash {
+    pub hash: BytesN<32>,
+    pub effective_at: u64,
+}
+
+/// Payload of the factory's `whashprp` event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WasmHashProposedEvent {
+    pub hash: BytesN<32>,
+    pub effective_at: u64,
+}
+
+/// Payload of the factory's `whashcxl` event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WasmHashCancelledEvent {
+    pub hash: BytesN<32>,
+    pub effective_at: u64,
+}
+
+/// Payload of the factory's `whashact` event, published by the first
+/// `create_escrow` at or after `effective_at`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WasmHashActivatedEvent {
+    pub hash: BytesN<32>,
+    pub effective_at: u64,
 }
 
 /// Payload of the factory's `created` event. The party addresses are indexed
@@ -113,11 +154,72 @@ impl EscrowFactory {
         Ok(())
     }
 
-    /// Update the wasm hash (e.g. after an escrow contract upgrade).
-    pub fn set_wasm_hash(env: Env, admin: Address, wasm_hash: BytesN<32>) -> Result<(), Error> {
+    /// Propose a new escrow WASM hash. It becomes active only after
+    /// `WASM_HASH_DELAY`, giving clients time to react to an upgrade.
+    ///
+    /// `wasm` is the bytecode the hash refers to. Soroban SDK 28 has no view
+    /// for checking whether a hash is already in the ledger, so uploading the
+    /// bytes here and comparing the resulting hash is the only way to reject
+    /// a typo before it can brick every later `create_escrow` call.
+    pub fn propose_wasm_hash(
+        env: Env,
+        admin: Address,
+        wasm_hash: BytesN<32>,
+        wasm: Bytes,
+    ) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
-        env.storage().instance().set(&DataKey::WasmHash, &wasm_hash);
+        let uploaded: BytesN<32> = env.deployer().upload_contract_wasm(wasm);
+        if uploaded != wasm_hash {
+            return Err(Error::InvalidWasmHash);
+        }
+        let effective_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(WASM_HASH_DELAY)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let pending = PendingWasmHash {
+            hash: wasm_hash.clone(),
+            effective_at,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingWasmHash, &pending);
+        env.events().publish(
+            (symbol_short!("whashprp"),),
+            WasmHashProposedEvent {
+                hash: wasm_hash,
+                effective_at,
+            },
+        );
         Ok(())
+    }
+
+    /// Cancel a pending WASM hash proposal. The current hash remains active.
+    pub fn cancel_wasm_hash_proposal(env: Env, admin: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        let pending: PendingWasmHash = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingWasmHash)
+            .ok_or(Error::NoPendingWasmHash)?;
+        env.storage().instance().remove(&DataKey::PendingWasmHash);
+        env.events().publish(
+            (symbol_short!("whashcxl"),),
+            WasmHashCancelledEvent {
+                hash: pending.hash,
+                effective_at: pending.effective_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// The pending WASM hash proposal, if any. Returns
+    /// `Error::NoPendingWasmHash` when no proposal is outstanding.
+    pub fn get_pending_wasm_hash(env: Env) -> Result<PendingWasmHash, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PendingWasmHash)
+            .ok_or(Error::NoPendingWasmHash)
     }
 
     /// Deploy a new milestone-escrow contract.
@@ -173,11 +275,40 @@ impl EscrowFactory {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
 
-        let wasm_hash: BytesN<32> = env
+        let current_hash: BytesN<32> = env
             .storage()
             .instance()
             .get(&DataKey::WasmHash)
             .ok_or(Error::NotInitialized)?;
+
+        // A proposal is used only after its timelock has elapsed. Applying it
+        // here (rather than in a separate privileged call) means the stored
+        // hash always matches the code used by the next deployment, and the
+        // `created` event can report the exact hash that was deployed.
+        let wasm_hash = if let Some(pending) = env
+            .storage()
+            .instance()
+            .get::<_, PendingWasmHash>(&DataKey::PendingWasmHash)
+        {
+            if env.ledger().timestamp() >= pending.effective_at {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::WasmHash, &pending.hash);
+                env.storage().instance().remove(&DataKey::PendingWasmHash);
+                env.events().publish(
+                    (symbol_short!("whashact"),),
+                    WasmHashActivatedEvent {
+                        hash: pending.hash.clone(),
+                        effective_at: pending.effective_at,
+                    },
+                );
+                pending.hash
+            } else {
+                current_hash
+            }
+        } else {
+            current_hash
+        };
 
         // Deploying runs the escrow's __constructor with these arguments, so
         // the escrow is initialised in the same call that creates it.
