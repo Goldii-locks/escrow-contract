@@ -392,9 +392,13 @@ history of behavioural changes is in [CHANGELOG.md](CHANGELOG.md).
 deployed with `--admin <platform-admin> --wasm_hash <escrow-wasm-hash>`
 constructor arguments. The admin allows tokens with `allow_token`, removes
 them again with `disallow_token`, and can point the factory at a new escrow
-build with `set_wasm_hash`. Token allow/deny changes emit `allowed` and
-`disallowd` events (the token address is the second topic); removing an absent
-token is a no-op. Existing escrows keep their own token and are unaffected.
+build with `propose_wasm_hash(admin, hash, wasm)`, which uploads and verifies
+the bytecode and waits `WASM_HASH_DELAY` (7 days) before `create_escrow` uses
+it. `cancel_wasm_hash_proposal` withdraws a pending change and
+`get_pending_wasm_hash` exposes it. Token allow/deny changes emit `tokallow`
+(the token is in the `TokenAllowedEvent` data, not a topic) and `disallowd`
+(the token is the second topic); removing an absent token is a no-op. Existing
+escrows keep their own token and are unaffected.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the

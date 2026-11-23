@@ -172,7 +172,9 @@ against the factory's `lib.rs`.
 | `created`   | `EscrowCreatedEvent`    | state change |
 | `tokallow`  | `TokenAllowedEvent`     | state change |
 | `disallowd` | `()`                    | state change |
-| `wasmhash`  | `WasmHashChangedEvent`  | state change |
+| `whashprp`  | `WasmHashProposedEvent` | state change |
+| `whashcxl`  | `WasmHashCancelledEvent`| state change |
+| `whashact`  | `WasmHashActivatedEvent`| state change |
 
 ### `created`
 
@@ -201,8 +203,8 @@ from the data into topics 1 to 3, and `total_amount`, `milestone_count`,
 `auto_release_seconds`, `settings` and `wasm_hash` were added. Consumers that
 decoded `client`, `freelancer` or `arbiter` from the data must read them from
 the topics instead. `wasm_hash` lets an indexer tell which escrow build an
-address runs without calling the factory, which matters because `set_wasm_hash`
-changes the hash for later escrows.
+address runs without calling the factory, which is why the hash-change events
+below matter.
 
 ### `tokallow`
 
@@ -224,13 +226,35 @@ Emitted by `disallow_token`, whether or not the token was on the allow-list
 
 **Data:** `()` (empty).
 
-### `wasmhash`
+### `whashprp`
 
-Emitted by `set_wasm_hash` after the new hash has been stored.
+Emitted by `propose_wasm_hash` after the WASM bytes have been uploaded and
+their hash verified.
 
-**Topics:** `wasmhash`.
+**Topics:** `whashprp`.
 
-**Data (`WasmHashChangedEvent`):** `{ old: BytesN<32>, new: BytesN<32> }` —
-the hash replaced by the call and the hash now used by future
-`create_escrow` calls. Existing escrows keep running the code hash they were
-deployed with.
+**Data (`WasmHashProposedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+`effective_at` is the ledger timestamp at which the proposal may first be
+used. It is `WASM_HASH_DELAY` (7 days) after the proposal.
+
+### `whashcxl`
+
+Emitted by `cancel_wasm_hash_proposal` when a pending proposal is withdrawn.
+The currently active hash is unchanged.
+
+**Topics:** `whashcxl`.
+
+**Data (`WasmHashCancelledEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`
+— the cancelled proposal.
+
+### `whashact`
+
+Emitted by `create_escrow` on the first deployment at or after a proposal's
+`effective_at`. The proposal is applied to the stored hash and removed, and
+that same deployment uses the new code.
+
+**Topics:** `whashact`.
+
+**Data (`WasmHashActivatedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+The `created` event emitted later in the same invocation carries the same
+`hash` in its `wasm_hash` field.

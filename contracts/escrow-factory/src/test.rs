@@ -1,12 +1,15 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    symbol_short, testutils::Address as _, token, vec, Address, BytesN, Env, FromVal, TryIntoVal,
+    symbol_short,
+    testutils::{Address as _, Ledger as _},
+    token, vec, Address, Bytes, BytesN, Env, FromVal, TryIntoVal, Val,
 };
 
 use crate::{
     Error, EscrowCreatedEvent, EscrowFactory, EscrowFactoryClient, EscrowSettings, FundingMode,
-    TokenAllowedEvent, WasmHashChangedEvent,
+    PendingWasmHash, TokenAllowedEvent, WasmHashActivatedEvent, WasmHashCancelledEvent,
+    WasmHashProposedEvent, WASM_HASH_DELAY,
 };
 
 // Import the compiled milestone-escrow WASM so the test env can deploy real
@@ -27,7 +30,7 @@ fn zero_hashes(env: &Env, n: u32) -> soroban_sdk::Vec<BytesN<32>> {
 /// Topics and data of the most recent contract event.
 fn last_event(env: &Env) -> (soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) {
     use soroban_sdk::testutils::Events as _;
-    use soroban_sdk::{xdr, TryFromVal, Val};
+    use soroban_sdk::{xdr, TryFromVal};
 
     let all = env.events().all();
     let event = all.events().last().expect("an event was emitted").clone();
@@ -39,12 +42,56 @@ fn last_event(env: &Env) -> (soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Va
     (topics, Val::try_from_val(env, &body.data).unwrap())
 }
 
+/// All events from the current invocation carrying `topic` as topic 0.
+fn events_with_topic(
+    env: &Env,
+    topic: &soroban_sdk::Symbol,
+) -> soroban_sdk::Vec<(soroban_sdk::Vec<Val>, Val)> {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{xdr, TryFromVal};
+
+    let mut matched = soroban_sdk::Vec::new(env);
+    for event in env.events().all().events().iter() {
+        let xdr::ContractEventBody::V0(body) = event.body.clone();
+        let mut topics = soroban_sdk::Vec::new(env);
+        for t in body.topics.iter() {
+            topics.push_back(Val::try_from_val(env, t).unwrap());
+        }
+        if let Some(first) = topics.get(0) {
+            let first: soroban_sdk::Symbol = first.try_into_val(env).unwrap();
+            if first == *topic {
+                matched.push_back((topics, Val::try_from_val(env, &body.data).unwrap()));
+            }
+        }
+    }
+    matched
+}
+
 fn default_settings() -> EscrowSettings {
     EscrowSettings {
         funding_mode: FundingMode::Upfront,
         dispute_timeout_seconds: 30 * 24 * 60 * 60,
         arbiter_fee_bps: 0,
     }
+}
+
+fn create_escrow_with_salt(
+    env: &Env,
+    factory: &EscrowFactoryClient<'_>,
+    token: &Address,
+    salt_byte: u8,
+) -> Address {
+    factory.create_escrow(
+        &Address::generate(env),
+        &Address::generate(env),
+        &Address::generate(env),
+        token,
+        &604800u64,
+        &vec![env, 1_000_i128],
+        &zero_hashes(env, 1),
+        &default_settings(),
+        &BytesN::from_array(env, &[salt_byte; 32]),
+    )
 }
 
 fn mint_token(env: &Env, recipient: &Address, amount: i128) -> Address {
@@ -133,25 +180,131 @@ fn allow_token_emits_tokenallow_event_with_token_payload() {
 }
 
 #[test]
-fn set_wasm_hash_emits_wasmhash_event_with_old_and_new() {
+fn propose_wasm_hash_verifies_bytes_and_records_pending_proposal() {
     let (env, fid, admin, _token, old_hash) = setup();
     let factory = EscrowFactoryClient::new(&env, &fid);
-    let new_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let wasm_bytes = Bytes::from_slice(&env, escrow::WASM);
+    let new_hash = env.deployer().upload_contract_wasm(wasm_bytes.clone());
+    let started_at = env.ledger().timestamp();
+    let effective_at = started_at + WASM_HASH_DELAY;
 
-    factory.set_wasm_hash(&admin, &new_hash);
+    assert_eq!(
+        factory.try_propose_wasm_hash(&Address::generate(&env), &new_hash, &wasm_bytes),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        factory.try_propose_wasm_hash(&admin, &BytesN::from_array(&env, &[99u8; 32]), &wasm_bytes),
+        Err(Ok(Error::InvalidWasmHash))
+    );
+
+    factory.propose_wasm_hash(&admin, &new_hash, &wasm_bytes);
 
     let (topics, data) = last_event(&env);
     assert_eq!(topics.len(), 1);
     let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(topic, symbol_short!("wasmhash"));
+    assert_eq!(topic, symbol_short!("whashprp"));
     assert_eq!(
-        WasmHashChangedEvent::from_val(&env, &data),
-        WasmHashChangedEvent {
-            old: old_hash,
-            new: new_hash.clone()
+        WasmHashProposedEvent::from_val(&env, &data),
+        WasmHashProposedEvent {
+            hash: new_hash.clone(),
+            effective_at,
         }
     );
+    assert_eq!(
+        factory.get_pending_wasm_hash(),
+        PendingWasmHash {
+            hash: new_hash,
+            effective_at,
+        }
+    );
+    // The proposal has not taken effect yet.
+    assert_eq!(factory.get_wasm_hash(), old_hash);
+}
+
+#[test]
+fn pending_wasm_hash_is_unused_before_delay_and_applied_after_it() {
+    let (env, fid, admin, token, old_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let wasm_bytes = Bytes::from_slice(&env, escrow::WASM);
+    let new_hash = env.deployer().upload_contract_wasm(wasm_bytes.clone());
+    let effective_at = env.ledger().timestamp() + WASM_HASH_DELAY;
+    factory.propose_wasm_hash(&admin, &new_hash, &wasm_bytes);
+
+    create_escrow_with_salt(&env, &factory, &token, 1);
+    let (_, data) = last_event(&env);
+    assert_eq!(
+        EscrowCreatedEvent::from_val(&env, &data).wasm_hash,
+        old_hash
+    );
+    assert_eq!(factory.get_wasm_hash(), old_hash);
+
+    env.ledger().set_timestamp(effective_at);
+    create_escrow_with_salt(&env, &factory, &token, 2);
+    let (_, data) = last_event(&env);
+    assert_eq!(
+        EscrowCreatedEvent::from_val(&env, &data).wasm_hash,
+        new_hash
+    );
+
+    // Event access is per invocation, so read both events from this call
+    // before making any further contract calls.
+    let activations = events_with_topic(&env, &symbol_short!("whashact"));
+    assert_eq!(activations.len(), 1);
+    assert_eq!(
+        WasmHashActivatedEvent::from_val(&env, &activations.get(0).unwrap().1),
+        WasmHashActivatedEvent {
+            hash: new_hash.clone(),
+            effective_at,
+        }
+    );
+
     assert_eq!(factory.get_wasm_hash(), new_hash);
+    assert_eq!(
+        factory.try_get_pending_wasm_hash(),
+        Err(Ok(Error::NoPendingWasmHash))
+    );
+}
+
+#[test]
+fn cancelling_wasm_hash_proposal_restores_original_behaviour() {
+    let (env, fid, admin, token, old_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let wasm_bytes = Bytes::from_slice(&env, escrow::WASM);
+    let new_hash = env.deployer().upload_contract_wasm(wasm_bytes.clone());
+    let effective_at = env.ledger().timestamp() + WASM_HASH_DELAY;
+    factory.propose_wasm_hash(&admin, &new_hash, &wasm_bytes);
+
+    assert_eq!(
+        factory.try_cancel_wasm_hash_proposal(&Address::generate(&env)),
+        Err(Ok(Error::Unauthorized))
+    );
+    factory.cancel_wasm_hash_proposal(&admin);
+
+    let (topics, data) = last_event(&env);
+    assert_eq!(topics.len(), 1);
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("whashcxl"));
+    assert_eq!(
+        WasmHashCancelledEvent::from_val(&env, &data),
+        WasmHashCancelledEvent {
+            hash: new_hash,
+            effective_at,
+        }
+    );
+    assert_eq!(
+        factory.try_get_pending_wasm_hash(),
+        Err(Ok(Error::NoPendingWasmHash))
+    );
+    assert_eq!(factory.get_wasm_hash(), old_hash);
+
+    // Even after the original delay has passed, the cancelled hash is unused.
+    env.ledger().set_timestamp(effective_at);
+    create_escrow_with_salt(&env, &factory, &token, 3);
+    let (_, data) = last_event(&env);
+    assert_eq!(
+        EscrowCreatedEvent::from_val(&env, &data).wasm_hash,
+        old_hash
+    );
 }
 
 #[test]
