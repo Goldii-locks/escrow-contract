@@ -2,7 +2,7 @@
 use super::*;
 use soroban_sdk::{token, vec, Address, Env};
 
-fn setup_unfunded(
+pub(crate) fn setup_unfunded(
     env: &Env,
     amounts: soroban_sdk::Vec<i128>,
     mode: FundingMode,

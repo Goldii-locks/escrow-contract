@@ -14,6 +14,11 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Fixed
 
+- `sweep_excess` no longer counts unfunded `PerMilestone` milestones as escrow
+  obligations (#943). Previously stray tokens sent to a job with one funded
+  milestone and later unfunded ones could not be recovered until every
+  milestone was funded (`InsufficientBalance`); only milestones that actually
+  hold tokens (or an Upfront-funded job) are now counted.
 - `raise_dispute` now performs zero-address check, `require_auth`, and
   identity validation **before** writing the re-entrancy lock (#566), matching
   the authorization pattern used by `fund`, `approve_milestone`, and
