@@ -1233,6 +1233,15 @@ pub struct WithdrawnEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreditedEvent {
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub total_owed_to_recipient: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JobAcceptedEvent {
     pub party: Address,
     pub acceptance_mask: u32,
@@ -2424,6 +2433,16 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::TotalOwed, &total_owed);
+        let meta = Self::load_job_meta(env)?;
+        env.events().publish(
+            (symbol_short!("credit"), to.clone()),
+            CreditedEvent {
+                recipient: to.clone(),
+                token: meta.token,
+                amount: *amount,
+                total_owed_to_recipient: owed,
+            },
+        );
         Ok(())
     }
 
@@ -5718,6 +5737,19 @@ impl MilestoneEscrow {
         );
 
         Ok(())
+    }
+
+    /// Return the amount currently credited and awaiting withdrawal for `address`.
+    pub fn get_owed(env: Env, address: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Owed(address))
+            .unwrap_or(0)
+    }
+
+    /// Return the sum of all credited amounts currently awaiting withdrawal across all recipients.
+    pub fn get_total_owed(env: Env) -> i128 {
+        Self::load_total_owed(&env)
     }
 
     /// Approve several delivered milestones in one transaction (#741).

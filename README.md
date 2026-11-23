@@ -91,6 +91,8 @@ The contract exposes **94 public functions** grouped by category below.
 | `approve_milestone` | Client | Release funds for a delivered milestone |
 | `approve_milestones` | Client | Approve up to 10 milestones in one call |
 | `withdraw` | Freelancer/Client | Withdraw released funds or refunds |
+| `get_owed` | Anyone | View credited balance awaiting withdrawal for an address |
+| `get_total_owed` | Anyone | View total credited balances awaiting withdrawal |
 
 ### Disputes & Arbitration
 
