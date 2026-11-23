@@ -8,7 +8,9 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+escrow-types = { workspace = true }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
+milestone-escrow = { path = "../milestone-escrow" }
 soroban-sdk = { workspace = true, features = ["testutils"] }

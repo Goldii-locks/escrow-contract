@@ -10,6 +10,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+escrow-types = { workspace = true }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
