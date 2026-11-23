@@ -12,5 +12,5 @@ escrow-types = { workspace = true }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
-milestone-escrow = { path = "../milestone-escrow" }
+milestone-escrow = { version = "0.1.0", path = "../milestone-escrow" }
 soroban-sdk = { workspace = true, features = ["testutils"] }
