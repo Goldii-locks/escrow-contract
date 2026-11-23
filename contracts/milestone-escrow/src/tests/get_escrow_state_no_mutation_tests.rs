@@ -92,6 +92,63 @@ fn get_escrow_state_bundles_the_full_render_state() {
         state.fee_allocation_set,
         escrow.try_get_platform_fee_allocation().is_ok()
     );
+
+    // Assert newly added fields for upfront escrow (issue #970)
+    assert_eq!(state.acceptance, 3);
+    assert_eq!(state.funding_mode, FundingMode::Upfront);
+    assert!(state.funded_at.is_some());
+    assert_eq!(state.total_owed, 0);
+    assert_eq!(state.arbiter_fee_bps, 0);
+    assert_eq!(state.dispute_timeout, 604_800);
+    assert_eq!(state.schema_version, 5);
+
+    assert_eq!(delivered.due_at, 0);
+    assert_eq!(delivered.revision_count, 0);
+    assert_eq!(delivered.has_dispute, false);
+}
+
+#[test]
+fn get_escrow_state_reports_per_milestone_and_timing_fields() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let contract_id = env.register(MilestoneEscrow, ());
+    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
+    let amounts = vec![&env, 1_000_i128, 2_000_i128];
+    escrow.initialize_with_funding_mode(
+        &admin,
+        &client,
+        &freelancer,
+        &arbiter,
+        &token,
+        &604_800,
+        &amounts,
+        &crate::spec_hashes_for(&amounts),
+        &FundingMode::PerMilestone,
+    );
+
+    escrow.set_due_dates(&client, &vec![&env, 100u64, 200u64]);
+    escrow.accept_job(&freelancer);
+    escrow.accept_arbiter(&arbiter);
+
+    let state = escrow.get_escrow_state();
+    assert_eq!(state.funding_mode, FundingMode::PerMilestone);
+    assert_eq!(state.acceptance, 3);
+    assert_eq!(state.funded_at, None);
+    assert_eq!(state.milestone_timing.len(), 2);
+    assert_eq!(state.milestone_timing.get(0).unwrap().due_at, 100);
+    assert_eq!(state.milestone_timing.get(1).unwrap().due_at, 200);
+    assert_eq!(state.milestone_timing.get(0).unwrap().revision_count, 0);
+    assert_eq!(state.milestone_timing.get(0).unwrap().has_dispute, false);
+
+    assert_get_escrow_state_is_read_only(&env, &escrow);
 }
 
 #[test]
