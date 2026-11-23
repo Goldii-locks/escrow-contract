@@ -2,11 +2,14 @@
 # Deploy escrow-factory on Stellar testnet, so the app can create escrows
 # through `create_escrow` (one escrow contract per job).
 #
-# 1. Builds the milestone escrow reproducibly (scripts/build-reproducible.sh)
-#    and uploads it; the factory deploys every new escrow from that hash.
-# 2. Builds and deploys the factory with (admin, escrow wasm hash).
-# 3. Allows each token in ALLOWED_TOKENS for new escrows (signed by ADMIN_SOURCE).
-# 4. Appends the deployment to deployments/testnet-factory.json.
+# 1. Builds both contracts reproducibly (scripts/build-reproducible.sh) with the
+#    pinned container; the factory deploys every new escrow from that escrow
+#    wasm hash.
+# 2. Deploys the factory with (admin, escrow wasm hash) and allows each token
+#    in ALLOWED_TOKENS for new escrows (signed by ADMIN_SOURCE).
+# 3. Appends the deployment to deployments/testnet-factory.json with the factory
+#    contract id, wasm hash, source commit, full build info and allowed tokens,
+#    so the deployment can be reverified from source (issues #941 and #942).
 #
 # Then set the factory ID as the frontend's FACTORY_CONTRACT_ID repo variable
 # and as FACTORY_CONTRACT_ID in the backend's backend.env.
@@ -27,21 +30,22 @@ done
 
 NETWORK=testnet
 ESCROW_WASM="$ROOT_DIR/dist/milestone_escrow.wasm"
-FACTORY_WASM="$ROOT_DIR/target/wasm32v1-none/release/escrow_factory.wasm"
+FACTORY_WASM="$ROOT_DIR/dist/escrow_factory.wasm"
+BUILD_INFO="$ROOT_DIR/dist/build-info.json"
 DEPLOYMENTS="$ROOT_DIR/deployments/testnet-factory.json"
 # Testnet and mainnet reject contract code above contract_max_size_bytes.
 MAX_WASM_BYTES="${MAX_WASM_BYTES:-131072}"
 
-printf 'Building reproducible escrow WASM with the pinned Docker toolchain...\n'
+printf 'Building reproducible escrow and factory WASM with the pinned Docker toolchain...\n'
 scripts/build-reproducible.sh
 [[ -s "$ESCROW_WASM" ]] || fail "reproducible build did not produce $ESCROW_WASM"
-size=$(wc -c <"$ESCROW_WASM")
-(( size <= MAX_WASM_BYTES )) \
-  || fail "escrow WASM is $size bytes, over the network's $MAX_WASM_BYTES-byte contract size limit; it cannot be uploaded"
-
-printf 'Building escrow-factory WASM...\n'
-stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml
-[[ -s "$FACTORY_WASM" ]] || fail "factory build did not produce $FACTORY_WASM"
+[[ -s "$FACTORY_WASM" ]] || fail "reproducible build did not produce $FACTORY_WASM"
+[[ -s "$BUILD_INFO" ]] || fail "reproducible build did not produce $BUILD_INFO"
+for wasm in "$ESCROW_WASM" "$FACTORY_WASM"; do
+  size=$(wc -c <"$wasm")
+  (( size <= MAX_WASM_BYTES )) \
+    || fail "$wasm is $size bytes, over the network's $MAX_WASM_BYTES-byte contract size limit; it cannot be uploaded"
+done
 
 printf 'Uploading escrow WASM to %s...\n' "$NETWORK"
 ESCROW_WASM_HASH="$(stellar contract upload --wasm "$ESCROW_WASM" --source "$SOURCE_ACCOUNT" --network "$NETWORK")"
@@ -65,25 +69,49 @@ for token in "${tokens[@]}"; do
 done
 
 DEPLOY_DATE="$(date -u +%Y-%m-%d)"
-SOURCE_COMMIT="$(git rev-parse HEAD)"
-python3 - "$DEPLOYMENTS" "$DEPLOY_DATE" "$FACTORY_ID" "$ESCROW_WASM_HASH" "$ADMIN_ADDRESS" "$SOURCE_COMMIT" "$ALLOWED_TOKENS" <<'PY'
+python3 - "$DEPLOYMENTS" "$BUILD_INFO" "$FACTORY_WASM" "$DEPLOY_DATE" "$FACTORY_ID" "$ESCROW_WASM_HASH" "$ADMIN_ADDRESS" "$ALLOWED_TOKENS" <<'PY'
+import hashlib
 import json
 import pathlib
 import sys
 
-path = pathlib.Path(sys.argv[1])
-date, factory_id, escrow_wasm_hash, admin, commit, tokens = sys.argv[2:]
-records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+deployments, build_info, factory_wasm = (pathlib.Path(p) for p in sys.argv[1:4])
+date, factory_id, escrow_wasm_hash, admin, tokens = (
+    value.strip() for value in sys.argv[4:]
+)
+build = json.loads(build_info.read_text(encoding="utf-8"))
+for key in ("source_commit", "wasm_sha256", "factory_sha256", "factory_wasm"):
+    if not build.get(key):
+        raise SystemExit(f"{build_info} is missing {key}; refusing to record an incomplete deployment")
+if build["wasm_sha256"] != escrow_wasm_hash.strip():
+    raise SystemExit(
+        f"uploaded escrow wasm hash {escrow_wasm_hash} does not match build-info {build['wasm_sha256']}"
+    )
+local_factory_sha = hashlib.sha256(factory_wasm.read_bytes()).hexdigest()
+if local_factory_sha != build["factory_sha256"]:
+    raise SystemExit(
+        f"factory wasm hash {local_factory_sha} does not match build-info {build['factory_sha256']}"
+    )
+if deployments.exists():
+    previous = json.loads(deployments.read_text(encoding="utf-8"))
+    records = previous if isinstance(previous, list) else [previous]
+else:
+    records = []
 records.append({
     "date": date,
     "network": "testnet",
     "factory_id": factory_id,
-    "escrow_wasm_hash": escrow_wasm_hash,
+    "contract_id": factory_id,
+    "wasm_sha256": build["factory_sha256"],
+    "factory_wasm": build["factory_wasm"],
+    "factory_sha256": build["factory_sha256"],
+    "escrow_wasm_hash": escrow_wasm_hash.strip(),
     "admin": admin,
-    "source_commit": commit,
+    "source_commit": build["source_commit"],
+    "build": build,
     "allowed_tokens": [t.strip() for t in tokens.split(",") if t.strip()],
 })
-path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
+deployments.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
 PY
 
 printf 'Deployment recorded in %s\n' "$DEPLOYMENTS"

@@ -342,13 +342,22 @@ Anything that will be deployed must come from the reproducible build instead:
 scripts/build-reproducible.sh
 ```
 
-It compiles a clean export of `HEAD` (or of the commit given as the first
-argument) inside a pinned container (`build/reproducible.Dockerfile`: Rust
-1.96.0 by image digest, stellar-cli 28.0.0 by release checksum, linux/amd64)
-and writes `dist/milestone_escrow.wasm`, its SHA-256 and `dist/build-info.json`.
-The same commit gives the same hash on any machine. CI runs the same script on
-every commit and publishes the hash in the job summary and the wasm as an
-artifact.
+It compiles a clean export of `HEAD` (or of the commit given as an argument)
+inside a pinned container (`build/reproducible.Dockerfile`: Rust 1.96.0 by image
+digest, stellar-cli 28.0.0 by release checksum, linux/amd64) and writes both
+`dist/milestone_escrow.wasm` and `dist/escrow_factory.wasm`, a `.sha256` file
+for each, and `dist/build-info.json`. That file records `source_commit`,
+`wasm_sha256`, `factory_wasm`, `factory_sha256` and the pinned tool versions;
+older readers can keep using the original `wasm`/`wasm_sha256` keys. The same
+commit gives the same hashes on any machine. CI runs the same script on every
+commit and publishes both hashes in the job summary and both wasm files as
+artifacts.
+
+`scripts/build-reproducible.sh --check-testdata` additionally rebuilds the
+committed upgrade-test fixture `contracts/milestone-escrow/testdata/escrow_v2.wasm`
+from the commit that last updated that fixture and `cmp`s it against the
+committed binary. CI runs this check so the fixture stays reproducible without
+being silently invalidated by unrelated escrow changes.
 
 ### TypeScript bindings
 
@@ -358,11 +367,13 @@ versioned GitHub Package `@goldii-locks/milestone-escrow-bindings` on `v*`
 tags, so clients stop hand-encoding ScVals. See
 [docs/typescript-bindings.md](docs/typescript-bindings.md).
 
-The `test` job also builds the optimized wasm, prints its size and SHA-256,
-uploads it as an artifact, and fails when it is larger than
-`WASM_BUDGET_BYTES` (set in `.github/workflows/ci.yml` to a measured size plus
-5%). If a change legitimately needs more room, raise the
-budget in the same PR and say why.
+The `test` job also builds the optimized wasm for **both** contracts, prints
+each size and SHA-256, uploads each as an artifact, and fails when it is larger
+than its budget. `WASM_BUDGET_BYTES` (escrow) is a measured size plus 5%;
+`FACTORY_WASM_BUDGET_BYTES` is 64 KiB, a generous half of the 131,072-byte
+network code cap for a contract with no escrow state machine. Both are set in
+`.github/workflows/ci.yml`. If a change legitimately needs more room, raise the
+relevant budget in the same PR and say why.
 
 ## Test
 
@@ -390,9 +401,10 @@ history of behavioural changes is in [CHANGELOG.md](CHANGELOG.md).
 
 `contracts/escrow-factory` deploys one escrow per job (issue #666). It is
 deployed with `--admin <platform-admin> --wasm_hash <escrow-wasm-hash>`
-constructor arguments. The admin allows tokens with `allow_token`, removes
-them again with `disallow_token`, and can point the factory at a new escrow
-build with `set_wasm_hash`. Token allow/deny changes emit `allowed` and
+constructor arguments. Like the escrow, its release wasm is built and hashed by
+`scripts/build-reproducible.sh` (issue #941). The admin allows tokens with
+`allow_token`, removes them again with `disallow_token`, and can point the
+factory at a new escrow build with `set_wasm_hash`. Token allow/deny changes emit `allowed` and
 `disallowd` events (the token address is the second topic); removing an absent
 token is a no-op. Existing escrows keep their own token and are unaffected.
 
@@ -412,10 +424,14 @@ to predict the address.
 ### Escrow factory (what the app uses)
 
 The app creates one escrow contract per job through `escrow-factory`'s
-`create_escrow`. `scripts/deploy-factory-testnet.sh` builds the reproducible
-escrow wasm and uploads it, deploys the factory with the platform admin and
-that wasm hash, allows each token for new escrows, and appends the deployment
-to `deployments/testnet-factory.json`:
+`create_escrow`. `scripts/deploy-factory-testnet.sh` builds both the escrow and
+factory wasms reproducibly, uploads the escrow wasm, deploys the factory from
+`dist/escrow_factory.wasm` with the platform admin and that escrow wasm hash,
+allows each token for new escrows, and appends the deployment to
+`deployments/testnet-factory.json`. The record includes `contract_id`,
+`wasm_sha256` (the factory wasm), `factory_sha256`, `source_commit`, the full
+`build` object from `dist/build-info.json` and `allowed_tokens`, so the factory
+is verifiable in the same way as the escrow:
 
 ```bash
 export SOURCE_ACCOUNT=testnet-deployer    # pays for the deployment
@@ -434,8 +450,10 @@ escrow wasm is over the network's 131,072-byte contract size limit.
 
 `scripts/deploy-testnet.sh` builds the reproducible wasm, uploads it, deploys
 with constructor arguments from environment variables, and appends
-`{date, network, wasm_hash, contract_id, admin}` to `deployments/testnet.json`
-(issue #745):
+`{date, network, wasm_hash, contract_id, admin, wasm_sha256, source_commit,
+build}` to `deployments/testnet.json` (issues #745 and #942). The last three
+fields come from `dist/build-info.json`, so a later reader can tie the
+installed code back to a reviewed commit:
 
 ```bash
 export SOURCE_ACCOUNT=testnet-deployer
@@ -471,8 +489,11 @@ stellar contract deploy \
   --settings '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}'
 ```
 
-Record the `source_commit` and `wasm_sha256` from `dist/build-info.json` with
-the deployment, and the hash in `CHANGELOG.md`.
+The script records `source_commit` and `wasm_sha256` from
+`dist/build-info.json` with the deployment; for a manual deploy, record them
+yourself along with the hash in `CHANGELOG.md`. No deployment was performed as
+part of issue #942 — a maintainer with funded testnet keys must run one of
+these scripts before any new record exists.
 
 ### Upgrading a deployment: upgrade, then migrate
 
@@ -503,7 +524,7 @@ the step to `migrate`.
 
 ## Verifying the deployed contract
 
-Anyone can check which source a deployed contract was built from:
+Both the escrow and the factory are verifiable this way:
 
 1. Read the installed wasm hash:
 
@@ -513,16 +534,20 @@ Anyone can check which source a deployed contract was built from:
    ```
 
    (`stellar contract info` and the explorer show the same hash.)
-2. Look up `source_commit` for that contract in `deployments/<network>.json`.
-3. Rebuild that commit and compare:
+2. Look up `source_commit` for that contract in `deployments/<network>.json`
+   (`testnet.json` for the escrow, `testnet-factory.json` for the factory).
+3. Rebuild that commit and compare the matching hash:
 
    ```bash
    scripts/build-reproducible.sh <source_commit>
-   cat dist/milestone_escrow.wasm.sha256
+   cat dist/milestone_escrow.wasm.sha256   # escrow deployments
+   cat dist/escrow_factory.wasm.sha256     # factory deployments
    ```
 
 The two hashes must be identical. If they differ, the deployed code is not the
-reviewed source at that commit.
+reviewed source at that commit. The current testnet escrow record predates
+reproducible builds, so it has no `source_commit` to rebuild; it must be
+upgraded or redeployed from a reproducible build before it can be verified.
 
 ## License
 
@@ -530,13 +555,19 @@ MIT
 
 ## Deployed Contract
 
-| Network | Contract ID |
-|---|---|
-| Testnet | `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA` |
+| Network | Contract | Contract ID | wasm sha256 | source_commit / build |
+|---|---|---|---|---|
+| Testnet | milestone escrow | `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA` | `67d0eb543aaa9ca99c1b23ba18a3f4713c899eba574bbef96540f2540b8b2f0e` | unknown (`null`) — predates reproducible builds |
+| Testnet | escrow factory | not yet published | unknown | unknown until a maintainer redeploys |
 
-Deployment records, including the installed wasm hash, are in
-[`deployments/`](deployments/). The current testnet deployment predates
-reproducible builds, so its source commit is unknown.
+Deployment records are in [`deployments/`](deployments/). The current escrow
+record predates reproducible builds (#773): `source_commit` and `build` are
+`null` and cannot be reconstructed from the installed hash. There is no factory
+record yet, so its `contract_id`, `wasm_sha256`, `source_commit`, `build` and
+`allowed_tokens` are all unknown until a maintainer with funded testnet keys
+runs `scripts/deploy-factory-testnet.sh` and commits the resulting
+`deployments/testnet-factory.json`. Do not infer any of these fields from CI
+artifacts — they only describe wasm that has not been deployed.
 
 Explorer: `https://stellar.expert/explorer/testnet/contract/CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA`
  

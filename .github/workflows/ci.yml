@@ -127,6 +127,43 @@ jobs:
       - name: Build factory WASM
         run: stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml
 
+      - name: Build and optimize factory WASM
+        # `--optimize` runs wasm-opt on the release build; that is the wasm
+        # which gets deployed, so it is the one measured and published below.
+        run: stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml --optimize --out-dir dist/optimized-factory
+
+      - name: Factory WASM size budget
+        # The factory is a small wrapper (token allowlist + create_escrow) with
+        # no escrow state machine, so 64 KiB is deliberately generous while
+        # still well under the network's 131,072-byte contract code cap. It
+        # catches an order-of-magnitude regression without pinning a measured
+        # byte count for a contract this small. Raise with a rationale.
+        env:
+          FACTORY_WASM_BUDGET_BYTES: "65536"
+        run: |
+          set -euo pipefail
+          wasm=dist/optimized-factory/escrow_factory.wasm
+          size=$(stat -c %s "$wasm")
+          sha=$(sha256sum "$wasm" | cut -d' ' -f1)
+          echo "escrow_factory.wasm: $size bytes (budget $FACTORY_WASM_BUDGET_BYTES), sha256 $sha"
+          {
+            echo "### Optimized escrow_factory.wasm"
+            echo ""
+            echo "| size (bytes) | budget (bytes) | sha256 |"
+            echo "|---|---|---|"
+            echo "| $size | $FACTORY_WASM_BUDGET_BYTES | \`$sha\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt "$FACTORY_WASM_BUDGET_BYTES" ]; then
+            echo "::error::escrow_factory.wasm is $size bytes, over the $FACTORY_WASM_BUDGET_BYTES-byte budget"
+            exit 1
+          fi
+
+      - name: Upload optimized factory wasm
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: escrow_factory-optimized-${{ github.sha }}.wasm
+          path: dist/optimized-factory/escrow_factory.wasm
+
   dependencies:
     # RUSTSEC advisories (vulnerable, unsound, unmaintained), yanked crates,
     # disallowed licenses and unknown sources in Cargo.lock fail CI. Policy
@@ -251,9 +288,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The fixture check needs the history to find the commit that last
+          # updated testdata/escrow_v2.wasm (issue #940).
+          fetch-depth: 0
 
       - name: Reproducible build
         run: bash scripts/build-reproducible.sh "$GITHUB_SHA"
+
+      - name: Verify upgrade-test fixture
+        # Rebuilds the committed escrow_v2.wasm from the commit that last
+        # updated it, with the same pinned container (issue #940). A mismatch
+        # prints the exact rebuild command from the fixture's doc comment.
+        run: bash scripts/build-reproducible.sh --check-testdata "$GITHUB_SHA"
 
       - name: Publish hash
         run: |
@@ -263,6 +310,12 @@ jobs:
             echo "| commit | sha256 |"
             echo "|---|---|"
             echo "| \`$GITHUB_SHA\` | \`$(cut -d' ' -f1 dist/milestone_escrow.wasm.sha256)\` |"
+            echo
+            echo "### escrow_factory.wasm"
+            echo
+            echo "| commit | sha256 |"
+            echo "|---|---|"
+            echo "| \`$GITHUB_SHA\` | \`$(cut -d' ' -f1 dist/escrow_factory.wasm.sha256)\` |"
           } >> "$GITHUB_STEP_SUMMARY"
           cat dist/build-info.json
 
@@ -271,3 +324,11 @@ jobs:
         with:
           name: milestone_escrow-wasm-${{ github.sha }}
           path: dist/
+
+      - name: Upload factory wasm and hash
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: escrow_factory-wasm-${{ github.sha }}
+          path: |
+            dist/escrow_factory.wasm
+            dist/escrow_factory.wasm.sha256
