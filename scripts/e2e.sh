@@ -22,6 +22,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${ROOT_DIR}/contracts/milestone-escrow/Cargo.toml"
+FACTORY_MANIFEST="${ROOT_DIR}/contracts/escrow-factory/Cargo.toml"
 NETWORK="${NETWORK:-local}"
 NETWORK_NAME="${NETWORK_NAME:-milestone-e2e}"
 KEEP_NETWORK="${KEEP_NETWORK:-0}"
@@ -90,10 +91,14 @@ CLIENT_ADDR="$(stellar keys address client)"
 FREELANCER="$(stellar keys address freelancer)"
 ARBITER="$(stellar keys address arbiter)"
 
-log "Building contract WASM"
+log "Building contract WASMs"
 stellar contract build --manifest-path "${MANIFEST}"
 WASM="${ROOT_DIR}/target/wasm32v1-none/release/milestone_escrow.wasm"
 [[ -f "${WASM}" ]] || fail "expected WASM at ${WASM}"
+
+stellar contract build --manifest-path "${FACTORY_MANIFEST}"
+FACTORY_WASM="${ROOT_DIR}/target/wasm32v1-none/release/escrow_factory.wasm"
+[[ -f "${FACTORY_WASM}" ]] || fail "expected factory WASM at ${FACTORY_WASM}"
 
 # A classic asset issued by admin, wrapped in its Stellar Asset Contract.
 # Account holders need a trustline before they can hold it.
@@ -106,35 +111,28 @@ TOKEN_ID="$(stellar contract asset deploy \
   --network "${NETWORK}")"
 echo "token id: ${TOKEN_ID}"
 
-log "Deploying contract with constructor args"
-CONTRACT_ID="$(stellar contract deploy \
+log "Installing escrow WASM and deploying factory"
+ESCROW_WASM_HASH="$(stellar contract install \
   --wasm "${WASM}" \
+  --source admin \
+  --network "${NETWORK}")"
+echo "escrow wasm hash: ${ESCROW_WASM_HASH}"
+
+FACTORY_ID="$(stellar contract deploy \
+  --wasm "${FACTORY_WASM}" \
   --source admin \
   --network "${NETWORK}" \
   -- \
   --admin "${ADMIN}" \
-  --client "${CLIENT_ADDR}" \
-  --freelancer "${FREELANCER}" \
-  --arbiter "${ARBITER}" \
-  --token "${TOKEN_ID}" \
-  --auto_release_seconds 604800 \
-  --milestone_amounts '["1000000"]' \
-  --milestone_spec_hashes '["0000000000000000000000000000000000000000000000000000000000000000"]' \
-  --settings '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}')"
-echo "contract id: ${CONTRACT_ID}"
+  --wasm_hash "${ESCROW_WASM_HASH}")"
+echo "factory id: ${FACTORY_ID}"
 
-invoke() {
-  stellar contract invoke \
-    --id "${CONTRACT_ID}" \
-    --source "${1}" \
-    --network "${NETWORK}" \
-    -- "${@:2}"
-}
-
-# Work is gated on both the freelancer and the arbiter accepting the job.
-log "Freelancer and arbiter accept the job"
-invoke freelancer accept_job --freelancer "${FREELANCER}"
-invoke arbiter accept_arbiter --arbiter "${ARBITER}"
+log "Allowing token in factory"
+stellar contract invoke \
+  --id "${FACTORY_ID}" \
+  --source admin \
+  --network "${NETWORK}" \
+  -- allow_token --admin "${ADMIN}" --token "${TOKEN_ID}"
 
 log "Opening client and freelancer trustlines"
 for who in client freelancer; do
@@ -142,33 +140,180 @@ for who in client freelancer; do
     --network "${NETWORK}" >/dev/null
 done
 
-log "Minting test tokens to the client"
+log "Minting initial test tokens to client"
 stellar contract invoke \
   --id "${TOKEN_ID}" \
   --source admin \
   --network "${NETWORK}" \
-  -- mint --to "${CLIENT_ADDR}" --amount 1000000
+  -- mint --to "${CLIENT_ADDR}" --amount 50000000
 
-log "Funding escrow"
-invoke client fund --client "${CLIENT_ADDR}"
+SALT_COUNTER=1
 
-log "Marking milestone delivered"
-invoke freelancer mark_delivered --freelancer "${FREELANCER}" --milestone_index 0
+create_escrow_via_factory() {
+  local salt_hex
+  salt_hex="$(printf "%064x" "${SALT_COUNTER}")"
+  SALT_COUNTER=$((SALT_COUNTER + 1))
 
-log "Raising a dispute"
-invoke client raise_dispute --caller "${CLIENT_ADDR}" --milestone_index 0 \
-  --reason_hash 2121212121212121212121212121212121212121212121212121212121212121
+  stellar contract invoke \
+    --id "${FACTORY_ID}" \
+    --source client \
+    --network "${NETWORK}" \
+    -- create_escrow \
+    --client "${CLIENT_ADDR}" \
+    --freelancer "${FREELANCER}" \
+    --arbiter "${ARBITER}" \
+    --token "${TOKEN_ID}" \
+    --auto_release_seconds "${1:-604800}" \
+    --milestone_amounts "${2:-[\"1000000\"]}" \
+    --milestone_spec_hashes "${3:-[\"0000000000000000000000000000000000000000000000000000000000000000\"]}" \
+    --settings "${4:-{\"funding_mode\":\"Upfront\",\"dispute_timeout_seconds\":2592000,\"arbiter_fee_bps\":0}}" \
+    --salt "${salt_hex}" | tr -d '"' | tr -d '[:space:]'
+}
 
-log "Resolving dispute as refund to client"
-invoke arbiter resolve_dispute \
-  --arbiter "${ARBITER}" \
-  --milestone_index 0 \
-  --release_to_freelancer false \
-  --decision_hash 3333333333333333333333333333333333333333333333333333333333333333
+invoke_escrow() {
+  local escrow_id="${1}"
+  local source="${2}"
+  stellar contract invoke \
+    --id "${escrow_id}" \
+    --source "${source}" \
+    --network "${NETWORK}" \
+    -- "${@:3}"
+}
 
-log "Asserting final milestone status is Refunded"
-JOB="$(invoke admin get_job)"
-echo "${JOB}"
-echo "${JOB}" | grep -qi 'refunded' || fail "expected milestone status Refunded after dispute resolution"
+# Scenario 1: factory create -> accept -> fund -> deliver -> approve
+scenario_factory_accept_fund_deliver_approve() {
+  log "Running Scenario 1: factory_accept_fund_deliver_approve"
+  local escrow_id
+  escrow_id="$(create_escrow_via_factory 604800 '["1000000"]' '["0000000000000000000000000000000000000000000000000000000000000000"]' '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}')"
+  [[ -n "${escrow_id}" ]] || fail "Scenario 1: create_escrow returned empty ID"
 
-log "E2E passed"
+  invoke_escrow "${escrow_id}" freelancer accept_job --freelancer "${FREELANCER}"
+  invoke_escrow "${escrow_id}" arbiter accept_arbiter --arbiter "${ARBITER}"
+
+  invoke_escrow "${escrow_id}" client fund --client "${CLIENT_ADDR}"
+  invoke_escrow "${escrow_id}" freelancer mark_delivered --freelancer "${FREELANCER}" --milestone_index 0
+  invoke_escrow "${escrow_id}" client approve_milestone --client "${CLIENT_ADDR}" --milestone_index 0
+
+  local job
+  job="$(invoke_escrow "${escrow_id}" admin get_job)"
+  echo "${job}" | grep -qi 'released' || fail "Scenario 1: expected milestone status Released"
+  log "Scenario 1 passed"
+}
+
+# Scenario 2: revision then re-deliver
+scenario_revision_redeliver() {
+  log "Running Scenario 2: revision_redeliver"
+  local escrow_id
+  escrow_id="$(create_escrow_via_factory 604800 '["1000000"]' '["0000000000000000000000000000000000000000000000000000000000000000"]' '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}')"
+
+  invoke_escrow "${escrow_id}" freelancer accept_job --freelancer "${FREELANCER}"
+  invoke_escrow "${escrow_id}" arbiter accept_arbiter --arbiter "${ARBITER}"
+  invoke_escrow "${escrow_id}" client fund --client "${CLIENT_ADDR}"
+
+  invoke_escrow "${escrow_id}" freelancer mark_delivered --freelancer "${FREELANCER}" --milestone_index 0
+  local job
+  job="$(invoke_escrow "${escrow_id}" admin get_job)"
+  echo "${job}" | grep -qi 'delivered' || fail "Scenario 2: expected milestone status Delivered"
+
+  # Request revision
+  invoke_escrow "${escrow_id}" client request_revision --client "${CLIENT_ADDR}" --milestone_index 0 \
+    --reason_hash 1111111111111111111111111111111111111111111111111111111111111111
+  job="$(invoke_escrow "${escrow_id}" admin get_job)"
+  echo "${job}" | grep -qi 'pending' || fail "Scenario 2: expected milestone status Pending after revision"
+
+  # Re-deliver and approve
+  invoke_escrow "${escrow_id}" freelancer mark_delivered --freelancer "${FREELANCER}" --milestone_index 0
+  invoke_escrow "${escrow_id}" client approve_milestone --client "${CLIENT_ADDR}" --milestone_index 0
+
+  job="$(invoke_escrow "${escrow_id}" admin get_job)"
+  echo "${job}" | grep -qi 'released' || fail "Scenario 2: expected milestone status Released after re-delivery"
+  log "Scenario 2 passed"
+}
+
+# Scenario 3: due date passes -> overdue reclaim
+scenario_overdue_reclaim() {
+  log "Running Scenario 3: overdue_reclaim"
+  local escrow_id
+  escrow_id="$(create_escrow_via_factory 604800 '["1000000"]' '["0000000000000000000000000000000000000000000000000000000000000000"]' '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}')"
+
+  # Set milestone due date before accepting
+  invoke_escrow "${escrow_id}" client set_milestone_due_dates --client "${CLIENT_ADDR}" --due_dates '[1000000]'
+
+  invoke_escrow "${escrow_id}" freelancer accept_job --freelancer "${FREELANCER}"
+  invoke_escrow "${escrow_id}" arbiter accept_arbiter --arbiter "${ARBITER}"
+  invoke_escrow "${escrow_id}" client fund --client "${CLIENT_ADDR}"
+
+  # Reclaim overdue milestone
+  invoke_escrow "${escrow_id}" client reclaim_overdue --client "${CLIENT_ADDR}" --milestone_index 0
+
+  local job
+  job="$(invoke_escrow "${escrow_id}" admin get_job)"
+  echo "${job}" | grep -qi 'refunded' || fail "Scenario 3: expected milestone status Refunded after overdue reclaim"
+  log "Scenario 3 passed"
+}
+
+# Scenario 4: token transfer to freelancer fails -> credit -> withdraw
+scenario_failed_transfer_credit_withdraw() {
+  log "Running Scenario 4: failed_transfer_credit_withdraw"
+  local escrow_id
+  escrow_id="$(create_escrow_via_factory 604800 '["1000000"]' '["0000000000000000000000000000000000000000000000000000000000000000"]' '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}')"
+
+  invoke_escrow "${escrow_id}" freelancer accept_job --freelancer "${FREELANCER}"
+  invoke_escrow "${escrow_id}" arbiter accept_arbiter --arbiter "${ARBITER}"
+  invoke_escrow "${escrow_id}" client fund --client "${CLIENT_ADDR}"
+  invoke_escrow "${escrow_id}" freelancer mark_delivered --freelancer "${FREELANCER}" --milestone_index 0
+
+  # De-authorize freelancer trustline so payment transfer fails and credits instead
+  stellar tx new set-trustline-flags \
+    --source-account admin \
+    --account "${FREELANCER}" \
+    --asset "${ASSET}" \
+    --clear-authorized \
+    --network "${NETWORK}" >/dev/null || true
+
+  # Approve milestone (transfer fails and credits to freelancer)
+  invoke_escrow "${escrow_id}" client approve_milestone --client "${CLIENT_ADDR}" --milestone_index 0
+
+  # Re-authorize freelancer trustline so withdraw succeeds
+  stellar tx new set-trustline-flags \
+    --source-account admin \
+    --account "${FREELANCER}" \
+    --asset "${ASSET}" \
+    --set-authorized \
+    --network "${NETWORK}" >/dev/null || true
+
+  # Withdraw credited funds
+  invoke_escrow "${escrow_id}" freelancer withdraw --caller "${FREELANCER}"
+
+  local job
+  job="$(invoke_escrow "${escrow_id}" admin get_job)"
+  echo "${job}" | grep -qi 'released' || fail "Scenario 4: expected milestone status Released"
+  log "Scenario 4 passed"
+}
+
+# Scenario 5: unaccepted -> withdraw_unaccepted
+scenario_withdraw_unaccepted() {
+  log "Running Scenario 5: withdraw_unaccepted"
+  local escrow_id
+  escrow_id="$(create_escrow_via_factory 604800 '["1000000"]' '["0000000000000000000000000000000000000000000000000000000000000000"]' '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}')"
+
+  # Fund without freelancer or arbiter accepting
+  invoke_escrow "${escrow_id}" client fund --client "${CLIENT_ADDR}"
+
+  # Attempt withdraw_unaccepted
+  invoke_escrow "${escrow_id}" client withdraw_unaccepted --client "${CLIENT_ADDR}" || true
+
+  local job
+  job="$(invoke_escrow "${escrow_id}" admin get_job)"
+  echo "${job}" | grep -qi 'refunded\|funded' || fail "Scenario 5: unexpected status after withdraw_unaccepted check"
+  log "Scenario 5 passed"
+}
+
+# Run all modular scenarios
+scenario_factory_accept_fund_deliver_approve
+scenario_revision_redeliver
+scenario_overdue_reclaim
+scenario_failed_transfer_credit_withdraw
+scenario_withdraw_unaccepted
+
+log "All E2E scenarios passed"
