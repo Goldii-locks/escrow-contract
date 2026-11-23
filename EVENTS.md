@@ -162,13 +162,19 @@ emits `migrate` with `from_version` 3 and `to_version` 4 when it stamps them.
 
 ## Escrow factory events
 
-The `escrow-factory` contract (`contracts/escrow-factory`) emits a single
-event. It is documented separately because it comes from a different contract
-than the topics above and is not covered by `event_docs_sync_tests`.
+The `escrow-factory` contract (`contracts/escrow-factory`) emits the events
+below. They are documented separately because they come from a different
+contract than the topics above. `event_docs_sync_tests` checks this section
+against the factory's `lib.rs`.
 
-| Topic     | Event struct         | Kind         |
-| --------- | -------------------- | ------------ |
-| `created` | `EscrowCreatedEvent` | state change |
+| Topic       | Event struct            | Kind         |
+| ----------- | ----------------------- | ------------ |
+| `created`   | `EscrowCreatedEvent`    | state change |
+| `tokallow`  | `TokenAllowedEvent`     | state change |
+| `disallowd` | `()`                    | state change |
+| `wasmhash`  | `WasmHashChangedEvent`  | state change |
+
+### `created`
 
 Emitted by `create_escrow` after the escrow has been deployed and its
 constructor has run.
@@ -189,11 +195,42 @@ are indexed so RPC `getEvents` can filter by participant, as for the escrow's
 | `settings`             | `EscrowSettings` | `funding_mode`, `dispute_timeout_seconds`, `arbiter_fee_bps` exactly as passed to the constructor. |
 | `wasm_hash`            | `BytesN<32>`     | Escrow WASM hash the factory used for this deployment.     |
 
-**Breaking change for indexers.** Before this change the event had one topic
-(`created`) and data `{ escrow, client, freelancer, arbiter, token }`. The
-party addresses moved from the data into topics 1 to 3, and `total_amount`,
-`milestone_count`, `auto_release_seconds`, `settings` and `wasm_hash` were
-added. Consumers that decoded `client`, `freelancer` or `arbiter` from the data
-must read them from the topics instead. `wasm_hash` lets an indexer tell which
-escrow build an address runs without calling the factory, which matters because
-`set_wasm_hash` changes the hash for later escrows.
+Before an earlier change the event had one topic (`created`) and data
+`{ escrow, client, freelancer, arbiter, token }`. The party addresses moved
+from the data into topics 1 to 3, and `total_amount`, `milestone_count`,
+`auto_release_seconds`, `settings` and `wasm_hash` were added. Consumers that
+decoded `client`, `freelancer` or `arbiter` from the data must read them from
+the topics instead. `wasm_hash` lets an indexer tell which escrow build an
+address runs without calling the factory, which matters because `set_wasm_hash`
+changes the hash for later escrows.
+
+### `tokallow`
+
+Emitted by `allow_token` when a new token is added to the allow-list. Adding a
+token that is already allowed is a no-op and emits nothing.
+
+**Topics:** `tokallow`.
+
+**Data (`TokenAllowedEvent`):** `{ token: Address }` — the token that was
+added. Indexers that previously watched `allowed` should watch `tokallow`;
+its payload moved from the topic into the event data.
+
+### `disallowd`
+
+Emitted by `disallow_token`, whether or not the token was on the allow-list
+(removal is idempotent).
+
+**Topics:** `disallowd`, `token`.
+
+**Data:** `()` (empty).
+
+### `wasmhash`
+
+Emitted by `set_wasm_hash` after the new hash has been stored.
+
+**Topics:** `wasmhash`.
+
+**Data (`WasmHashChangedEvent`):** `{ old: BytesN<32>, new: BytesN<32> }` —
+the hash replaced by the call and the hash now used by future
+`create_escrow` calls. Existing escrows keep running the code hash they were
+deployed with.

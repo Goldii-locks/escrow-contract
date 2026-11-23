@@ -45,6 +45,22 @@ pub struct EscrowSettings {
     pub arbiter_fee_bps: u32,
 }
 
+/// Payload of the factory's `wasmhash` event. The old and new hashes are in
+/// the data because neither is a party address an indexer would filter on.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WasmHashChangedEvent {
+    pub old: BytesN<32>,
+    pub new: BytesN<32>,
+}
+
+/// Payload of the factory's `tokallow` event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenAllowedEvent {
+    pub token: Address,
+}
+
 /// Payload of the factory's `created` event. The party addresses are indexed
 /// as topics (`created`, `client`, `freelancer`, `arbiter`) so RPC `getEvents`
 /// can filter by participant; the data records everything needed to audit how
@@ -91,7 +107,8 @@ impl EscrowFactory {
             env.storage()
                 .instance()
                 .set(&DataKey::AllowedTokens, &tokens);
-            env.events().publish((symbol_short!("allowed"), token), ());
+            env.events()
+                .publish((symbol_short!("tokallow"),), TokenAllowedEvent { token });
         }
         Ok(())
     }
@@ -113,10 +130,23 @@ impl EscrowFactory {
         Ok(())
     }
 
-    /// Update the wasm hash (e.g. after an escrow contract upgrade).
+    /// Update the wasm hash (e.g. after an escrow contract upgrade). The
+    /// previous hash is read first so the event can record both values.
     pub fn set_wasm_hash(env: Env, admin: Address, wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
+        let old: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::WasmHash)
+            .ok_or(Error::NotInitialized)?;
         env.storage().instance().set(&DataKey::WasmHash, &wasm_hash);
+        env.events().publish(
+            (symbol_short!("wasmhash"),),
+            WasmHashChangedEvent {
+                old,
+                new: wasm_hash,
+            },
+        );
         Ok(())
     }
 

@@ -6,6 +6,7 @@ use soroban_sdk::{
 
 use crate::{
     Error, EscrowCreatedEvent, EscrowFactory, EscrowFactoryClient, EscrowSettings, FundingMode,
+    TokenAllowedEvent, WasmHashChangedEvent,
 };
 
 // Import the compiled milestone-escrow WASM so the test env can deploy real
@@ -100,6 +101,57 @@ fn allow_token_idempotent() {
     let factory = EscrowFactoryClient::new(&env, &fid);
     factory.allow_token(&admin, &token);
     assert_eq!(factory.get_allowed_tokens().len(), 1);
+}
+
+#[test]
+fn allow_token_emits_tokenallow_event_with_token_payload() {
+    let (env, fid, admin, _token, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let new_token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    factory.allow_token(&admin, &new_token);
+
+    let (topics, data) = last_event(&env);
+    assert_eq!(topics.len(), 1);
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("tokallow"));
+    assert_eq!(
+        TokenAllowedEvent::from_val(&env, &data),
+        TokenAllowedEvent {
+            token: new_token.clone(),
+        }
+    );
+
+    // Repeating the call is a no-op and publishes no second event. The test
+    // environment exposes events from the current invocation only.
+    use soroban_sdk::testutils::Events as _;
+    factory.allow_token(&admin, &new_token);
+    assert_eq!(env.events().all().events().len(), 0);
+    assert_eq!(factory.get_allowed_tokens().len(), 2);
+}
+
+#[test]
+fn set_wasm_hash_emits_wasmhash_event_with_old_and_new() {
+    let (env, fid, admin, _token, old_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+    let new_hash = BytesN::from_array(&env, &[42u8; 32]);
+
+    factory.set_wasm_hash(&admin, &new_hash);
+
+    let (topics, data) = last_event(&env);
+    assert_eq!(topics.len(), 1);
+    let topic: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("wasmhash"));
+    assert_eq!(
+        WasmHashChangedEvent::from_val(&env, &data),
+        WasmHashChangedEvent {
+            old: old_hash,
+            new: new_hash.clone()
+        }
+    );
+    assert_eq!(factory.get_wasm_hash(), new_hash);
 }
 
 #[test]
