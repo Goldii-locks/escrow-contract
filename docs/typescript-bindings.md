@@ -35,24 +35,43 @@ Packages (`https://npm.pkg.github.com`) with the tag version, e.g.
 ```
 
 ```ts
-import { Client } from "@goldii-locks/milestone-escrow-bindings";
+import { Client as EscrowFactoryClient } from "@goldii-locks/escrow-factory-bindings";
+import { Client as EscrowClient } from "@goldii-locks/milestone-escrow-bindings";
 
-const escrow = new Client({
-  contractId: deployedContractId,
+const factory = new EscrowFactoryClient({
+  contractId: factoryContractId,
   networkPassphrase,
   rpcUrl,
   publicKey,
   signTransaction, // from the connected wallet
 });
 
-// Instead of hand-building the ScVal arguments for `initialize`:
-const tx = await escrow.initialize({
-  admin, client, freelancer, arbiter, token,
+// Deploy a new escrow through the factory (issue #1000: `initialize` is test-only).
+const tx = await factory.create_escrow({
+  client,
+  freelancer,
+  arbiter,
+  token,
   auto_release_seconds: autoReleaseSeconds,
   milestone_amounts: milestoneAmounts,
   milestone_spec_hashes: specHashes,
+  settings: {
+    funding_mode: "Upfront",          // or "PerMilestone"
+    dispute_timeout_seconds: 2592000, // 30 days
+    arbiter_fee_bps: 0,
+  },
+  salt: crypto.getRandomValues(new Uint8Array(32)),
 });
-await tx.signAndSend();
+const { result: escrowContractId } = await tx.signAndSend();
+
+// Once deployed, interact with the escrow directly.
+const escrow = new EscrowClient({
+  contractId: escrowContractId,
+  networkPassphrase,
+  rpcUrl,
+  publicKey,
+  signTransaction,
+});
 ```
 
 Reads are typed too: `(await escrow.get_job()).result` returns the generated `Job`
@@ -83,7 +102,7 @@ stellar contract bindings typescript \
 This repo only *produces* the bindings. Track the client-side migration in the
 client repos:
 
-- escrow-frontend: replace the hand-written `initialize` encoding in
+- escrow-frontend: replace the hand-written `create_escrow` encoding in
   `app/create/page.tsx` and all other raw-ScVal call sites with the package.
 - escrow-backend: replace the build-tx mapper in `src/routes/jobs.ts` and the
   hand-rolled `get_job` / `get_whitelisted_tokens` decoders with the package.

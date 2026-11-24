@@ -25,7 +25,7 @@ Keep it updated as the linked issues are resolved. The transition-level detail
 
 ### Admin
 
-The admin is the platform. It is set by `initialize` and can be replaced with
+The admin is the platform. It is set by `__constructor` and can be replaced with
 `transfer_admin` or `propose_admin_transfer` / `execute_admin_transfer`.
 
 | Capability | Entry points | Mitigation or status |
@@ -34,10 +34,10 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 | Override any milestone | `admin_override_release`, `admin_override_refund`, `admin_override_streaming_release`, `admin_override_cancel_release`, `admin_override_cancel_refund`, `multisig_admin_override_release`, `multisig_admin_override_refund`, `admin_override_tax_release`, `admin_override_tax_refund`, `admin_override_tax_split_refund` | Releases to the freelancer or refunds to the client on any milestone that is not `Released` or `Refunded`, with no dispute, cancellation or delay required. Funds can only go to the recorded client or freelancer, never to the admin. Every override publishes an event. See [#687](https://github.com/Goldii-locks/escrow-contract/issues/687), [#691](https://github.com/Goldii-locks/escrow-contract/issues/691), [#684](https://github.com/Goldii-locks/escrow-contract/issues/684), [#689](https://github.com/Goldii-locks/escrow-contract/issues/689). |
 | Change fees after funding | `set_platform_fee_allocation`, `lock_platform_fee_allocation`, `pf_alloc_admin_override` | No funded check, and the lock can be undone by the admin override. The allocation is not applied to any payout today, so changing it moves no funds. See [#694](https://github.com/Goldii-locks/escrow-contract/issues/694), [#674](https://github.com/Goldii-locks/escrow-contract/issues/674). |
 | Pause and unpause | `admin_pause_escrow`, `admin_resume_escrow`, `emergency_unpause`, `emergency_pause_admin_override` | The admin pause does not block the normal workflow endpoints; the admin can set or clear the emergency pause at will, and only the admin can clear a pause the parties set. See [#664](https://github.com/Goldii-locks/escrow-contract/issues/664), [#726](https://github.com/Goldii-locks/escrow-contract/issues/726), [#759](https://github.com/Goldii-locks/escrow-contract/issues/759). |
-| Control the token whitelist | `add_whitelisted_token`, `remove_whitelisted_token` | Allowed only before funding. `initialize` whitelists the job's own token, so the list does not restrict anything. See [#680](https://github.com/Goldii-locks/escrow-contract/issues/680). |
+| Control the token whitelist | `add_whitelisted_token`, `remove_whitelisted_token` | Allowed only before funding. `__constructor` whitelists the job's own token, so the list does not restrict anything. See [#680](https://github.com/Goldii-locks/escrow-contract/issues/680). |
 | Control yield | `set_escrow_interest_yield`, `lock_escrow_interest_yield`, `unlock_escrow_interest_yield`, `admin_set_yield_rate`, `admin_accrue_yield` | The admin can change yield shares without the parties' consent (`set_interest_yield_consent` is the consented alternative). Accrued yield is a recorded number that is never funded or paid. See [#776](https://github.com/Goldii-locks/escrow-contract/issues/776), [#693](https://github.com/Goldii-locks/escrow-contract/issues/693). |
 | Manage the multisig and admin succession | `multisig_approval_init`, `multisig_lock`, `transfer_admin`, `propose_admin_transfer`, `cancel_admin_transfer_proposal` | `transfer_admin` replaces the admin directly without the multisig flow. See [#786](https://github.com/Goldii-locks/escrow-contract/issues/786), [#715](https://github.com/Goldii-locks/escrow-contract/issues/715), [#761](https://github.com/Goldii-locks/escrow-contract/issues/761), [#762](https://github.com/Goldii-locks/escrow-contract/issues/762). |
-| Become admin of a fresh deployment | `initialize` | `initialize` is a separate call after deployment, so whoever calls it first becomes admin. See [#665](https://github.com/Goldii-locks/escrow-contract/issues/665), [#667](https://github.com/Goldii-locks/escrow-contract/issues/667). |
+| Become admin of a fresh deployment | `__constructor` | The admin is set atomically by `__constructor` at deploy time — there is no separate initializer to front-run. See [#665](https://github.com/Goldii-locks/escrow-contract/issues/665), [#667](https://github.com/Goldii-locks/escrow-contract/issues/667). |
 
 ### Arbiter
 
@@ -87,8 +87,7 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 4. **Indexers read events from state-changing entry points only.** Events from
    calculation endpoints are not evidence of activity
    ([#676](https://github.com/Goldii-locks/escrow-contract/issues/676)).
-5. **`initialize` is called by the intended admin immediately after deployment**
-   ([#665](https://github.com/Goldii-locks/escrow-contract/issues/665)).
+5. **The admin is set atomically by `__constructor` at deploy time — the front-run-initialize risk no longer exists** (resolved by [#665](https://github.com/Goldii-locks/escrow-contract/issues/665)).
 
 ## Factory-created escrow admin pinning
 

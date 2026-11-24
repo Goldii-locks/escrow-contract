@@ -25,11 +25,11 @@ The escrow supports two funding modes.
 
 ### Upfront (default)
 
-`initialize` always uses `FundingMode::Upfront`. The client calls `fund(client)` once and transfers the sum of every milestone amount. No milestone may be delivered or settled until that full deposit succeeds. Calling `fund_milestone` in this mode returns `InvalidFundingMode`.
+The constructor's default funding mode is `FundingMode::Upfront`. The client calls `fund(client)` once and transfers the sum of every milestone amount. No milestone may be delivered or settled until that full deposit succeeds. Calling `fund_milestone` in this mode returns `InvalidFundingMode`.
 
 ### PerMilestone
 
-`initialize_with_funding_mode(..., FundingMode::PerMilestone)` lets the client fund each milestone independently with `fund_milestone(client, milestone_index)`.
+Pass `FundingMode::PerMilestone` in `EscrowSettings.funding_mode` to `__constructor` (or via the factory's `create_escrow`) to let the client fund each milestone independently with `fund_milestone(client, milestone_index)`.
 
 - Only the selected milestone amount is transferred.
 - Duplicate funding of the same milestone returns `AlreadyFunded`.
@@ -143,7 +143,7 @@ Notes:
   and every evidence entry; the record is deleted when the
   dispute closes, so evidence never outlives the dispute it belongs to (#712).
 - If the arbiter has not acted within the escrow's dispute timeout (30 days
-  by default, set with `initialize_with_dispute_timeout`), either party may
+  by default, set via `EscrowSettings.dispute_timeout_seconds` in `__constructor`), either party may
   call `escalate_dispute` to return the milestone to its pre-dispute status;
   a restored `Delivered` milestone keeps its original auto-release deadline
   (`delivered_at` is not reset), so a dispute → escalate → dispute loop cannot
