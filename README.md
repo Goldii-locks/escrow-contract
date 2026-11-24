@@ -247,7 +247,7 @@ action — never a caller-supplied calculation.
 
 | Code | Error | Meaning |
 |---|---|---|
-| 1 | `AlreadyInitialized` | `initialize` was called more than once |
+| 1 | `AlreadyInitialized` | `__constructor` was called more than once |
 | 2 | `NotInitialized` | A call required the contract to be initialized but it was not |
 | 3 | `AlreadyFunded` | `fund` was called after the escrow was already funded |
 | 4 | `NotFunded` | An operation that requires the escrow to be funded was attempted while it was not |
@@ -290,7 +290,7 @@ action — never a caller-supplied calculation.
 | 41 | `MaxRevisions` | `request_revision` was called after `MAX_REVISIONS` revisions |
 | 42 | `NothingToSweep` | `sweep_excess` found no recoverable surplus |
 | 43 | `NotAccepted` | A delivery or dispute endpoint was called before both the freelancer (`accept_job`) and the arbiter (`accept_arbiter`) accepted the job |
-| 44 | `InvalidParties` | `initialize` was called with overlapping party addresses |
+| 44 | `InvalidParties` | `__constructor` was called with overlapping party addresses |
 | 45 | `TooManyMilestones` | `add_milestone` was called on a job that already carries `MAX_MILESTONES` milestones |
 | 46 | `EvidenceLimitReached` | `submit_evidence` was called after `MAX_DISPUTE_EVIDENCE_ENTRIES` hashes had already been recorded for the milestone's current dispute |
 | 47 | `InvalidDuration` | `auto_release_seconds` is zero or above `MAX_AUTO_RELEASE_SECONDS` |
@@ -434,8 +434,9 @@ escrow wasm is over the network's 131,072-byte contract size limit.
 
 `scripts/deploy-testnet.sh` builds the reproducible wasm, uploads it, deploys
 with constructor arguments from environment variables, and appends
-`{date, network, wasm_hash, contract_id, admin}` to `deployments/testnet.json`
-(issue #745):
+`{date, network, contract, contract_id, wasm_sha256, source_commit, build, admin}` to `deployments/testnet.json`
+(issues #745, #987). The script fails if the working tree has uncommitted changes; set `ALLOW_DIRTY=1`
+to override (the recorded commit will be suffixed with `-dirty`):
 
 ```bash
 export SOURCE_ACCOUNT=testnet-deployer
@@ -513,7 +514,9 @@ Anyone can check which source a deployed contract was built from:
    ```
 
    (`stellar contract info` and the explorer show the same hash.)
-2. Look up `source_commit` for that contract in `deployments/<network>.json`.
+2. Look up `source_commit` for the matching `contract_id` in
+   `deployments/<network>.json`. Each record has the unified schema
+   `{ date, network, contract, contract_id, wasm_sha256, source_commit, build, admin }` (issue #987).
 3. Rebuild that commit and compare:
 
    ```bash
