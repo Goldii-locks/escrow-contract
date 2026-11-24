@@ -24,6 +24,14 @@ hash for every commit in the `reproducible-wasm` job summary.
   depends on the old numbers; regenerate TypeScript bindings after this change.
   See "Factory error codes" in the README.
 
+### Added (escrow-factory)
+
+- `allow_token` now proves the address is a token contract with a read-only
+  `decimals()` call and rejects accounts and mistyped ids with the new
+  `InvalidToken` (1007) at the point of the mistake (#1084). The check runs
+  only on this admin path, never in `create_escrow`, where it would cost every
+  deployment. Adding a token that is already listed remains a no-op.
+
 ### Fixed
 
 - `raise_dispute` now performs zero-address check, `require_auth`, and

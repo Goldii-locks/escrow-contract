@@ -20,6 +20,8 @@ pub enum Error {
     TokenNotAllowed = 1004,
     InvalidAmount = 1005,
     InvalidDisputeTimeout = 1006,
+    /// The address passed to `allow_token` is not a token contract (#1084).
+    InvalidToken = 1007,
 }
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
@@ -90,8 +92,21 @@ impl EscrowFactory {
     }
 
     /// Allow a token to be used in escrows created by this factory.
+    ///
+    /// The address must belong to a token contract (issue #1084): a
+    /// read-only `decimals()` call proves it before anything is stored, so a
+    /// pasted G... account address or a contract id with one wrong character
+    /// fails here with `InvalidToken` instead of when the first escrow funded
+    /// with it breaks. The check runs only on this admin path, never in
+    /// `create_escrow`, where it would tax every deployment.
     pub fn allow_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
+        if soroban_sdk::token::Client::new(&env, &token)
+            .try_decimals()
+            .is_err()
+        {
+            return Err(Error::InvalidToken);
+        }
         let mut tokens = Self::load_tokens(&env)?;
         if !tokens.contains(&token) {
             tokens.push_back(token.clone());

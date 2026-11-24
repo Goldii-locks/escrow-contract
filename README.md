@@ -392,9 +392,12 @@ history of behavioural changes is in [CHANGELOG.md](CHANGELOG.md).
 deployed with `--admin <platform-admin> --wasm_hash <escrow-wasm-hash>`
 constructor arguments. The admin allows tokens with `allow_token`, removes
 them again with `disallow_token`, and can point the factory at a new escrow
-build with `set_wasm_hash`. Token allow/deny changes emit `allowed` and
-`disallowd` events (the token address is the second topic); removing an absent
-token is a no-op. Existing escrows keep their own token and are unaffected.
+build with `set_wasm_hash`. `allow_token` first proves the address is a real
+token contract with a read-only `decimals()` call, so a pasted account address
+or a mistyped contract id fails with `InvalidToken` at the point of the
+mistake (#1084). Token allow/deny changes emit `allowed` and `disallowd`
+events (the token address is the second topic); removing an absent token is a
+no-op. Existing escrows keep their own token and are unaffected.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
@@ -421,6 +424,7 @@ factory's codes:
 | 1004 | `TokenNotAllowed` | Token is not on the factory allowlist |
 | 1005 | `InvalidAmount` | Milestone amounts empty or total overflows |
 | 1006 | `InvalidDisputeTimeout` | `dispute_timeout_seconds` outside 1-180 days |
+| 1007 | `InvalidToken` | `allow_token` address is not a token contract |
 
 ## Deploy (Testnet)
 
