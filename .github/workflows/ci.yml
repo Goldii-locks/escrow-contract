@@ -141,6 +141,28 @@ jobs:
           command: check
           arguments: --all-features
 
+  shellcheck:
+    # scripts/ builds the artefact whose hash is published, handles deployer
+    # identities and writes deployments/*.json (issue #1083), but nothing
+    # else looked at them. Unquoted variables and missing `set -euo pipefail`
+    # are exactly what shellcheck finds, and a mistake in a deploy script can
+    # write the wrong contract id or skip a failed step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Scripts are executable
+        run: |
+          for script in scripts/*.sh; do
+            if [ ! -x "$script" ]; then
+              echo "::error::$script is not executable"
+              exit 1
+            fi
+          done
+
   typescript-bindings:
     # Issue #744: clients hand-encode ScVals today (backend build-tx mapper,
     # frontend initialize call) and their decoding of get_job /

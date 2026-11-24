@@ -43,6 +43,12 @@ hash for every commit in the `reproducible-wasm` job summary.
   only on this admin path, never in `create_escrow`, where it would cost every
   deployment.
 
+### Added (CI)
+
+- A `shellcheck` job lints `scripts/*.sh` and verifies every script is
+  executable (#1083); `build-reproducible.sh` and `e2e.sh` were marked
+  executable.
+
 ### Fixed
 
 - `raise_dispute` now performs zero-address check, `require_auth`, and
