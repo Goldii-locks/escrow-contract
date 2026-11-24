@@ -4,15 +4,22 @@ use soroban_sdk::{
     ContractExecutable, Env, Vec,
 };
 
+/// Factory error codes start at 1001 so a bare `Error(Contract, #)` identifies
+/// the contract it came from (#1082). `milestone-escrow` uses 1-43; without a
+/// separate range, code 1 meant "not initialised" from the factory and
+/// "already initialised" from the escrow, and clients that map the number
+/// without knowing which contract failed showed the opposite message.
+pub const ERROR_CODE_BASE: u32 = 1000;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
-    NotInitialized = 1,
-    AlreadyInitialized = 2,
-    Unauthorized = 3,
-    TokenNotAllowed = 4,
-    InvalidAmount = 5,
-    InvalidDisputeTimeout = 6,
+    NotInitialized = 1001,
+    AlreadyInitialized = 1002,
+    Unauthorized = 1003,
+    TokenNotAllowed = 1004,
+    InvalidAmount = 1005,
+    InvalidDisputeTimeout = 1006,
 }
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).

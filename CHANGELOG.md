@@ -12,6 +12,18 @@ See "Verifying the deployed contract" in the README.
 WASM: build with `scripts/build-reproducible.sh <commit>`; CI publishes the
 hash for every commit in the `reproducible-wasm` job summary.
 
+### Changed (escrow-factory, wire format — before first mainnet deploy)
+
+- **Factory error codes renumbered into a dedicated 1001+ range (#1082).**
+  The factory's `NotInitialized`, `AlreadyInitialized`, `Unauthorized`,
+  `TokenNotAllowed`, `InvalidAmount` and `InvalidDisputeTimeout` previously
+  used codes 1-6, which collide with `milestone-escrow`'s codes (1 =
+  `AlreadyInitialized`, 2 = `NotInitialized`, ...) and invert the meaning of 1
+  and 2 for any client that maps a bare `Error(Contract, #)`. They are now
+  1001-1006. Done before the first mainnet deploy, so no deployed client
+  depends on the old numbers; regenerate TypeScript bindings after this change.
+  See "Factory error codes" in the README.
+
 ### Fixed
 
 - `raise_dispute` now performs zero-address check, `require_auth`, and

@@ -104,3 +104,8 @@ Regenerate the bindings after upgrading; the generated types change in two place
   total_amount, milestone_count, auto_release_seconds, settings, wasm_hash }`,
   and its party addresses are event topics rather than data fields. See
   "Escrow factory events" in `EVENTS.md`.
+- Error codes are contract-scoped (issue #1082): this contract uses 1-43, while
+  `escrow-factory` renumbered its codes into 1001-1006 so no factory code
+  equals an escrow code. A client decoding `Error(Contract, #)` must know
+  which contract failed; the factory's codes are listed in the README's
+  "Factory error codes" table.

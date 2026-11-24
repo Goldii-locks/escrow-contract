@@ -407,6 +407,21 @@ used by different clients yields different escrow addresses and cannot be
 front-run; frontends should call the read-only `escrow_address(client, salt)`
 to predict the address.
 
+### Factory error codes
+
+The factory's error codes start at 1001 (#1082), while the escrow's stay in
+1-43, so a bare `Error(Contract, #)` identifies which contract failed. The
+factory's codes:
+
+| Code | Error | Meaning |
+|---|---|---|
+| 1001 | `NotInitialized` | A required constructor value is missing |
+| 1002 | `AlreadyInitialized` | Reserved; the constructor is the only initialiser |
+| 1003 | `Unauthorized` | Caller is not the platform admin |
+| 1004 | `TokenNotAllowed` | Token is not on the factory allowlist |
+| 1005 | `InvalidAmount` | Milestone amounts empty or total overflows |
+| 1006 | `InvalidDisputeTimeout` | `dispute_timeout_seconds` outside 1-180 days |
+
 ## Deploy (Testnet)
 
 ### Escrow factory (what the app uses)
