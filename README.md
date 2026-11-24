@@ -395,20 +395,37 @@ them again with `disallow_token`, and can point the factory at a new escrow
 build with `set_wasm_hash`. `allow_token` first proves the address is a real
 token contract with a read-only `decimals()` call, so a pasted account address
 or a mistyped contract id fails with `InvalidToken` at the point of the
-mistake (#1084). Token allow/deny changes emit `allowed` and `disallowd`
-events (the token address is the second topic); removing an absent token is a
-no-op. Existing escrows keep their own token and are unaffected.
+mistake (#1084). Token allow/deny changes emit `allowed` and
+`disallowd` events (the token address is the second topic); removing an absent
+token is a no-op. Existing escrows keep their own token and are unaffected.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
 client's signature. It deploys the escrow with the platform admin as its
 admin and emits `created` (topics: `created`, client, freelancer, arbiter) with the
-new escrow's address, token, total amount, milestone count, auto-release window,
-settings and the escrow WASM hash. See "Escrow factory events" in `EVENTS.md`.
+new escrow's address, registry index, token, total amount, milestone count,
+auto-release window, settings and the escrow WASM hash. See "Escrow factory
+events" in `EVENTS.md`.
 The deployment salt is `sha256(client.to_xdr() || salt)`, so the same `salt`
 used by different clients yields different escrow addresses and cannot be
 front-run; frontends should call the read-only `escrow_address(client, salt)`
 to predict the address.
+
+### Escrow registry
+
+The factory records every escrow it deploys (#934), so a frontend can list a
+client's jobs without an indexer (public RPCs keep only about a week of
+events, so `created` events cannot be backfilled):
+
+- `escrow_count()` — total number of escrows deployed.
+- `escrow_at(index)` — address of the escrow at `index` (`0..escrow_count()`),
+  `EscrowNotFound` (1008) outside that range.
+- `client_escrows(client)` — the client's most recent escrows, newest last,
+  capped at 10 entries; the by-index registry is the authoritative list.
+
+Each creation writes one registry entry and extends its TTL; the `created`
+event carries the escrow's index, so an indexer that sees a gap between
+consecutive events knows a creation reverted mid-transaction.
 
 ### Factory error codes
 
@@ -425,6 +442,8 @@ factory's codes:
 | 1005 | `InvalidAmount` | Milestone amounts empty or total overflows |
 | 1006 | `InvalidDisputeTimeout` | `dispute_timeout_seconds` outside 1-180 days |
 | 1007 | `InvalidToken` | `allow_token` address is not a token contract |
+| 1008 | `EscrowNotFound` | `escrow_at` index outside `0..escrow_count()` |
+
 
 ## Deploy (Testnet)
 

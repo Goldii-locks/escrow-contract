@@ -22,6 +22,8 @@ pub enum Error {
     InvalidDisputeTimeout = 1006,
     /// The address passed to `allow_token` is not a token contract (#1084).
     InvalidToken = 1007,
+    /// `escrow_at` was called with an index outside `0..escrow_count()` (#934).
+    EscrowNotFound = 1008,
 }
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
@@ -29,11 +31,28 @@ pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
 /// Mirrors `milestone_escrow::MAX_DISPUTE_TIMEOUT_SECONDS` (180 days).
 pub const MAX_DISPUTE_TIMEOUT_SECONDS: u64 = 180 * 24 * 60 * 60;
 
+/// Number of most recent escrows kept per client in `client_escrows` (#934).
+/// The registry by index is unbounded and authoritative; the per-client list
+/// only saves a frontend from paging through it, so a small cap bounds the
+/// per-creation write cost.
+pub const MAX_CLIENT_ESCROWS: usize = 10;
+
+/// Mirror of `milestone_escrow`'s TTL policy: extend a persistent entry once
+/// it is within 30 days of expiring, out to one year.
+const TTL_THRESHOLD: u32 = 30 * 24 * 60 * 5;
+const TTL_EXTEND_TO: u32 = 365 * 24 * 60 * 5;
+
 #[contracttype]
 enum DataKey {
     Admin,
     WasmHash,
     AllowedTokens,
+    /// Total number of escrows the factory has deployed.
+    EscrowCount,
+    /// Address of the escrow deployed at `index` (0-based, #934).
+    EscrowByIndex(u64),
+    /// Most recent `MAX_CLIENT_ESCROWS` escrows created by `Address`.
+    ClientEscrows(Address),
 }
 
 /// Mirrors `milestone_escrow::FundingMode`; the two encode identically.
@@ -63,6 +82,10 @@ pub struct EscrowSettings {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowCreatedEvent {
     pub escrow: Address,
+    /// Zero-based registry index of this escrow; `escrow_at(index)` returns
+    /// the address, and a gap between consecutive indexes means a creation
+    /// reverted mid-transaction (#934).
+    pub index: u64,
     pub token: Address,
     /// Sum of all milestone amounts, in the token's smallest unit.
     pub total_amount: i128,
@@ -222,10 +245,51 @@ impl EscrowFactory {
                 ),
             );
 
+        // Instance data (admin, wasm hash, allowlist, count) lives in the
+        // contract's instance entry, which has its own TTL.
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+
+        // Registry (#934): one write per creation. The escrow is recorded at
+        // the current index and the counter is bumped, so `escrow_count` /
+        // `escrow_at` can list every escrow ever deployed without indexing
+        // events. Persistent entries get explicit TTL extensions or they
+        // would silently expire and hole the registry.
+        let index: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowCount)
+            .unwrap_or(0);
+        let by_index = DataKey::EscrowByIndex(index);
+        env.storage().persistent().set(&by_index, &escrow);
+        env.storage()
+            .persistent()
+            .extend_ttl(&by_index, TTL_THRESHOLD, TTL_EXTEND_TO);
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowCount, &(index + 1));
+
+        let client_key = DataKey::ClientEscrows(client.clone());
+        let mut recent: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&client_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if recent.len() as usize >= MAX_CLIENT_ESCROWS {
+            recent.pop_front();
+        }
+        recent.push_back(escrow.clone());
+        env.storage().persistent().set(&client_key, &recent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&client_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+
         env.events().publish(
             (symbol_short!("created"), client, freelancer, arbiter),
             EscrowCreatedEvent {
                 escrow: escrow.clone(),
+                index,
                 token,
                 total_amount,
                 milestone_count,
@@ -272,6 +336,35 @@ impl EscrowFactory {
 
     pub fn get_allowed_tokens(env: Env) -> Result<Vec<Address>, Error> {
         Self::load_tokens(&env)
+    }
+
+    /// Total number of escrows the factory has deployed (#934). Indexes run
+    /// `0..escrow_count()`, so a frontend can page the full registry even
+    /// without an indexer or a backend.
+    pub fn escrow_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::EscrowCount)
+            .unwrap_or(0)
+    }
+
+    /// Address of the escrow deployed at `index` (0-based). Fails with
+    /// `EscrowNotFound` for an index outside `0..escrow_count()`.
+    pub fn escrow_at(env: Env, index: u64) -> Result<Address, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EscrowByIndex(index))
+            .ok_or(Error::EscrowNotFound)
+    }
+
+    /// Most recent escrows created by `client`, newest last, capped at
+    /// `MAX_CLIENT_ESCROWS`. The by-index registry is authoritative; this
+    /// list saves a client's frontend from scanning it.
+    pub fn client_escrows(env: Env, client: Address) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ClientEscrows(client))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {

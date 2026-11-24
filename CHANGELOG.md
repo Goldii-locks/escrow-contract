@@ -20,17 +20,28 @@ hash for every commit in the `reproducible-wasm` job summary.
   used codes 1-6, which collide with `milestone-escrow`'s codes (1 =
   `AlreadyInitialized`, 2 = `NotInitialized`, ...) and invert the meaning of 1
   and 2 for any client that maps a bare `Error(Contract, #)`. They are now
-  1001-1006. Done before the first mainnet deploy, so no deployed client
-  depends on the old numbers; regenerate TypeScript bindings after this change.
-  See "Factory error codes" in the README.
+  1001-1006, with new `InvalidToken` = 1007 and `EscrowNotFound` = 1008. Done
+  before the first mainnet deploy, so no deployed client depends on the old
+  numbers; regenerate TypeScript bindings after this change. See "Factory
+  error codes" in the README.
+- The `created` event now carries a zero-based `index` field, the escrow's
+  position in the factory's registry, so indexers can detect gaps where a
+  creation reverted mid-transaction (#934).
 
 ### Added (escrow-factory)
 
+- Escrow registry (#934): `create_escrow` records every deployed escrow in
+  on-chain storage, and two new views expose it — `escrow_count()` and
+  `escrow_at(index)` — plus `client_escrows(client)` returning the client's
+  most recent escrows (capped at 10, newest last). Previously, finding a
+  client's escrows required indexing `created` events, which public RPCs
+  retain for only about a week. Registry entries get explicit TTL extensions
+  on write.
 - `allow_token` now proves the address is a token contract with a read-only
   `decimals()` call and rejects accounts and mistyped ids with the new
   `InvalidToken` (1007) at the point of the mistake (#1084). The check runs
   only on this admin path, never in `create_escrow`, where it would cost every
-  deployment. Adding a token that is already listed remains a no-op.
+  deployment.
 
 ### Fixed
 

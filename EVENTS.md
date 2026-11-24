@@ -182,6 +182,7 @@ are indexed so RPC `getEvents` can filter by participant, as for the escrow's
 | Field                  | Type             | Meaning                                                    |
 | ---------------------- | ---------------- | ---------------------------------------------------------- |
 | `escrow`               | `Address`        | The newly deployed escrow contract.                        |
+| `index`                | `u64`            | Zero-based registry index of this escrow; `escrow_at(index)` returns the address, and a gap between consecutive events means a creation reverted (#934). |
 | `token`                | `Address`        | Escrow token (must be on the factory allow-list).          |
 | `total_amount`         | `i128`           | Sum of all milestone amounts, in the token's smallest unit.|
 | `milestone_count`      | `u32`            | Number of milestones the escrow was created with.          |
@@ -197,3 +198,7 @@ added. Consumers that decoded `client`, `freelancer` or `arbiter` from the data
 must read them from the topics instead. `wasm_hash` lets an indexer tell which
 escrow build an address runs without calling the factory, which matters because
 `set_wasm_hash` changes the hash for later escrows.
+
+The `index` field (#934) was added before the first mainnet deploy: consumers
+that decode the event structurally should ignore unknown fields, and new
+consumers should read `index` to detect gaps between creations.
