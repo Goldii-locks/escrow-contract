@@ -77,6 +77,10 @@ fn storage_snapshot(
 }
 
 /// True when a `p_stream` settlement event has been published.
+/// NOTE (issue #988): `payment_streaming_milestones` is now a pure view and
+/// no longer emits this event. This helper is kept only for
+/// `payment_streaming_consent` tests that may still look for the event
+/// indirectly.
 fn emitted_p_stream_event(env: &Env) -> bool {
     let topic: Val = symbol_short!("p_stream").into_val(env);
     crate::all_event_tuples(env).iter().any(|e| {
@@ -609,7 +613,8 @@ fn test_streaming_matrix_amount_error_precedes_ratio_error() {
 }
 
 #[test]
-fn test_streaming_matrix_emits_event_with_the_computed_split() {
+fn test_streaming_matrix_emits_no_event_pure_view() {
+    // issue #988: payment_streaming_milestones is a pure view — no event.
     let env = test_env();
     env.mock_all_auths();
     let escrow = calculator_only(&env);
@@ -617,24 +622,10 @@ fn test_streaming_matrix_emits_event_with_the_computed_split() {
     let split = escrow.payment_streaming_milestones(&1_000_i128, &1_i128, &4_i128);
     assert_eq!(split.first, 250);
 
-    let topic: Val = Symbol::new(&env, "p_stream").into_val(&env);
-    let mut found = false;
-
-    for e in crate::all_event_tuples(&env).iter() {
-        if let Some(t) = e.1.get(0) {
-            if t.get_payload() == topic.get_payload() {
-                found = true;
-                let data = PaymentStreamingEvent::from_val(&env, &e.2);
-                assert_eq!(data.total_amount, 1_000);
-                assert_eq!(data.numerator, 1);
-                assert_eq!(data.denominator, 4);
-                assert_eq!(data.streamed_payout, 250);
-                assert_eq!(data.client_refund, 750);
-            }
-        }
-    }
-
-    assert!(found, "expected a p_stream event");
+    assert!(
+        !emitted_p_stream_event(&env),
+        "payment_streaming_milestones must not emit p_stream after #988"
+    );
 }
 
 #[test]
@@ -652,10 +643,12 @@ fn test_streaming_matrix_repeated_calls_are_pure() {
     assert_eq!((first.first, first.second), (again.first, again.second));
 }
 
-// ── #257: execution lock blocks concurrent modifications ─────────────────────
+// ── issue #988: no execution lock on the pure-view calculator ────────────────
 
 #[test]
-fn test_payment_streaming_releases_lock_after_success() {
+fn test_payment_streaming_milestones_no_lock_on_success() {
+    // payment_streaming_milestones is a pure view — it must not set any
+    // execution lock (issue #988).
     let env = test_env();
     env.mock_all_auths();
     let escrow = calculator_only(&env);
@@ -669,11 +662,11 @@ fn test_payment_streaming_releases_lock_after_success() {
             .get::<_, bool>(&DataKey::Paused)
             .unwrap_or(false)
     });
-    assert!(!lock_held, "execution lock must be cleared after success");
+    assert!(!lock_held, "pure view must never set an execution lock");
 }
 
 #[test]
-fn test_payment_streaming_releases_lock_after_failure() {
+fn test_payment_streaming_milestones_no_lock_on_failure() {
     let env = test_env();
     env.mock_all_auths();
     let escrow = calculator_only(&env);
@@ -687,7 +680,7 @@ fn test_payment_streaming_releases_lock_after_failure() {
             .get::<_, bool>(&DataKey::Paused)
             .unwrap_or(false)
     });
-    assert!(!lock_held, "execution lock must be cleared after failure");
+    assert!(!lock_held, "pure view must never set an execution lock");
 }
 
 // ── #549: reduce ledger storage footprint of payment_streaming_consent ──────
@@ -794,104 +787,31 @@ fn payment_streaming_consent_footprint_shrinks_against_baseline() {
 }
 
 // ============================================================================
-// #577: caller authorization and precondition guards
+// issue #988: payment_streaming_milestones is a pure view — no auth, no pause
 // ============================================================================
 
-/// An unsigned invocation must revert at the host level on the very first
-/// `require_auth`, before any ledger entry is read or written, and must leave
-/// every storage tier byte-identical with no `p_stream` event published.
+/// After issue #988, payment_streaming_milestones requires no signatures.
+/// A call with no mocked auths must succeed and return the correct split.
 #[test]
-fn test_payment_streaming_milestones_rejects_unauthorized_caller_without_mutation() {
+fn test_payment_streaming_milestones_requires_no_auth() {
     let env = test_env();
-    let (escrow, p) = initialised_escrow(&env);
-
-    let before = storage_snapshot(&env, &p.contract_id);
-
-    let result =
-        escrow
-            .mock_auths(&[])
-            .try_payment_streaming_milestones(&ARGS_TOTAL, &ARGS_NUM, &ARGS_DEN);
-
-    assert!(
-        matches!(result, Err(Err(_))),
-        "an unsigned call must be rejected by the host"
-    );
-
-    let after = storage_snapshot(&env, &p.contract_id);
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
-    assert!(
-        !emitted_p_stream_event(&env),
-        "a rejected call must not publish a settlement event"
-    );
-}
-
-/// A transaction carrying only the client's signature must revert: the
-/// freelancer's signature is missing, so the dual-consent guard aborts the
-/// invocation before the split arithmetic and leaves no ledger entry behind.
-#[test]
-fn test_payment_streaming_milestones_single_signature_rejected_without_mutation() {
-    let env = test_env();
-    let (escrow, p) = initialised_escrow(&env);
-
-    let before = storage_snapshot(&env, &p.contract_id);
-
-    let invoke = MockAuthInvoke {
-        contract: &p.contract_id,
-        fn_name: "payment_streaming_milestones",
-        args: (ARGS_TOTAL, ARGS_NUM, ARGS_DEN).into_val(&env),
-        sub_invokes: &[],
-    };
+    // No mock_all_auths — the call must succeed without any signer.
+    let (escrow, _p) = initialised_escrow(&env);
 
     let result = escrow
-        .mock_auths(&[MockAuth {
-            address: &p.client,
-            invoke: &invoke,
-        }])
+        .mock_auths(&[])
         .try_payment_streaming_milestones(&ARGS_TOTAL, &ARGS_NUM, &ARGS_DEN);
 
     assert!(
-        matches!(result, Err(Err(_))),
-        "a single-signature attempt must revert"
+        result.is_ok(),
+        "payment_streaming_milestones must succeed with no signatures after #988"
     );
-
-    let after = storage_snapshot(&env, &p.contract_id);
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
-    assert!(!emitted_p_stream_event(&env));
+    assert!(!emitted_p_stream_event(&env), "must not emit p_stream");
 }
 
-/// An uninitialized contract is an illegal source state: the precondition
-/// guard answers with the typed `NotInitialized` error and no ledger entry,
-/// event, or execution lock is created by the rejected call.
+/// A paused escrow must NOT block the pure-view calculator (issue #988).
 #[test]
-fn test_payment_streaming_milestones_uninitialized_returns_typed_error_without_mutation() {
-    let env = test_env();
-    env.mock_all_auths();
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
-
-    let before = storage_snapshot(&env, &contract_id);
-
-    assert_eq!(
-        escrow.try_payment_streaming_milestones(&ARGS_TOTAL, &ARGS_NUM, &ARGS_DEN),
-        Err(Ok(Error::NotInitialized))
-    );
-
-    let after = storage_snapshot(&env, &contract_id);
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
-    assert!(!emitted_p_stream_event(&env));
-}
-
-/// A paused escrow is an illegal source state: the call must answer with the
-/// typed `Paused` error without mutating a single ledger entry.
-#[test]
-fn test_payment_streaming_milestones_paused_source_returns_typed_error_without_mutation() {
+fn test_payment_streaming_milestones_ignores_pause() {
     let env = test_env();
     let (escrow, p) = initialised_escrow(&env);
 
@@ -899,23 +819,17 @@ fn test_payment_streaming_milestones_paused_source_returns_typed_error_without_m
         env.storage().instance().set(&DataKey::Paused, &true);
     });
 
-    let before = storage_snapshot(&env, &p.contract_id);
-
-    assert_eq!(
-        escrow.try_payment_streaming_milestones(&ARGS_TOTAL, &ARGS_NUM, &ARGS_DEN),
-        Err(Ok(Error::Paused))
+    // Should succeed despite Paused flag.
+    let result = escrow.try_payment_streaming_milestones(&ARGS_TOTAL, &ARGS_NUM, &ARGS_DEN);
+    assert!(
+        result.is_ok(),
+        "pure view must not be gated by the pause flag after #988"
     );
-
-    let after = storage_snapshot(&env, &p.contract_id);
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
     assert!(!emitted_p_stream_event(&env));
 }
 
-/// Invalid inputs are rejected with their specific typed error before the
-/// execution lock is taken, so the full storage snapshot — every tier — is
-/// byte-identical after the rejected call.
+/// Invalid inputs are still rejected with their specific typed error and
+/// leave the full storage snapshot byte-identical.
 #[test]
 fn test_payment_streaming_milestones_rejected_inputs_write_no_ledger_entry() {
     let env = test_env();

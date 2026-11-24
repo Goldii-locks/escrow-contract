@@ -16,10 +16,6 @@ are listed at the bottom as **No auth required**.
 | `pub fn` | Required signer(s) | Auth helper |
 |---|---|---|
 | `__constructor` | none: runs once, at deploy, with the deployer's arguments | `initialize_inner` |
-| `initialize` | `admin` | `admin.require_auth()` |
-| `initialize_with_arbiter_fee` | `admin` | `admin.require_auth()` |
-| `initialize_with_dispute_timeout` | `admin` | `admin.require_auth()` |
-| `initialize_with_funding_mode` | `admin` | `admin.require_auth()` |
 | `set_admin_role` | root `admin` | `require_admin_from_instance` |
 | `transfer_admin` | `current_admin` | `current_admin.require_auth()` |
 | `add_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
@@ -57,9 +53,9 @@ are listed at the bottom as **No auth required**.
 | `set_platform_fee_allocation` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `lock_platform_fee_allocation` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `pf_alloc_admin_override` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
-| `payment_streaming_milestones` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |
+| `payment_streaming_milestones` | none (pure view, no auth — issue #988) | — |
 | `payment_streaming_consent` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |
-| `milestone_time_extensions` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |
+| `milestone_time_extensions` | none (pure view, no auth — issue #988) | — |
 | `time_extensions_consent` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |
 | `multisig_approval_init` | `Resolver` role (root `admin` by default) | `require_role(AdminRole::Resolver)` |
 | `multisig_approve` | `signer` (must be registered multisig signer) | `signer.require_auth()` |

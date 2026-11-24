@@ -271,9 +271,9 @@ change no milestone or escrow state.
 | `emergency_pause_split_refund` | client, freelancer or admin | emergency paused | `epspltref` |
 | `emergency_pause_claim_refund` | admin | emergency paused | `emergency_pause_claim_refund` |
 | `emergency_pause_allocation` | client, freelancer or admin | emergency paused | `epalloc` |
-| `payment_streaming_milestones` | contract, client and freelancer | not paused | `p_stream` |
+| `payment_streaming_milestones` | none (pure view, no auth — issue #988) | none | none |
 | `payment_streaming_consent` | client and freelancer | not paused | `p_strcns` |
-| `milestone_time_extensions` | contract, client and freelancer | none | `m_ext` |
+| `milestone_time_extensions` | none (pure view, no auth — issue #988) | none | none |
 | `time_extensions_consent` | client and freelancer | not paused | `m_extcns` |
 
 ## Invariants

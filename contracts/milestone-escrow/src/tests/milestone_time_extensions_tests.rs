@@ -85,60 +85,46 @@ fn test_milestone_time_extensions_rejects_invalid_source_state_without_acquiring
 }
 
 #[test]
-fn test_milestone_time_extensions_rejects_unauthorized_single_signature() {
+fn test_milestone_time_extensions_rejects_unauthorized_single_signature_now_pure_view() {
+    // issue #988: milestone_time_extensions is now a pure view — no auth required.
     let env = Env::default();
     env.mock_all_auths();
     let amounts = vec![&env, 1_000_i128];
-    let (client_addr, freelancer_addr, _, _, _, contract_id, client) =
+    let (_client_addr, _freelancer_addr, _, _, _, _contract_id, client) =
         setup_funded_escrow(&env, amounts);
-    client.mark_delivered(&freelancer_addr, &0);
 
-    // Only the client signs. The dual-consent guard in
-    // `time_extensions_consent` (via `require_client_and_freelancer_consent`)
-    // triggers when the freelancer's signature is missing, so a single-signed
-    // invocation must never reach the extension logic and must not mutate any
-    // on-chain state.
-    let invoke = MockAuthInvoke {
-        contract: &contract_id,
-        fn_name: "time_extensions_consent",
-        args: (&0u32, &100u32).into_val(&env),
-        sub_invokes: &[],
-    };
-
-    let result = client
-        .mock_auths(&[MockAuth {
-            address: &client_addr,
-            invoke: &invoke,
-        }])
-        .try_time_extensions_consent(&0, &100);
-
+    // No mocked auths — the pure view must succeed.
+    let res = client.try_milestone_time_extensions(&1_000_i128, &1_i128, &2_i128);
     assert!(
-        matches!(result, Err(Err(_))),
-        "single-signature attempt must revert"
+        res.is_ok(),
+        "milestone_time_extensions must succeed without signatures after #988"
     );
 }
 
 #[test]
-fn successful_split_emits_complete_event_payload() {
+fn successful_split_returns_correct_values_no_event() {
+    // issue #988: the pure-view calculator returns the split but emits no event.
     let env = Env::default();
     env.mock_all_auths();
     let amounts = vec![&env, 101_i128];
     let (_, _, _, _, _, _contract_id, client) = setup_funded_escrow(&env, amounts);
 
     let split = client.milestone_time_extensions(&101, &1, &2);
+    // Values must still be correct.
+    assert_eq!(split.first + split.second, 101);
+
+    // No m_ext event from the pure calculator.
     let all_events = crate::all_event_tuples(&env);
-    let event = all_events.last().unwrap();
-    let topic: Symbol = event.1.get(0).unwrap().try_into_val(&env).unwrap();
-    assert_eq!(topic, Symbol::new(&env, "m_ext"));
-    assert_eq!(
-        MilestoneTimeExtensionEvent::from_val(&env, &event.2),
-        MilestoneTimeExtensionEvent {
-            amount: 101,
-            elapsed_seconds: 1,
-            total_seconds: 2,
-            freelancer_share: split.first,
-            client_refund: split.second,
-        }
+    let m_ext_sym = Symbol::new(&env, "m_ext");
+    let found_m_ext = all_events.iter().any(|e| {
+        e.1.get(0)
+            .and_then(|t| t.try_into_val::<_, Symbol>(&env).ok())
+            .map(|s| s == m_ext_sym)
+            .unwrap_or(false)
+    });
+    assert!(
+        !found_m_ext,
+        "pure-view milestone_time_extensions must not emit m_ext (issue #988)"
     );
 }
 

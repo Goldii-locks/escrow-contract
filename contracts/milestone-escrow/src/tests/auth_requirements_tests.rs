@@ -1767,126 +1767,38 @@ fn tax_withholding_deductions_correct_signers_succeed_and_auths_match() {
 }
 
 // ─── payment_streaming_milestones ─────────────────────────────────────────────
-// This is one of the two entry points identified in issue #685 as broken.
-// After the fix (removing `env.current_contract_address().require_auth()`),
-// it must now succeed with only client + freelancer auth.
+// Issue #988: payment_streaming_milestones is now a pure read-only view.
+// No signatures are required; any caller can invoke it via simulateTransaction.
 
 #[test]
-fn payment_streaming_milestones_wrong_signer_fails() {
+fn payment_streaming_milestones_requires_no_auth_after_988() {
     let env = Env::default();
-    let (contract_id, _admin, _client, _freelancer, _arbiter, _token, escrow) = setup_funded(&env);
-    let attacker = Address::generate(&env);
-    env.mock_auths(&[MockAuth {
-        address: &attacker,
-        invoke: &MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "payment_streaming_milestones",
-            args: (1_000_i128, 1_i128, 2_i128).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
+    let (_contract_id, _admin, _client, _freelancer, _arbiter, _token, escrow) =
+        setup_funded(&env);
+    // No mocked auths at all — the pure view must succeed.
     let res = escrow.try_payment_streaming_milestones(&1_000_i128, &1_i128, &2_i128);
     assert!(
-        res.is_err(),
-        "payment_streaming_milestones must fail when client+freelancer auth is missing"
+        res.is_ok(),
+        "payment_streaming_milestones must succeed without any signatures after #988"
     );
-}
-
-/// Issue #685: `payment_streaming_milestones` used to call
-/// `env.current_contract_address().require_auth()`, which no external
-/// transaction can satisfy.  Client + freelancer auth alone now suffices.
-#[test]
-fn payment_streaming_milestones_correct_signers_succeed_and_auths_match() {
-    let env = Env::default();
-    let (contract_id, _admin, client, freelancer, _arbiter, _token, escrow) = setup_funded(&env);
-    env.mock_auths(&[
-        MockAuth {
-            address: &client,
-            invoke: &MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "payment_streaming_milestones",
-                args: (1_000_i128, 1_i128, 2_i128).into_val(&env),
-                sub_invokes: &[],
-            },
-        },
-        MockAuth {
-            address: &freelancer,
-            invoke: &MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "payment_streaming_milestones",
-                args: (1_000_i128, 1_i128, 2_i128).into_val(&env),
-                sub_invokes: &[],
-            },
-        },
-    ]);
-    // Must succeed without the contract self-auth that #685 removed.
-    escrow.payment_streaming_milestones(&1_000_i128, &1_i128, &2_i128);
-    let auths = env.auths();
-    assert_eq!(auths.len(), 2);
-    let auth_addrs: std::vec::Vec<_> = auths.iter().map(|(a, _)| a.clone()).collect();
-    assert!(auth_addrs.contains(&client));
-    assert!(auth_addrs.contains(&freelancer));
 }
 
 // ─── milestone_time_extensions ────────────────────────────────────────────────
-// The second entry point identified in issue #685 as broken.
-// After the fix, it must succeed with only client + freelancer auth.
+// Issue #988: milestone_time_extensions is now a pure read-only view.
+// No signatures are required; any caller can invoke it via simulateTransaction.
 
 #[test]
-fn milestone_time_extensions_wrong_signer_fails() {
+fn milestone_time_extensions_requires_no_auth_after_988() {
     let env = Env::default();
-    let (contract_id, _admin, _client, _freelancer, _arbiter, _token, escrow) = setup_funded(&env);
-    let attacker = Address::generate(&env);
-    env.mock_auths(&[MockAuth {
-        address: &attacker,
-        invoke: &MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "milestone_time_extensions",
-            args: (1_000_i128, 1_i128, 2_i128).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
+    let (_contract_id, _admin, _client, _freelancer, _arbiter, _token, escrow) =
+        setup_funded(&env);
+    // No mocked auths at all — the pure view must succeed.
     let res = escrow.try_milestone_time_extensions(&1_000_i128, &1_i128, &2_i128);
     assert!(
-        res.is_err(),
-        "milestone_time_extensions must fail when client+freelancer auth is missing"
+        res.is_ok(),
+        "milestone_time_extensions must succeed without any signatures after #988"
     );
 }
-
-/// Issue #685: `milestone_time_extensions` used to call
-/// `env.current_contract_address().require_auth()`, which no external
-/// transaction can satisfy.  Client + freelancer auth alone now suffices.
-#[test]
-fn milestone_time_extensions_correct_signers_succeed_and_auths_match() {
-    let env = Env::default();
-    let (contract_id, _admin, client, freelancer, _arbiter, _token, escrow) = setup_funded(&env);
-    env.mock_auths(&[
-        MockAuth {
-            address: &client,
-            invoke: &MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "milestone_time_extensions",
-                args: (1_000_i128, 1_i128, 2_i128).into_val(&env),
-                sub_invokes: &[],
-            },
-        },
-        MockAuth {
-            address: &freelancer,
-            invoke: &MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "milestone_time_extensions",
-                args: (1_000_i128, 1_i128, 2_i128).into_val(&env),
-                sub_invokes: &[],
-            },
-        },
-    ]);
-    // Must succeed without the contract self-auth that #685 removed.
-    escrow.milestone_time_extensions(&1_000_i128, &1_i128, &2_i128);
-    let auths = env.auths();
-    assert_eq!(auths.len(), 2);
-    let auth_addrs: std::vec::Vec<_> = auths.iter().map(|(a, _)| a.clone()).collect();
-    assert!(auth_addrs.contains(&client));
-    assert!(auth_addrs.contains(&freelancer));
 }
 
 // ─── payment_streaming_consent ────────────────────────────────────────────────
