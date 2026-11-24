@@ -628,7 +628,6 @@ fn tax_release_leaves_no_balance_for_the_milestone() {
 /// not exceed what is left on the milestone. On `main` the record still holds
 /// the pre-partial gross, so the refund is paid out of milestone 1's funds.
 #[test]
-#[ignore = "fails on main until #689 lands: the tax record goes stale after a partial release"]
 fn tax_refund_after_partial_release_does_not_exceed_remaining_balance() {
     let env = test_env();
     env.mock_all_auths();
@@ -646,6 +645,65 @@ fn tax_refund_after_partial_release_does_not_exceed_remaining_balance() {
     let refunded = token_client.balance(&client_addr) - client_before;
 
     assert!(refunded <= 600);
+    assert!(token_client.balance(&contract_id) >= 1_000);
+}
+
+/// withhold → `approve_partial` → `admin_override_tax_release`: the release
+/// must only pay the net of the *remaining* balance (after the partial release),
+/// not the original gross. Fixes issue #689.
+#[test]
+fn tax_release_after_partial_release_does_not_exceed_remaining_balance() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (_, freelancer_addr, _, admin_addr, token_contract_id, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 1_000_i128]);
+    let token_client = token::Client::new(&env, &token_contract_id);
+
+    // Record tax on the full 1 000 (25 %) → gross 1 000, tax 250, net 750.
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.tax_withholding_deductions(&0u32, &2_500u32);
+
+    // Partially release 400 → remaining = 600.
+    client.approve_partial(&Address::generate(&env), &0u32, &400_i128);
+
+    let freelancer_before = token_client.balance(&freelancer_addr);
+    client.admin_override_tax_release(&admin_addr, &0u32);
+    let paid_out = token_client.balance(&freelancer_addr) - freelancer_before;
+
+    // Net of remaining 600 at 25 % = 450; must not be 750 (stale record).
+    assert!(paid_out <= 600, "paid_out={paid_out} must be ≤ remaining 600");
+    assert!(token_client.balance(&contract_id) >= 1_000);
+}
+
+/// withhold → `approve_partial` → `admin_override_tax_split_refund`: neither
+/// party should receive more than the remaining balance allows. Fixes issue #689.
+#[test]
+fn tax_split_refund_after_partial_release_does_not_exceed_remaining_balance() {
+    let env = test_env();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, admin_addr, token_contract_id, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128, 1_000_i128]);
+    let token_client = token::Client::new(&env, &token_contract_id);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+    client.tax_withholding_deductions(&0u32, &2_500u32);
+    client.approve_partial(&client_addr, &0u32, &400_i128);
+
+    let client_before = token_client.balance(&client_addr);
+    let freelancer_before = token_client.balance(&freelancer_addr);
+    // 50/50 split
+    client.admin_override_tax_split_refund(&admin_addr, &0u32, &5_000u32, &5_000u32);
+    let client_got = token_client.balance(&client_addr) - client_before;
+    let freelancer_got = token_client.balance(&freelancer_addr) - freelancer_before;
+
+    // Combined payout must not exceed the net of the remaining 600 at 25 % = 450.
+    assert!(
+        client_got + freelancer_got <= 600,
+        "total payout {} must be ≤ remaining 600",
+        client_got + freelancer_got
+    );
     assert!(token_client.balance(&contract_id) >= 1_000);
 }
 

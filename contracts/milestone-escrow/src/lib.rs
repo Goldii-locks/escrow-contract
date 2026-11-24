@@ -7776,36 +7776,22 @@ impl MilestoneEscrow {
     /// Calculate a nearest-rounded split of a total between a streamed payout
     /// and a client refund.
     ///
-    /// # Authorization and preconditions
-    /// The guard block runs at the top of this function, before any ledger
-    /// entry is read or written by the calculation itself:
-    ///
-    /// * The escrow must be initialised (`Self::require_initialized`), so the
-    ///   split is anchored to a real job rather than a fresh instance.
-    /// * No other payment-streaming split may be mid-execution and the escrow
-    ///   must be neither administratively nor emergency paused.
-    /// * Both the client and the freelancer recorded on the job must sign
-    ///   (`Self::require_client_and_freelancer_consent`), so a
-    ///   single-signature attempt reverts before the split arithmetic runs.
+    /// This is a **pure, read-only view**: it requires no signatures, checks no
+    /// pause or lock flags, writes nothing to ledger, and emits no events.
+    /// Call it via `simulateTransaction` to preview the split before committing
+    /// to `payment_streaming_consent` (which actually transfers tokens and
+    /// requires both parties' signatures). Fixes issue #988.
     ///
     /// # Returns
     /// `RatioSplit.first` is the streamed payout; `RatioSplit.second` is the
     /// client refund. The two values sum exactly to `total_amount`.
     ///
     /// # Errors
-    /// * `NotInitialized` – The contract has never been initialised, so there
-    ///   is no job metadata to anchor the split to.
-    /// * `PaymentStreamingInProgress` – Another payment-streaming split is
-    ///   mid-execution.
-    /// * `Paused` – The escrow is administratively or emergency paused.
+    /// * `NotInitialized` – The contract has never been initialised.
     /// * `InvalidAmount` – `total_amount` is not positive, or checked
     ///   arithmetic overflows while calculating the split.
     /// * `InvalidRatio` – `denominator` is not positive, or `numerator` is
     ///   outside `0..=denominator`.
-    ///
-    /// Authentication, preconditions and input validation all complete before
-    /// the execution lock is written, so rejected calls leave no storage entry
-    /// or event behind.
     pub fn payment_streaming_milestones(
         env: Env,
         total_amount: i128,
@@ -7813,40 +7799,13 @@ impl MilestoneEscrow {
         denominator: i128,
     ) -> Result<RatioSplit, Error> {
         Self::ensure_migrated(&env)?;
-        // Precondition: the escrow must be initialized so the split is anchored
-        // to a real job rather than a fresh or uninitialized instance. This is
-        // the same guard used by every other mutating endpoint.
         Self::require_initialized(&env)?;
 
-        // Reject illegal source states — a split already mid-execution or a
-        // paused escrow — before any further ledger access, so a mistaken
-        // call never mutates storage.
-        Self::assert_not_paused(&env)?;
-
-        // Authorization and precondition checks run BEFORE any ledger entry is
-        // written. Both the client and the freelancer must have signed the
-        // transaction, so a single-signature attempt can never reach the split
-        // arithmetic and no state is mutated.
-        let _meta = Self::require_client_and_freelancer_consent(&env)?;
-
-        // Reject invalid inputs BEFORE the execution lock is acquired, so a
-        // rejected invocation writes no ledger entry and publishes no event.
+        // Validate inputs and return the split — no auth, no pause check, no
+        // event, no lock. This function is callable through simulation without
+        // any signatures (issue #988).
         Self::validate_streaming_ratio(total_amount, numerator, denominator)?;
         let split = Self::split_round_nearest(total_amount, numerator, denominator)?;
-
-        // Acquire execution lock so concurrent state mutations observe the
-        // in-progress status while the successful calculation is published.
-
-        env.events().publish(
-            (symbol_short!("p_stream"),),
-            PaymentStreamingEvent {
-                total_amount,
-                numerator,
-                denominator,
-                streamed_payout: split.first,
-                client_refund: split.second,
-            },
-        );
 
         Ok(split)
     }
@@ -7996,8 +7955,19 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `InvalidAmount`  – `amount` is negative, or an intermediate checked
     ///                      multiplication overflows.
-    /// * `InvalidRatio`   – `total_seconds` is zero, `elapsed_seconds` is
-    ///                      negative, or `elapsed_seconds > total_seconds`.
+    /// Calculate a time-proportional split of an amount between the freelancer
+    /// and a client refund.
+    ///
+    /// This is a **pure, read-only view**: it requires no signatures, checks no
+    /// pause or lock flags, writes nothing to ledger, and emits no events.
+    /// Call it via `simulateTransaction` to preview the split. The actual
+    /// state-changing extension is `time_extensions_consent`. Fixes issue #988.
+    ///
+    /// # Errors
+    /// * `NotInitialized`  – Contract not initialised.
+    /// * `InvalidAmount`   – `amount` ≤ 0, or arithmetic overflow.
+    /// * `InvalidRatio`    – `total_seconds` is zero, `elapsed_seconds` is
+    ///                       negative, or `elapsed_seconds > total_seconds`.
     pub fn milestone_time_extensions(
         env: Env,
         amount: i128,
@@ -8005,21 +7975,35 @@ impl MilestoneEscrow {
         total_seconds: i128,
     ) -> Result<RatioSplit, Error> {
         Self::ensure_migrated(&env)?;
-        // Precondition: the escrow must be initialized so the split is anchored
-        // to a real job rather than a fresh or uninitialized instance. This is
-        // the same guard used by every other mutating endpoint.
         Self::require_initialized(&env)?;
 
-        // Authorization and precondition checks run BEFORE any ledger entry is
-        // read or written. Both the client and the freelancer must have signed
-        // the transaction, so a single-signature attempt can never reach the
-        // split arithmetic and no state is mutated.
-        let _meta = Self::require_client_and_freelancer_consent(&env)?;
-
-        Self::time_extension_split(&env, amount, elapsed_seconds, total_seconds)
+        // Pure calculation — no auth, no pause check, no event (issue #988).
+        Self::time_extension_split_pure(&env, amount, elapsed_seconds, total_seconds)
     }
 
     /// The split behind `milestone_time_extensions`, without its
+    /// Pure arithmetic split used by the `milestone_time_extensions` read-only
+    /// view (issue #988). No events, no auth, no lock checks. The state-changing
+    /// path (`admin_override_streaming_release`) uses `time_extension_split`
+    /// which still emits the `m_ext` event.
+    fn time_extension_split_pure(
+        _env: &Env,
+        amount: i128,
+        elapsed_seconds: i128,
+        total_seconds: i128,
+    ) -> Result<RatioSplit, Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if total_seconds <= 0 {
+            return Err(Error::InvalidRatio);
+        }
+        if elapsed_seconds < 0 || elapsed_seconds > total_seconds {
+            return Err(Error::InvalidRatio);
+        }
+        Self::split_round_nearest(amount, elapsed_seconds, total_seconds)
+    }
+
     /// authorization. `admin_override_streaming_release` calls this directly
     /// after its own admin check: an override must not need the signatures of
     /// the client and freelancer it overrides.
@@ -11123,7 +11107,12 @@ impl MilestoneEscrow {
             return Err(Error::InvalidMilestone);
         }
 
-        let record: TaxWithholdingRecord = env
+        // Read the stored record only to obtain `tax_rate_bps`, then
+        // recompute amounts from the milestone's *current* remaining balance
+        // (issue #689). The snapshot written by `tax_withholding_deductions`
+        // may be stale if `approve_partial` or another settlement path has
+        // since reduced `released_amount`.
+        let stored: TaxWithholdingRecord = env
             .storage()
             .persistent()
             .get(&DataKey::TaxWithholdingLock(milestone_index))
@@ -11134,6 +11123,11 @@ impl MilestoneEscrow {
         if Self::is_terminal_status(&milestone.status) {
             return Err(Error::InvalidStatus);
         }
+
+        // Recompute from current remaining balance using the original rate.
+        let record =
+            Self::compute_tax_withholding(&env, &meta, milestone_index, stored.tax_rate_bps)?;
+
         if record.net_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -11209,7 +11203,12 @@ impl MilestoneEscrow {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::Resolver)?;
 
-        let record: TaxWithholdingRecord = env
+        // Read the stored record only to obtain `tax_rate_bps`, then
+        // recompute amounts from the milestone's *current* remaining balance
+        // (issue #689). The snapshot written by `tax_withholding_deductions`
+        // may be stale if `approve_partial` or another settlement path has
+        // since reduced `released_amount`.
+        let stored: TaxWithholdingRecord = env
             .storage()
             .persistent()
             .get(&DataKey::TaxWithholdingLock(milestone_index))
@@ -11226,6 +11225,11 @@ impl MilestoneEscrow {
         if Self::is_terminal_status(&milestone.status) {
             return Err(Error::InvalidStatus);
         }
+
+        // Recompute from current remaining balance using the original rate.
+        let record =
+            Self::compute_tax_withholding(&env, &meta, milestone_index, stored.tax_rate_bps)?;
+
         if record.gross_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -11310,7 +11314,12 @@ impl MilestoneEscrow {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::Resolver)?;
 
-        let record: TaxWithholdingRecord = env
+        // Read the stored record only to obtain `tax_rate_bps`, then
+        // recompute amounts from the milestone's *current* remaining balance
+        // (issue #689). The snapshot written by `tax_withholding_deductions`
+        // may be stale if `approve_partial` or another settlement path has
+        // since reduced `released_amount`.
+        let stored: TaxWithholdingRecord = env
             .storage()
             .persistent()
             .get(&DataKey::TaxWithholdingLock(milestone_index))
@@ -11327,6 +11336,11 @@ impl MilestoneEscrow {
         if Self::is_terminal_status(&milestone.status) {
             return Err(Error::InvalidStatus);
         }
+
+        // Recompute from current remaining balance using the original rate.
+        let record =
+            Self::compute_tax_withholding(&env, &meta, milestone_index, stored.tax_rate_bps)?;
+
         if record.gross_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
