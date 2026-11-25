@@ -7058,19 +7058,20 @@ impl MilestoneEscrow {
     /// Upgrade the contract's WASM to `new_wasm_hash`.
     ///
     /// # Business rules
-    /// Caller authorization and pause/lock preconditions are checked before
-    /// any storage mutation or WASM upgrade, so a rejected call leaves the
-    /// contract's storage and installed code untouched.
+    /// Caller authorization is checked before any storage mutation or WASM
+    /// upgrade, so a rejected call leaves the contract's storage and installed
+    /// code untouched. Pause and cancel-lock state are deliberately **not**
+    /// guards: the incident flow is to freeze settlement first and then patch
+    /// the deployed code, and `migrate` is likewise allowed while paused
+    /// (issue #973).
     ///
     /// # Errors
     /// * `NotInitialized` – Admin key has never been stored.
     /// * `Unauthorized`   – `admin` is neither the `Upgrader` delegate nor, if none is set, the
     ///   stored admin.
-    /// * `Paused`         – The contract is currently emergency-paused.
-    /// * `EscrowLocked`   – A cancel is in progress and holds the cancel lock.
+    /// * `InvalidAmount`  – The version counter would overflow.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_role(&env, &admin, AdminRole::Upgrader)?;
-        Self::ensure_not_paused(&env)?;
 
         env.deployer()
             .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));

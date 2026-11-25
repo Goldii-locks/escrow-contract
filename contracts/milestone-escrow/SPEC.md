@@ -280,7 +280,7 @@ overwritten, so the original approver must opt in again. `cxlappr` carries
 | `unlock_escrow_interest_yield` | admin | yield state locked | unlocks yield state | `yldunlock` |
 | `admin_set_yield_rate` | admin | `assert_not_paused`; not emergency paused; `rate_bps <= 10_000` | stores yield rate | `yldrate` |
 | `admin_accrue_yield` | admin | valid milestone; positive amount | adds to `YieldAccrued` | `yldacc` |
-| `upgrade` | admin | `ensure_not_paused` | replaces contract code; bumps version | `upgrade` |
+| `upgrade` | admin | `Upgrader` role only; runs even while paused/cancel-locked (#973) | replaces contract code; bumps version | `upgrade` |
 
 ### Calculation endpoints
 

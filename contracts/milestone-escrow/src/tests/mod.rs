@@ -7067,30 +7067,9 @@ fn test_upgrade_unauthorized_caller_mutates_no_storage() {
     assert_eq!(upgrade_event_count(&env), 0);
 }
 
-/// Issue #352: `upgrade` must be blocked while the contract is
-/// emergency-paused, failing with the specific `Paused` error rather than
-/// proceeding to the WASM upgrade / version bump.
-#[test]
-fn test_upgrade_while_paused_fails_with_typed_error() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (client_addr, freelancer_addr, _, admin_addr, _, _, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-
-    client.emergency_pause(&client_addr, &freelancer_addr);
-    assert!(client.is_emergency_paused());
-
-    let version_before = client.version();
-
-    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
-    let result = client.try_upgrade(&admin_addr, &fake_hash);
-
-    assert_eq!(result, Err(Ok(Error::Paused)));
-    assert_eq!(client.version(), version_before);
-    assert!(client.is_emergency_paused());
-    assert_eq!(upgrade_event_count(&env), 0);
-}
+// Issue #973 supersedes #352: a paused contract must be patchable. The
+// paused-upgrade cases live in `tests/upgrade_wasm_tests.rs`, where they can
+// assert against a real WASM swap and the version storage write.
 
 // ── #453: upgrade storage-footprint tests ───────────────────────────────────
 
@@ -7151,35 +7130,6 @@ fn test_upgrade_unauthorized_does_not_write_version() {
     assert_eq!(
         version_after, version_before,
         "DataKey::Version must not be written by a rejected upgrade"
-    );
-}
-
-/// A paused contract must not have DataKey::Version mutated — confirmed by
-/// reading the raw storage value before and after the rejected call.
-#[test]
-fn test_upgrade_paused_does_not_write_version() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
-        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
-
-    client.emergency_pause(&client_addr, &freelancer_addr);
-
-    let version_before: Option<u32> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Version)
-    });
-
-    let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
-    let result = client.try_upgrade(&admin_addr, &fake_hash);
-    assert_eq!(result, Err(Ok(Error::Paused)));
-
-    let version_after: Option<u32> = env.as_contract(&contract_id, || {
-        env.storage().instance().get(&DataKey::Version)
-    });
-    assert_eq!(
-        version_after, version_before,
-        "DataKey::Version must not be written while the contract is paused"
     );
 }
 
