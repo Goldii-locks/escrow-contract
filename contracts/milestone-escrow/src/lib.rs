@@ -943,6 +943,15 @@ pub struct DeadlineExtendedEvent {
     pub new_deadline: u64,
 }
 
+/// Emitted by `set_milestone_due_dates` with the full index-aligned list after
+/// every deadline has been written successfully (issue #974). A `0` entry
+/// means that milestone's deadline was cleared.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneDueDatesSetEvent {
+    pub due_dates: Vec<u64>,
+}
+
 /// Emitted once per approved milestone by `approve_partial`,
 /// `approve_milestone` and `approve_milestones`.
 ///
@@ -4973,6 +4982,14 @@ impl MilestoneEscrow {
                     .extend_ttl(&baseline_key, TTL_THRESHOLD, TTL_EXTEND_TO);
             }
         }
+        // Publish only after all writes succeeded, so a rejected call never
+        // announces deadlines that were not stored (#974).
+        env.events().publish(
+            (symbol_short!("duedates"), client.clone()),
+            MilestoneDueDatesSetEvent {
+                due_dates: due_dates.clone(),
+            },
+        );
         Ok(())
     }
 
