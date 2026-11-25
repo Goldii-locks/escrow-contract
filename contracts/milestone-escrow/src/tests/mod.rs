@@ -19,6 +19,7 @@ pub(crate) fn decision_hash(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0xD1; 32])
 }
 
+mod acceptance_getter_tests;
 mod admin_accrue_yield_footprint_tests;
 mod admin_accrue_yield_tests;
 mod admin_override_cancel_tests;

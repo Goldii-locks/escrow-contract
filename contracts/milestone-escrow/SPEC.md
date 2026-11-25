@@ -351,4 +351,7 @@ These neither change state nor publish events: `get_job`, `get_reputation`,
 `get_platform_fee_allocation`, `is_multisig_approved`,
 `get_pending_admin_transfer`, `is_escrow_interest_yield_locked`,
 `get_escrow_interest_yield`, `get_yield_info`, `is_multisig_locked`,
-`get_dispute_info`.
+`get_dispute_info`, `get_acceptance`, `get_acceptance_deadline`,
+`get_dispute_timeout` (#971). `get_acceptance` returns
+`(freelancer, arbiter)`; `get_acceptance_deadline` is `None` until funding
+writes `FundedAt`.

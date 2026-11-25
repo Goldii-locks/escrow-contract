@@ -9386,6 +9386,41 @@ impl MilestoneEscrow {
         Self::assemble_job(&env, &meta)
     }
 
+    /// Acceptance state as `(freelancer, arbiter)` (issue #971).
+    ///
+    /// Both flags default to `false` before the corresponding `accept_job` /
+    /// `accept_arbiter` call. This is a pure read: no write, TTL extension or
+    /// event.
+    pub fn get_acceptance(env: Env) -> (bool, bool) {
+        let mask = Self::load_acceptance(&env);
+        (mask & 1 != 0, mask & 2 != 0)
+    }
+
+    /// Ledger timestamp at which `withdraw_unaccepted` becomes available, or
+    /// `None` while the escrow has not been funded (issue #971).
+    ///
+    /// Mirrors the deadline used by `withdraw_unaccepted`: `FundedAt` plus
+    /// `ACCEPTANCE_WINDOW_SECONDS`. Returns `None` on overflow as well as when
+    /// `FundedAt` is absent, so an unreadable deadline is never reported as a
+    /// past one. This is a pure read.
+    pub fn get_acceptance_deadline(env: Env) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get::<_, u64>(&DataKey::FundedAt)?
+            .checked_add(ACCEPTANCE_WINDOW_SECONDS)
+    }
+
+    /// Configured dispute-escalation timeout in seconds (issue #971).
+    ///
+    /// Falls back to `DISPUTE_TIMEOUT_SECONDS` when no override was stored at
+    /// initialization. This is a pure read.
+    pub fn get_dispute_timeout(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DisputeTimeout)
+            .unwrap_or(DISPUTE_TIMEOUT_SECONDS)
+    }
+
     /// Return one milestone without assembling the rest of the job (issue
     /// #733): reads the job metadata and exactly one milestone entry,
     /// whatever the milestone count.
