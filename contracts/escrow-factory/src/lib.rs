@@ -1,17 +1,39 @@
+//! Factory contract for deploying `milestone-escrow` instances.
+//!
+//! Deploys one isolated milestone escrow per job deterministically from a
+//! client-bound salt (`sha256(client.to_xdr() || salt)`), initializing every
+//! deployed escrow with the factory's stored platform `admin` as its admin and
+//! restricting escrows to an admin-curated token allowlist.
+
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, BytesN,
     ContractExecutable, Env, Vec,
 };
 
+/// Errors returned by [`EscrowFactory`] entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
+    /// Factory storage has not been initialized yet; returned by `allow_token`,
+    /// `disallow_token`, `set_wasm_hash`, `create_escrow`, `get_admin`,
+    /// `get_wasm_hash`, and `get_allowed_tokens`.
     NotInitialized = 1,
+    /// Legacy initialization guard code retained for ABI compatibility; the
+    /// factory initializes once at deployment via `__constructor`.
     AlreadyInitialized = 2,
+    /// Caller does not match the stored factory `admin`; returned by
+    /// `allow_token`, `disallow_token`, and `set_wasm_hash`.
     Unauthorized = 3,
+    /// The requested settlement token is not on the factory's allowlist;
+    /// returned by `create_escrow`.
     TokenNotAllowed = 4,
+    /// `milestone_amounts` is empty or its sum overflows `i128`; returned by
+    /// `create_escrow`.
     InvalidAmount = 5,
+    /// `settings.dispute_timeout_seconds` is outside
+    /// [`MIN_DISPUTE_TIMEOUT_SECONDS`]..=[`MAX_DISPUTE_TIMEOUT_SECONDS`];
+    /// returned by `create_escrow`.
     InvalidDisputeTimeout = 6,
 }
 
@@ -31,7 +53,9 @@ enum DataKey {
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FundingMode {
+    /// Client deposits the full sum of all milestones up front via `fund`.
     Upfront,
+    /// Client deposits each milestone individually via `fund_milestone`.
     PerMilestone,
 }
 
@@ -40,8 +64,11 @@ pub enum FundingMode {
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct EscrowSettings {
+    /// Whether milestones are funded up front or one milestone at a time.
     pub funding_mode: FundingMode,
+    /// Minimum duration (in seconds) a dispute must remain open before escalation.
     pub dispute_timeout_seconds: u64,
+    /// Arbiter's share of disputed payouts, in basis points (`0..=1000`).
     pub arbiter_fee_bps: u32,
 }
 
@@ -53,17 +80,23 @@ pub struct EscrowSettings {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowCreatedEvent {
+    /// Address of the newly deployed `milestone-escrow` contract instance.
     pub escrow: Address,
+    /// Settlement token contract address configured for the deployed escrow.
     pub token: Address,
     /// Sum of all milestone amounts, in the token's smallest unit.
     pub total_amount: i128,
+    /// Number of milestones configured for the job.
     pub milestone_count: u32,
+    /// Seconds after delivery before the freelancer can claim auto-release.
     pub auto_release_seconds: u64,
+    /// Funding mode, dispute timeout, and arbiter fee passed to the escrow constructor.
     pub settings: EscrowSettings,
     /// Escrow WASM hash the factory held when it deployed this escrow.
     pub wasm_hash: BytesN<32>,
 }
 
+/// Factory contract that creates and tracks allowlisted `milestone-escrow` jobs.
 #[contract]
 pub struct EscrowFactory;
 
@@ -234,6 +267,10 @@ impl EscrowFactory {
         env.crypto().sha256(&preimage).to_bytes()
     }
 
+    /// Return the stored platform admin address.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`] – if called before the constructor has run.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
@@ -241,6 +278,10 @@ impl EscrowFactory {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Return the `milestone-escrow` WASM hash used for new deployments.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`] – if called before the constructor has run.
     pub fn get_wasm_hash(env: Env) -> Result<BytesN<32>, Error> {
         env.storage()
             .instance()
@@ -248,6 +289,10 @@ impl EscrowFactory {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Return the list of token contract addresses allowed by this factory.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`] – if called before the constructor has run.
     pub fn get_allowed_tokens(env: Env) -> Result<Vec<Address>, Error> {
         Self::load_tokens(&env)
     }
