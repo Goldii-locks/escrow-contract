@@ -60,10 +60,12 @@ struct Cost {
 /// keys were retired (#1001).
 /// `submit_evidence` raised to 215k instructions / 600 write bytes once it
 /// runs the schema guard and `DisputeInfo` carries `raised_by` (#997).
+/// `mark_delivered` gained one ledger write when the review window began
+/// recording its pause baseline (#972).
 const BUDGETS: [(&str, i64, u32, u32); 8] = [
     ("initialize", 245_000, 7, 1_910),
     ("fund", 362_000, 4, 1_530),
-    ("mark_delivered", 234_000, 2, 650),
+    ("mark_delivered", 234_000, 3, 650),
     ("approve_milestone", 490_000, 6, 1_440),
     ("claim_auto_release", 517_000, 6, 1_315),
     ("raise_dispute", 316_000, 4, 950),
