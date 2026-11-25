@@ -24,6 +24,14 @@ done
 FUNDING_MODE="${FUNDING_MODE:-Upfront}"                    # Upfront or PerMilestone
 DISPUTE_TIMEOUT_SECONDS="${DISPUTE_TIMEOUT_SECONDS:-2592000}" # 30 days
 ARBITER_FEE_BPS="${ARBITER_FEE_BPS:-0}"                     # 0-1000
+command -v python3 >/dev/null 2>&1 || {
+  echo "ERROR: python3 is required to validate deploy inputs" >&2
+  exit 1
+}
+export ADMIN_ADDRESS CLIENT_ADDRESS FREELANCER_ADDRESS ARBITER_ADDRESS TOKEN_ADDRESS
+export AUTO_RELEASE_SECONDS MILESTONE_AMOUNTS MILESTONE_SPEC_HASHES
+export FUNDING_MODE DISPUTE_TIMEOUT_SECONDS ARBITER_FEE_BPS
+python3 "$(dirname "${BASH_SOURCE[0]}")/validate-deploy-env.py" escrow
 SETTINGS="{\"funding_mode\":\"${FUNDING_MODE}\",\"dispute_timeout_seconds\":${DISPUTE_TIMEOUT_SECONDS},\"arbiter_fee_bps\":${ARBITER_FEE_BPS}}"
 
 NETWORK=testnet

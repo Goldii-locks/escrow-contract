@@ -31,6 +31,12 @@ FACTORY_WASM="$ROOT_DIR/target/wasm32v1-none/release/escrow_factory.wasm"
 DEPLOYMENTS="$ROOT_DIR/deployments/testnet-factory.json"
 # Testnet and mainnet reject contract code above contract_max_size_bytes.
 MAX_WASM_BYTES="${MAX_WASM_BYTES:-131072}"
+command -v python3 >/dev/null 2>&1 || {
+  echo "ERROR: python3 is required to validate deploy inputs" >&2
+  exit 1
+}
+export ADMIN_ADDRESS ALLOWED_TOKENS MAX_WASM_BYTES
+python3 "$(dirname "${BASH_SOURCE[0]}")/validate-deploy-env.py" factory
 
 printf 'Building reproducible escrow WASM with the pinned Docker toolchain...\n'
 scripts/build-reproducible.sh
