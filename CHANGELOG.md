@@ -14,6 +14,9 @@ hash for every commit in the `reproducible-wasm` job summary.
 
 ### Fixed
 
+- `get_escrow_state` and `MilestoneTiming` extended with essential UI rendering fields (#970):
+  - `EscrowState`: added `acceptance` (mask), `funding_mode`, `funded_at`, `total_owed`, `arbiter_fee_bps`, `dispute_timeout`, and `schema_version`.
+  - `MilestoneTiming`: added `due_at`, `revision_count`, and `has_dispute`.
 - `raise_dispute` now performs zero-address check, `require_auth`, and
   identity validation **before** writing the re-entrancy lock (#566), matching
   the authorization pattern used by `fund`, `approve_milestone`, and

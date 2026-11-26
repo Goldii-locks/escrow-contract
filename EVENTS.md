@@ -38,6 +38,7 @@ freelancer when the client acts and the client otherwise:
 | `cxlappr`  | `caller`, counterparty                |
 | `cancelrev`| `caller`, counterparty                |
 | `arbchg`   | `new_arbiter`                         |
+| `credit`   | `recipient`                           |
 
 ## Events
 
@@ -50,6 +51,7 @@ freelancer when the client acts and the client otherwise:
 | `unaccref` | `UnacceptedWithdrawnEvent`       | state change      |
 | `overdue`  | `OverdueReclaimedEvent`          | state change      |
 | `withdraw` | `WithdrawnEvent`                 | state change      |
+| `credit`   | `CreditedEvent`                  | state change      |
 | `freerot`  | `FreelancerRotatedEvent`         | state change      |
 | `arbchg`   | `ArbiterReplacedEvent`           | state change      |
 | `rolechg`  | `AdminRoleChangedEvent`          | state change      |

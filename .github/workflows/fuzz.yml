@@ -1,0 +1,34 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run weekly on Sunday at 02:00 UTC
+    - cron: "0 2 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run state machine fuzzer for 10 minutes
+        run: cargo +nightly fuzz run state_machine -- -max_total_time=600
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: fuzz-crashes
+          path: fuzz/artifacts/state_machine/

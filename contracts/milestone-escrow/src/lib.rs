@@ -471,6 +471,9 @@ pub struct EscrowCancelState {
 pub struct MilestoneTiming {
     pub extension_seconds: u32,
     pub deadline: Option<u64>,
+    pub due_at: u64,
+    pub revision_count: u32,
+    pub has_dispute: bool,
 }
 
 /// Everything a UI needs to render an escrow, in one read (`get_escrow_state`).
@@ -488,6 +491,13 @@ pub struct EscrowState {
     pub fee_allocation: PlatformFeeAllocation,
     /// Code version of the WASM serving this read (`CONTRACT_VERSION`).
     pub version: String,
+    pub acceptance: u32,
+    pub funding_mode: FundingMode,
+    pub funded_at: Option<u64>,
+    pub total_owed: i128,
+    pub arbiter_fee_bps: u32,
+    pub dispute_timeout: u64,
+    pub schema_version: u32,
 }
 
 #[contracttype]
@@ -1229,6 +1239,15 @@ pub struct WithdrawnEvent {
     pub recipient: Address,
     pub token: Address,
     pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreditedEvent {
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub total_owed_to_recipient: i128,
 }
 
 #[contracttype]
@@ -2424,6 +2443,16 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::TotalOwed, &total_owed);
+        let meta = Self::load_job_meta(env)?;
+        env.events().publish(
+            (symbol_short!("credit"), to.clone()),
+            CreditedEvent {
+                recipient: to.clone(),
+                token: meta.token,
+                amount: *amount,
+                total_owed_to_recipient: owed,
+            },
+        );
         Ok(())
     }
 
@@ -5718,6 +5747,19 @@ impl MilestoneEscrow {
         );
 
         Ok(())
+    }
+
+    /// Return the amount currently credited and awaiting withdrawal for `address`.
+    pub fn get_owed(env: Env, address: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Owed(address))
+            .unwrap_or(0)
+    }
+
+    /// Return the sum of all credited amounts currently awaiting withdrawal across all recipients.
+    pub fn get_total_owed(env: Env) -> i128 {
+        Self::load_total_owed(&env)
     }
 
     /// Approve several delivered milestones in one transaction (#741).
@@ -9305,14 +9347,38 @@ impl MilestoneEscrow {
             } else {
                 None
             };
+            let due_at = Self::load_due_at(&env, index);
+            let revision_count = env
+                .storage()
+                .persistent()
+                .get(&DataKey::RevCnt(index))
+                .unwrap_or(0);
+            let has_dispute = env
+                .storage()
+                .persistent()
+                .has(&DataKey::DisputeInfo(index));
             milestone_timing.push_back(MilestoneTiming {
                 extension_seconds,
                 deadline,
+                due_at,
+                revision_count,
+                has_dispute,
             });
         }
 
         let fee_allocation: Option<PlatformFeeAllocation> =
             Self::cold_get(&env, &DataKey::PlatformFeeAllocation);
+        let acceptance = Self::load_acceptance(&env);
+        let funding_mode = instance
+            .get(&DataKey::FundingMode)
+            .unwrap_or(FundingMode::Upfront);
+        let funded_at = instance.get(&DataKey::FundedAt);
+        let total_owed = Self::load_total_owed(&env);
+        let arbiter_fee_bps = instance.get(&DataKey::ArbiterFeeBps).unwrap_or(0);
+        let dispute_timeout = instance
+            .get(&DataKey::DisputeTimeout)
+            .unwrap_or(DISPUTE_TIMEOUT_SECONDS);
+        let schema_version = Self::read_schema_version(&env);
         Ok(EscrowState {
             job,
             admin,
@@ -9327,6 +9393,13 @@ impl MilestoneEscrow {
                 locked: false,
             }),
             version: String::from_str(&env, CONTRACT_VERSION),
+            acceptance,
+            funding_mode,
+            funded_at,
+            total_owed,
+            arbiter_fee_bps,
+            dispute_timeout,
+            schema_version,
         })
     }
 

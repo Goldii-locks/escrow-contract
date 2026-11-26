@@ -96,6 +96,52 @@ fn test_approve_succeeds_without_trustline_and_withdraw_waits_for_it() {
 }
 
 #[test]
+fn test_approval_credited_emits_credit_event_and_updates_get_owed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, token_admin, _token_client, client, _contract_id) =
+        setup_revocable_escrow(&env);
+
+    client.mark_delivered(&freelancer_addr, &0u32);
+
+    // Deauthorize recipient so transfer fails and triggers credit
+    token_admin.set_authorized(&freelancer_addr, &false);
+
+    assert_eq!(client.get_owed(&freelancer_addr), 0);
+    assert_eq!(client.get_total_owed(), 0);
+
+    // Approval emits both approve and credit
+    client.approve_milestone(&client_addr, &0u32);
+
+    assert_eq!(client.get_owed(&freelancer_addr), 1_000);
+    assert_eq!(client.get_total_owed(), 1_000);
+
+    // Check emitted events contain credit
+    let events = env.events().all();
+    let mut found_credit = false;
+    for event in events.iter() {
+        if event.1.len() >= 2 {
+            if let Ok(sym) = event.1.get(0).unwrap().try_into_val(&env) {
+                if sym == symbol_short!("credit") {
+                    let recipient: Address = event.1.get(1).unwrap().try_into_val(&env).unwrap();
+                    assert_eq!(recipient, freelancer_addr);
+                    found_credit = true;
+                }
+            }
+        }
+    }
+    assert!(found_credit, "expected credit event to be emitted");
+
+    // Re-authorize and withdraw
+    token_admin.set_authorized(&freelancer_addr, &true);
+    client.withdraw(&freelancer_addr);
+
+    assert_eq!(client.get_owed(&freelancer_addr), 0);
+    assert_eq!(client.get_total_owed(), 0);
+}
+
+#[test]
 fn test_refund_without_trustline_is_credited_to_client() {
     let env = Env::default();
     env.mock_all_auths();
