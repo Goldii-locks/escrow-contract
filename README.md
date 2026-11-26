@@ -416,6 +416,23 @@ token is a no-op. Existing escrows keep their own token and are unaffected.
 The allow-list holds at most `MAX_ALLOWED_TOKENS` (50) tokens, the same cap as
 the escrow's whitelist: allowing a 51st token fails with `TooManyTokens`
 (error 7), while re-allowing a token already on the list still succeeds.
+constructor arguments. `FundingMode` and `EscrowSettings` live in the shared
+`contracts/escrow-types` crate and are re-exported by both contracts, so the
+factory cannot drift from the escrow constructor ABI. The admin allows tokens
+with `allow_token`, removes them again with `disallow_token`, and can point the
+factory at a new escrow
+build with `propose_wasm_hash(admin, hash, wasm)`, which uploads and verifies
+the bytecode and waits `WASM_HASH_DELAY` (7 days) before `create_escrow` uses
+it. `cancel_wasm_hash_proposal` withdraws a pending change and
+`get_pending_wasm_hash` exposes it. Token allow/deny changes emit `tokallow`
+(the token is in the `TokenAllowedEvent` data, not a topic) and `disallowd`
+(the token is the second topic); removing an absent token is a no-op. Existing
+escrows keep their own token and are unaffected.
+
+For incident response, `pause` blocks new `create_escrow` calls with
+`Error::Paused`; `unpause` re-enables them and `is_paused` reports the current
+flag. Only the admin can toggle the switch, and existing escrows keep running.
+Changes emit `paused` and `unpaused` events.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the

@@ -18,6 +18,9 @@ use soroban_sdk::{
 
 pub mod math;
 
+// Shared with the factory so both contracts compile against one ABI definition.
+pub use escrow_types::{EscrowSettings, FundingMode};
+
 /// Code version embedded in the WASM and returned by `version()`.
 ///
 /// This is a compile-time constant taken from Cargo.toml. It must not be
@@ -490,32 +493,6 @@ pub struct EscrowState {
     pub fee_allocation: PlatformFeeAllocation,
     /// Code version of the WASM serving this read (`CONTRACT_VERSION`).
     pub version: String,
-}
-
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FundingMode {
-    Upfront,
-    PerMilestone,
-}
-
-/// Per-escrow settings fixed at deployment by `__constructor` (issue #665).
-///
-/// They used to be set by separate `initialize_with_*` entry points, which a
-/// constructor-deployed contract can no longer call: the constructor has
-/// already initialised it.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct EscrowSettings {
-    /// `Upfront` funds the whole job at once; `PerMilestone` funds each
-    /// milestone separately (issue #766).
-    pub funding_mode: FundingMode,
-    /// Seconds after which a dispute may be escalated (issue #784). Must be
-    /// non-zero; `DISPUTE_TIMEOUT_SECONDS` is the usual value.
-    pub dispute_timeout_seconds: u64,
-    /// Arbiter fee on dispute resolution, in basis points, at most
-    /// `MAX_ARBITER_FEE_BPS` (issue #738). 0 means no fee.
-    pub arbiter_fee_bps: u32,
 }
 
 #[contracttype]
