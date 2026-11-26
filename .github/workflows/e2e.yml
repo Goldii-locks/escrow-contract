@@ -27,6 +27,7 @@ jobs:
         with:
           # A SHA ref carries no version, so name the release to download.
           version: "30.0.1"
+        uses: stellar/stellar-cli@c0f4d0da891bbf214c08b8c5035ae6db80e9a3bd # v28.1.0
 
       - name: Cache cargo
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
