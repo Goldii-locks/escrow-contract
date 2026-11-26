@@ -19,7 +19,7 @@ freelancer when the client acts and the client otherwise:
 | `fund`     | `client`, `freelancer`, `arbiter`     |
 | `deliver`  | `freelancer`                          |
 | `claim`    | `freelancer`                          |
-| `approve`  | `client`                              |
+| `approve`  | `client`, `freelancer`                |
 | `dispute`  | `caller`                              |
 | `freerot`  | `new_freelancer`                      |
 | `acceptjob`| `freelancer`, `client`                |
@@ -209,3 +209,4 @@ added. Consumers that decoded `client`, `freelancer` or `arbiter` from the data
 must read them from the topics instead. `wasm_hash` lets an indexer tell which
 escrow build an address runs without calling the factory, which matters because
 `set_wasm_hash` changes the hash for later escrows.
+

@@ -4269,6 +4269,7 @@ impl MilestoneEscrow {
         freelancer: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
 
         let mut meta = Self::load_job_meta(&env)?;
@@ -4371,6 +4372,7 @@ impl MilestoneEscrow {
         milestone_index: u32,
         new_amount: i128,
     ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
 
         let mut meta = Self::load_job_meta(&env)?;
@@ -4686,6 +4688,7 @@ impl MilestoneEscrow {
     /// * `InvalidParties` – `new_freelancer` collides with the client, the
     ///   arbiter or the admin.
     pub fn rotate_freelancer(env: Env, new_freelancer: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         let mut meta = Self::require_client_and_freelancer_consent(&env)?;
         Self::validate_address(&env, &new_freelancer)?;
         if new_freelancer == meta.freelancer || new_freelancer == env.current_contract_address() {
@@ -5262,7 +5265,11 @@ impl MilestoneEscrow {
         caller: Address,
         milestone_index: u32,
     ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
+        // Permissionless, but the supplied caller must sign so the claim
+        // event cannot attribute the release to a non-signer (#938).
+        caller.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
         Self::release_overdue_milestone(&env, &meta, caller, milestone_index)
@@ -5507,7 +5514,7 @@ impl MilestoneEscrow {
             .checked_sub(updated_milestone.released_amount)
             .ok_or(Error::InvalidAmount)?;
         env.events().publish(
-            (symbol_short!("approve"), meta.client.clone()),
+            (symbol_short!("approve"), meta.client.clone(), meta.freelancer.clone()),
             ApprovedEvent {
                 milestone_index,
                 amount,
@@ -5593,7 +5600,7 @@ impl MilestoneEscrow {
             .ok_or(Error::InvalidAmount)?;
 
         env.events().publish(
-            (symbol_short!("approve"), meta.client.clone()),
+            (symbol_short!("approve"), meta.client.clone(), meta.freelancer.clone()),
             ApprovedEvent {
                 milestone_index,
                 amount: remaining,
@@ -5755,6 +5762,7 @@ impl MilestoneEscrow {
     /// * `InvalidAmount`    – A listed milestone's remaining balance is not
     ///                        positive, or the sum overflows.
     pub fn approve_milestones(env: Env, client: Address, indices: Vec<u32>) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
         Self::validate_address(&env, &client)?;
 
@@ -5812,6 +5820,7 @@ impl MilestoneEscrow {
             milestone.released_amount = milestone.amount;
             milestone.status = MilestoneStatus::Released;
             Self::store_milestone(&env, milestone_index, &milestone);
+            Self::clear_time_ext(&env, milestone_index);
             Self::increment_reputation(&env, &meta.client, milestone_index);
             Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
@@ -5824,7 +5833,7 @@ impl MilestoneEscrow {
             indices.iter().zip(milestones.iter().zip(released.iter()))
         {
             env.events().publish(
-                (symbol_short!("approve"), meta.client.clone()),
+                (symbol_short!("approve"), meta.client.clone(), meta.freelancer.clone()),
                 ApprovedEvent {
                     milestone_index,
                     amount,
