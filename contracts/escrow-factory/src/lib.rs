@@ -24,7 +24,15 @@ pub enum Error {
     InvalidToken = 1007,
     /// `escrow_at` was called with an index outside `0..escrow_count()` (#934).
     EscrowNotFound = 1008,
+    /// `allow_token` would grow the allow-list past `MAX_ALLOWED_TOKENS` (#1085).
+    TooManyTokens = 1009,
 }
+
+/// Maximum number of tokens on the factory's allow-list (#1085), matching the
+/// escrow's own `MAX_WHITELIST_SIZE`. The list lives in instance storage,
+/// which is loaded on every call and has a ledger-entry size limit, so it must
+/// stay bounded. A larger list would need one persistent key per token.
+pub const MAX_ALLOWED_TOKENS: u32 = 50;
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
 pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
@@ -122,6 +130,9 @@ impl EscrowFactory {
     /// fails here with `InvalidToken` instead of when the first escrow funded
     /// with it breaks. The check runs only on this admin path, never in
     /// `create_escrow`, where it would tax every deployment.
+    ///
+    /// Re-allowing a listed token is a no-op. Adding a new token when the
+    /// list already holds `MAX_ALLOWED_TOKENS` fails with `TooManyTokens`.
     pub fn allow_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
         if soroban_sdk::token::Client::new(&env, &token)
@@ -132,6 +143,9 @@ impl EscrowFactory {
         }
         let mut tokens = Self::load_tokens(&env)?;
         if !tokens.contains(&token) {
+            if tokens.len() >= MAX_ALLOWED_TOKENS {
+                return Err(Error::TooManyTokens);
+            }
             tokens.push_back(token.clone());
             env.storage()
                 .instance()
@@ -390,3 +404,6 @@ impl EscrowFactory {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod event_docs_sync;

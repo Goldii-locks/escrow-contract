@@ -164,13 +164,25 @@ emits `migrate` with `from_version` 3 and `to_version` 4 when it stamps them.
 
 ## Escrow factory events
 
-The `escrow-factory` contract (`contracts/escrow-factory`) emits a single
-event. It is documented separately because it comes from a different contract
-than the topics above and is not covered by `event_docs_sync_tests`.
+The `escrow-factory` contract (`contracts/escrow-factory`) emits the events
+below from the **factory's** contract address, not from any escrow's. Subscribe
+to the factory address to discover new escrows through `created`. This section
+is kept in sync with `contracts/escrow-factory/src/lib.rs` by the factory's
+`event_docs_sync` tests (#1086), just as `event_docs_sync_tests` does for the
+escrow.
 
-| Topic     | Event struct         | Kind         |
-| --------- | -------------------- | ------------ |
-| `created` | `EscrowCreatedEvent` | state change |
+| Topic       | Event struct         | Kind         |
+| ----------- | -------------------- | ------------ |
+| `created`   | `EscrowCreatedEvent` | state change |
+| `allowed`   | none (data is `()`)  | state change |
+| `disallowd` | none (data is `()`)  | state change |
+
+`allowed` and `disallowd` are emitted by `allow_token` and `disallow_token`.
+Their topics are the event name followed by the token address. `allowed` fires
+only when a token is newly added, while `disallowd` fires on every call, even
+when the token was not listed.
+
+### `created`
 
 Emitted by `create_escrow` after the escrow has been deployed and its
 constructor has run.

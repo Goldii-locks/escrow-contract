@@ -413,6 +413,9 @@ or a mistyped contract id fails with `InvalidToken` at the point of the
 mistake (#1084). Token allow/deny changes emit `allowed` and
 `disallowd` events (the token address is the second topic); removing an absent
 token is a no-op. Existing escrows keep their own token and are unaffected.
+The allow-list holds at most `MAX_ALLOWED_TOKENS` (50) tokens, the same cap as
+the escrow's whitelist: allowing a 51st token fails with `TooManyTokens`
+(error 7), while re-allowing a token already on the list still succeeds.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
