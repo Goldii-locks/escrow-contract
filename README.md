@@ -52,7 +52,7 @@ The constructor's `settings.arbiter_fee_bps` sets an arbiter fee (basis points, 
 
 ## Contract Functions
 
-The contract exposes **94 public functions** grouped by category below.
+The contract exposes **112 public functions** (including `__constructor`) grouped by category below.
 
 ### Core Escrow (Initialization & Funding)
 
@@ -81,6 +81,10 @@ The contract exposes **94 public functions** grouped by category below.
 | Function | Caller | Description |
 |---|---|---|
 | `mark_delivered` | Freelancer | Mark a milestone as delivered |
+| `mark_delivered_with_hash` | Freelancer | Mark delivered and record a 32-byte deliverable hash |
+| `set_milestone_due_dates` | Client | Set per-milestone delivery deadlines before funding/acceptance |
+| `get_milestone_due_at` | Anyone | Read a milestone delivery deadline (0 = none) |
+| `reclaim_overdue` | Client | Refund a Pending milestone after its deadline + 1-day grace |
 | `request_revision` | Client | Return a delivered milestone to Pending (max 3 revisions) |
 | `get_revision_count` | Anyone | Get revision count for a milestone |
 | `extend_milestone_deadline` | Client | Extend auto-release deadline for a delivered milestone |
@@ -91,6 +95,7 @@ The contract exposes **94 public functions** grouped by category below.
 | `approve_milestone` | Client | Release funds for a delivered milestone |
 | `approve_milestones` | Client | Approve up to 10 milestones in one call |
 | `withdraw` | Freelancer/Client | Withdraw released funds or refunds |
+| `withdraw_to` | Freelancer/Client | Withdraw the caller's owed balance to another address |
 
 ### Disputes & Arbitration
 
@@ -112,6 +117,7 @@ The contract exposes **94 public functions** grouped by category below.
 | `revoke_cancel_approval` | Client or Freelancer | Revoke cancellation approval |
 | `admin_override_cancel_release` | Admin | Admin override: release to freelancer |
 | `admin_override_cancel_refund` | Admin | Admin override: refund to client |
+| `cancel_escrow_claim_refund` | Admin | Compute the cancellation split refund once `CancelLock` is set |
 
 ### Emergency Pause
 
@@ -151,6 +157,8 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `execute_admin_transfer` | Multisig | Execute proposed admin transfer |
 | `cancel_admin_transfer_proposal` | Admin | Cancel pending admin transfer |
 | `get_pending_admin_transfer` | Anyone | View pending admin transfer |
+| `schema_version` | Anyone | Stored storage-layout version (below `SCHEMA_VERSION` until `migrate`) |
+| `extend_storage` | Anyone (keeper) | Extend instance and persistent-entry TTLs so active state is never archived |
 
 ### Platform Fees
 
@@ -161,6 +169,8 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `pf_alloc_admin_override` | Admin | Admin override for fee allocation |
 | `get_platform_fee_allocation` | Anyone | View current fee allocation |
 | `calculate_platform_fee_split` | Anyone | Calculate fee split for an amount |
+| `propose_treasury_update` | FeeManager | Propose a treasury address change (7-day timelock) |
+| `apply_treasury_update` | FeeManager | Apply a treasury change after its timelock |
 
 ### Payment Streaming
 
@@ -168,6 +178,7 @@ either is set. `emergency_unpause` lets the admin lift both.
 |---|---|---|
 | `payment_streaming_milestones` | Admin | Configure streaming for milestones |
 | `payment_streaming_consent` | Client/Freelancer | Consent to streaming config |
+| `admin_override_streaming_release` | Admin | Settle a disputed milestone by elapsed streaming time |
 
 ### Time Extensions
 
@@ -188,6 +199,10 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `multisig_admin_override_release` | Admin | Override locked multisig: release |
 | `multisig_admin_override_refund` | Admin | Override locked multisig: refund |
 | `multisig_split_refund` | Signers | Split refund via multisig |
+| `propose_multisig_config` | Admin | Propose a new signer set and threshold |
+| `execute_multisig_config` | Anyone | Apply the pending signer set once the current threshold approved it |
+| `cancel_multisig_config_proposal` | Admin | Withdraw the pending signer-set change |
+| `get_pending_multisig_config` | Anyone | View the pending signer-set change |
 
 ### Interest Yield
 
@@ -209,7 +224,7 @@ either is set. `emergency_unpause` lets the admin lift both.
 | Function | Caller | Description |
 |---|---|---|
 | `tax_withholding_deductions` | Client + Freelancer | Record a tax withholding for a milestone (needs a tax recipient when tax > 0) |
-| `set_tax_recipient` | Admin | Set the address that receives withheld tax |
+| `set_tax_recipient` | FeeManager (+ Client & Freelancer once funded) | Set the address that receives withheld tax; rejects the contract, job parties and the acting admin |
 | `get_tax_recipient` | Anyone | Read the tax recipient |
 | `tax_withholding_split_refund` | Admin | Split refund with tax |
 | `admin_override_tax_release` | Admin | Override tax: release |
@@ -225,6 +240,7 @@ either is set. `emergency_unpause` lets the admin lift both.
 | `sweep_excess` | Client or Admin | Recover surplus tokens |
 | `get_milestone_spec_hash` | Anyone | Get spec hash for milestone |
 | `get_reputation` | Anyone | Get address reputation |
+| `get_escrow_state` | Anyone | Whole escrow state (job, admin, pauses, cancel state, deadlines, fees, version) in one read |
 | `compute_ratio_allocation` | Anyone | Compute ratio allocation (largest remainder) |
 
 Events carry party addresses as extra topics for `getEvents` filtering; see
