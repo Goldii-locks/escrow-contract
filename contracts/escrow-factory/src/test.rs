@@ -416,14 +416,14 @@ fn allow_token_rejects_tokens_past_the_cap() {
     let factory = EscrowFactoryClient::new(&env, &fid);
 
     while factory.get_allowed_tokens().len() < crate::MAX_ALLOWED_TOKENS {
-        factory.allow_token(&admin, &Address::generate(&env));
+        factory.allow_token(&admin, &mint_token(&env, &admin, 1));
     }
     assert_eq!(
         factory.get_allowed_tokens().len(),
         crate::MAX_ALLOWED_TOKENS
     );
 
-    let extra = Address::generate(&env);
+    let extra = mint_token(&env, &admin, 1);
     assert_eq!(
         factory.try_allow_token(&admin, &extra),
         Err(Ok(Error::TooManyTokens))
