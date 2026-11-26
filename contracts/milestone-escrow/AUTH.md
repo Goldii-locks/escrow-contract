@@ -30,6 +30,8 @@ are listed at the bottom as **No auth required**.
 | `accept_job` | `freelancer` | `freelancer.require_auth()` |
 | `accept_arbiter` | `arbiter` | `arbiter.require_auth()` |
 | `withdraw_unaccepted` | `client` | `client.require_auth()` |
+| `set_milestone_due_dates` | `client` | `client.require_auth()` |
+| `reclaim_overdue` | `client` | `client.require_auth()` |
 | `mark_delivered` | `freelancer` | `freelancer.require_auth()` |
 | `request_revision` | `client` | `client.require_auth()` |
 | `extend_milestone_deadline` | `client` **and** `freelancer` (both) | `client.require_auth()` + `meta.freelancer.require_auth()` (#670) |
@@ -135,6 +137,7 @@ are listed at the bottom as **No auth required**.
 | `get_dispute_info` | Pure read |
 | `get_escrow_state` | Pure read |
 | `get_milestone` | Pure read |
+| `get_milestone_due_at` | Pure read |
 | `milestone_count` | Pure read |
 | `get_pending_multisig_config` | Pure read |
 | `get_tax_recipient` | Pure read |

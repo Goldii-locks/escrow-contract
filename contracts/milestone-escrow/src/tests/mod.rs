@@ -130,6 +130,7 @@ mod split_is_terminal_tests;
 mod split_refund_net_distribution_precondition_tests;
 mod split_refund_net_distribution_tests;
 mod sweep_excess_tests;
+mod tax_recipient_tests;
 mod tax_settlement_paths_tests;
 mod tax_withholding_split_refund_tests;
 mod tax_withholding_tests;
