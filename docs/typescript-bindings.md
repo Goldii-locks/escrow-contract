@@ -45,13 +45,9 @@ const escrow = new Client({
   signTransaction, // from the connected wallet
 });
 
-// Instead of hand-building the ScVal arguments for `initialize`:
-const tx = await escrow.initialize({
-  admin, client, freelancer, arbiter, token,
-  auto_release_seconds: autoReleaseSeconds,
-  milestone_amounts: milestoneAmounts,
-  milestone_spec_hashes: specHashes,
-});
+// Deployed escrows are initialized via `__constructor` (directly or via the
+// factory's `create_escrow`). Instead of hand-building ScVal arguments for calls:
+const tx = await escrow.fund({ client });
 await tx.signAndSend();
 ```
 

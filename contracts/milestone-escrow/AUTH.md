@@ -16,10 +16,6 @@ are listed at the bottom as **No auth required**.
 | `pub fn` | Required signer(s) | Auth helper |
 |---|---|---|
 | `__constructor` | none: runs once, at deploy, with the deployer's arguments | `initialize_inner` |
-| `initialize` | `admin` | `admin.require_auth()` |
-| `initialize_with_arbiter_fee` | `admin` | `admin.require_auth()` |
-| `initialize_with_dispute_timeout` | `admin` | `admin.require_auth()` |
-| `initialize_with_funding_mode` | `admin` | `admin.require_auth()` |
 | `set_admin_role` | root `admin` | `require_admin_from_instance` |
 | `transfer_admin` | `current_admin` | `current_admin.require_auth()` |
 | `add_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
