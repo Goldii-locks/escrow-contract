@@ -38,6 +38,7 @@ freelancer when the client acts and the client otherwise:
 | `cxlappr`  | `caller`, counterparty                |
 | `cancelrev`| `caller`, counterparty                |
 | `arbchg`   | `new_arbiter`                         |
+| `duedates` | `client`                              |
 
 ## Events
 
@@ -62,6 +63,7 @@ freelancer when the client acts and the client otherwise:
 | `approve`  | `ApprovedEvent`                  | state change      |
 | `claim`    | `ClaimedEvent`                   | state change      |
 | `extend`   | `DeadlineExtendedEvent`          | state change      |
+| `duedates` | `MilestoneDueDatesSetEvent`      | state change      |
 | `dispute`  | `DisputeRaisedEvent`             | state change      |
 | `evidence` | `EvidenceSubmittedEvent`         | state change      |
 | `dispescal`| `DisputeEscalatedEvent`          | state change      |

@@ -25,7 +25,7 @@ Close each applicable P1 issue, merge its fix, and link passing regression tests
 | [x] | Resolve the one-job-per-contract limitation or explicitly approve and document that launch constraint. | Contract lead | [#666](https://github.com/Goldii-locks/escrow-contract/issues/666) (closed): [`contracts/escrow-factory`](contracts/escrow-factory) deploys one escrow per job |
 | [x] | Replace the release-candidate Soroban SDK with a supported stable release and rerun validation. | Release manager | [#703](https://github.com/Goldii-locks/escrow-contract/issues/703) (closed): the workspace pins `soroban-sdk = "28.0.0"` in [`Cargo.toml`](Cargo.toml) |
 | [ ] | Ensure pause state blocks every settlement path, including approval, release, refund, and dispute resolution. `admin_pause_escrow` blocks fund, approve, claim and dispute since [#664](https://github.com/Goldii-locks/escrow-contract/issues/664). | Contract lead | [#923](https://github.com/Goldii-locks/escrow-contract/issues/923) (open), [#972](https://github.com/Goldii-locks/escrow-contract/issues/972) (open), [#994](https://github.com/Goldii-locks/escrow-contract/issues/994) (open) |
-| [ ] | Allow `upgrade` while the escrow is paused, so an incident can be paused and then patched. | Contract lead | [#973](https://github.com/Goldii-locks/escrow-contract/issues/973) (open) |
+| [x] | Allow `upgrade` while the escrow is paused, so an incident can be paused and then patched. Pause/cancel lock are no longer upgrade guards; `Upgrader` authorization remains. | Contract lead | [#973](https://github.com/Goldii-locks/escrow-contract/issues/973) (closed) |
 
 ## Audit Scope
 
@@ -91,7 +91,7 @@ Publish the full operational runbook in the organization’s operations document
 
 1. **Pause:** identify the authorized pause signers, pause all affected settlement paths, verify the on-chain state, and document conditions for resuming. The escrow has two independent admin pause switches ([#994](https://github.com/Goldii-locks/escrow-contract/issues/994)); the factory has none ([#932](https://github.com/Goldii-locks/escrow-contract/issues/932)).
 2. **Communicate:** notify affected users and internal responders through approved channels; state impact, current safeguards, and the next update time without exposing secrets.
-3. **Upgrade:** assess and review a fix, obtain required multisig or delayed approvals, deploy the verified artifact, validate behavior on testnet, and record the mainnet transaction and WASM hash. Then call `migrate` if the new code raises `SCHEMA_VERSION`. `upgrade` currently refuses to run while the escrow is paused ([#973](https://github.com/Goldii-locks/escrow-contract/issues/973)).
+3. **Upgrade:** assess and review a fix, obtain required multisig or delayed approvals, deploy the verified artifact, validate behavior on testnet, and record the mainnet transaction and WASM hash. The escrow may still be paused at this point: `upgrade` and `migrate` are intentionally allowed while paused ([#973](https://github.com/Goldii-locks/escrow-contract/issues/973)), so the patch can be applied before resuming settlement.
 
 - [ ] Record responder contacts, escalation thresholds, communication templates, and pause/upgrade authority. Owner: Operations lead. Reference: [incident runbook](#incident-runbook).
 - [ ] Rehearse pause, communication, and upgrade procedures and record results. Owner: Operations lead. Reference: [incident runbook](#incident-runbook).
