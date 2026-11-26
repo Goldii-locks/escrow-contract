@@ -13,7 +13,15 @@ pub enum Error {
     TokenNotAllowed = 4,
     InvalidAmount = 5,
     InvalidDisputeTimeout = 6,
+    /// `allow_token` would grow the allow-list past `MAX_ALLOWED_TOKENS`.
+    TooManyTokens = 7,
 }
+
+/// Maximum number of tokens on the factory's allow-list (#1085), matching the
+/// escrow's own `MAX_WHITELIST_SIZE`. The list lives in instance storage,
+/// which is loaded on every call and has a ledger-entry size limit, so it must
+/// stay bounded. A larger list would need one persistent key per token.
+pub const MAX_ALLOWED_TOKENS: u32 = 50;
 
 /// Mirrors `milestone_escrow::MIN_DISPUTE_TIMEOUT_SECONDS` (1 day).
 pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
@@ -83,10 +91,16 @@ impl EscrowFactory {
     }
 
     /// Allow a token to be used in escrows created by this factory.
+    ///
+    /// Re-allowing a listed token is a no-op. Adding a new token when the
+    /// list already holds `MAX_ALLOWED_TOKENS` fails with `TooManyTokens`.
     pub fn allow_token(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         Self::require_admin(&env, &admin)?;
         let mut tokens = Self::load_tokens(&env)?;
         if !tokens.contains(&token) {
+            if tokens.len() >= MAX_ALLOWED_TOKENS {
+                return Err(Error::TooManyTokens);
+            }
             tokens.push_back(token.clone());
             env.storage()
                 .instance()
@@ -275,3 +289,6 @@ impl EscrowFactory {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod event_docs_sync;

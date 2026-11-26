@@ -407,3 +407,42 @@ fn create_escrow_needs_only_the_client_signature() {
     let job = escrow::Client::new(&env, &escrow).get_job();
     assert_eq!(job.client, client);
 }
+
+/// #1085: the allow-list is capped at MAX_ALLOWED_TOKENS. setup() already
+/// allowed one token, so fill the list up to the cap, then one more must fail.
+#[test]
+fn allow_token_rejects_tokens_past_the_cap() {
+    let (env, fid, admin, first, _wasm_hash) = setup();
+    let factory = EscrowFactoryClient::new(&env, &fid);
+
+    while factory.get_allowed_tokens().len() < crate::MAX_ALLOWED_TOKENS {
+        factory.allow_token(&admin, &Address::generate(&env));
+    }
+    assert_eq!(
+        factory.get_allowed_tokens().len(),
+        crate::MAX_ALLOWED_TOKENS
+    );
+
+    let extra = Address::generate(&env);
+    assert_eq!(
+        factory.try_allow_token(&admin, &extra),
+        Err(Ok(Error::TooManyTokens))
+    );
+    assert!(!factory.get_allowed_tokens().contains(&extra));
+
+    // Re-adding a token that is already listed still succeeds at the cap.
+    factory.allow_token(&admin, &first);
+    assert_eq!(
+        factory.get_allowed_tokens().len(),
+        crate::MAX_ALLOWED_TOKENS
+    );
+
+    // Freeing a slot makes room for a new token again.
+    factory.disallow_token(&admin, &first);
+    factory.allow_token(&admin, &extra);
+    assert!(factory.get_allowed_tokens().contains(&extra));
+    assert_eq!(
+        factory.get_allowed_tokens().len(),
+        crate::MAX_ALLOWED_TOKENS
+    );
+}
