@@ -51,15 +51,19 @@ fn upgrade_to_v2_wasm_preserves_state_and_runs_new_code() {
     // The new code is running.
     assert!(call_v2_only(&env, &contract_id));
 
-    // Version marker bumped from the implicit 1 to 2.
-    // The checked-in v2 test WASM predates the String `version()` ABI (#735),
-    // so read its u32 return value through the raw host interface.
-    let upgraded_version = env.try_invoke_contract::<u32, soroban_sdk::Error>(
+    // The rebuilt v2 fixture uses the current String `version()` ABI (#735).
+    let upgraded_version = env.try_invoke_contract::<soroban_sdk::String, soroban_sdk::Error>(
         &contract_id,
         &Symbol::new(&env, "version"),
         vec![&env],
     );
-    assert_eq!(upgraded_version, Ok(Ok(2)));
+    assert_eq!(
+        upgraded_version,
+        Ok(Ok(soroban_sdk::String::from_str(
+            &env,
+            crate::CONTRACT_VERSION
+        )))
+    );
     let stored_version: Option<u32> = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::Version)
     });

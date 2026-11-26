@@ -3025,6 +3025,15 @@ impl MilestoneEscrow {
             if Self::is_terminal_status(&milestone.status) {
                 continue;
             }
+            // PerMilestone jobs can have milestones whose tokens have not been
+            // deposited yet. They hold no escrow balance, so counting their
+            // amount as an obligation would make `sweep_excess` return
+            // InsufficientBalance for stray tokens until every milestone is
+            // funded (#943). Upfront jobs have `meta.funded` set, so they are
+            // unaffected.
+            if !Self::milestone_is_funded(meta, &milestone) {
+                continue;
+            }
             let remaining = milestone
                 .amount
                 .checked_sub(milestone.released_amount)

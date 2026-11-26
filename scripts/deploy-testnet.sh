@@ -28,11 +28,13 @@ SETTINGS="{\"funding_mode\":\"${FUNDING_MODE}\",\"dispute_timeout_seconds\":${DI
 
 NETWORK=testnet
 WASM="$ROOT_DIR/dist/milestone_escrow.wasm"
+BUILD_INFO="$ROOT_DIR/dist/build-info.json"
 DEPLOYMENTS="$ROOT_DIR/deployments/testnet.json"
 
 printf 'Building reproducible WASM with the pinned Docker toolchain...\n'
 scripts/build-reproducible.sh
 [[ -s "$WASM" ]] || fail "reproducible build did not produce $WASM"
+[[ -s "$BUILD_INFO" ]] || fail "reproducible build did not produce $BUILD_INFO"
 
 printf 'Uploading WASM to %s...\n' "$NETWORK"
 WASM_HASH="$(stellar contract upload --wasm "$WASM" --source "$SOURCE_ACCOUNT" --network "$NETWORK")"
@@ -54,15 +56,23 @@ CONTRACT_ID="$(stellar contract deploy --wasm-hash "$WASM_HASH" --source "$SOURC
 printf 'Contract ID: %s\n' "$CONTRACT_ID"
 
 DEPLOY_DATE="$(date -u +%Y-%m-%d)"
-python3 - "$DEPLOYMENTS" "$DEPLOY_DATE" "$WASM_HASH" "$CONTRACT_ID" "$ADMIN_ADDRESS" <<'PY'
+python3 - "$DEPLOYMENTS" "$BUILD_INFO" "$DEPLOY_DATE" "$WASM_HASH" "$CONTRACT_ID" "$ADMIN_ADDRESS" <<'PY'
 import json
 import pathlib
 import sys
 
-path = pathlib.Path(sys.argv[1])
-date, wasm_hash, contract_id, admin = sys.argv[2:]
-if path.exists():
-    previous = json.loads(path.read_text(encoding="utf-8"))
+deployments, build_info = (pathlib.Path(p) for p in sys.argv[1:3])
+date, wasm_hash, contract_id, admin = (value.strip() for value in sys.argv[3:])
+build = json.loads(build_info.read_text(encoding="utf-8"))
+for key in ("source_commit", "wasm_sha256", "factory_sha256"):
+    if not build.get(key):
+        raise SystemExit(f"{build_info} is missing {key}; refusing to record an incomplete deployment")
+if build["wasm_sha256"] != wasm_hash:
+    raise SystemExit(
+        f"uploaded wasm hash {wasm_hash} does not match build-info {build['wasm_sha256']}"
+    )
+if deployments.exists():
+    previous = json.loads(deployments.read_text(encoding="utf-8"))
     # Preserve the repository's original single-record format as history.
     records = previous if isinstance(previous, list) else [previous]
 else:
@@ -73,8 +83,11 @@ records.append({
     "wasm_hash": wasm_hash,
     "contract_id": contract_id,
     "admin": admin,
+    "wasm_sha256": build["wasm_sha256"],
+    "source_commit": build["source_commit"],
+    "build": build,
 })
-path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
+deployments.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
 PY
 
 printf 'Deployment recorded in %s\n' "$DEPLOYMENTS"

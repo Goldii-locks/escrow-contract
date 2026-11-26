@@ -139,3 +139,59 @@ fn accrued_yield_is_not_swept() {
 
     assert_eq!(escrow.sweep_excess(&client_addr, &token), 30);
 }
+
+#[test]
+fn unfunded_milestones_do_not_block_sweep() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, _, _, admin_addr, token, escrow) = super::funding_mode_tests::setup_unfunded(
+        &env,
+        vec![&env, 100_i128, 200_i128],
+        FundingMode::PerMilestone,
+    );
+    escrow.fund_milestone(&client_addr, &0u32);
+    mint(&env, &token, &admin_addr, &client_addr, 50);
+    token::Client::new(&env, &token).transfer(&client_addr, &escrow.address, &50);
+
+    // Only milestone 0 holds tokens; milestone 1's 200 is not an obligation
+    // until it is funded (#943).
+    assert_eq!(escrow.sweep_excess(&client_addr, &token), 50);
+    assert_eq!(
+        token::Client::new(&env, &token).balance(&escrow.address),
+        100
+    );
+}
+
+#[test]
+fn unfunded_milestone_released_amount_is_not_an_obligation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, _, _, admin_addr, token, escrow) = super::funding_mode_tests::setup_unfunded(
+        &env,
+        vec![&env, 100_i128, 200_i128],
+        FundingMode::PerMilestone,
+    );
+    escrow.fund_milestone(&client_addr, &0u32);
+    // No public endpoint can release an unfunded milestone. Write a
+    // inconsistent released_amount directly to prove it creates no phantom
+    // obligation (#943).
+    env.as_contract(&escrow.address, || {
+        let mut milestone: Milestone = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Milestone(1u32))
+            .unwrap();
+        milestone.released_amount = 20;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Milestone(1u32), &milestone);
+    });
+    mint(&env, &token, &admin_addr, &client_addr, 50);
+    token::Client::new(&env, &token).transfer(&client_addr, &escrow.address, &50);
+
+    assert_eq!(escrow.sweep_excess(&client_addr, &token), 50);
+    assert_eq!(
+        token::Client::new(&env, &token).balance(&escrow.address),
+        100
+    );
+}
