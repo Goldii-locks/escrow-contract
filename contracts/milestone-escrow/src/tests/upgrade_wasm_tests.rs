@@ -51,15 +51,19 @@ fn upgrade_to_v2_wasm_preserves_state_and_runs_new_code() {
     // The new code is running.
     assert!(call_v2_only(&env, &contract_id));
 
-    // Version marker bumped from the implicit 1 to 2.
-    // The checked-in v2 test WASM predates the String `version()` ABI (#735),
-    // so read its u32 return value through the raw host interface.
-    let upgraded_version = env.try_invoke_contract::<u32, soroban_sdk::Error>(
+    // The rebuilt v2 fixture uses the current String `version()` ABI (#735).
+    let upgraded_version = env.try_invoke_contract::<soroban_sdk::String, soroban_sdk::Error>(
         &contract_id,
         &Symbol::new(&env, "version"),
         vec![&env],
     );
-    assert_eq!(upgraded_version, Ok(Ok(2)));
+    assert_eq!(
+        upgraded_version,
+        Ok(Ok(soroban_sdk::String::from_str(
+            &env,
+            crate::CONTRACT_VERSION
+        )))
+    );
     let stored_version: Option<u32> = env.as_contract(&contract_id, || {
         env.storage().instance().get(&DataKey::Version)
     });
@@ -132,4 +136,60 @@ fn upgrade_with_incompatible_storage_layout_fails_to_decode() {
 
     // The v1 layout still reads fine.
     assert_eq!(client.get_job().milestones.get(0).unwrap().amount, 1_000);
+}
+
+// ── #973: patching a paused escrow ───────────────────────────────────────────
+
+/// The incident flow freezes settlement first and then deploys the fix. A
+/// party emergency pause must no longer prevent the WASM swap or the version
+/// write.
+#[test]
+fn upgrade_while_emergency_paused_succeeds_and_bumps_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client_addr, freelancer_addr, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.emergency_pause(&client_addr, &freelancer_addr);
+    assert!(client.is_emergency_paused());
+
+    let hash = upload_v2(&env);
+    let result = client.try_upgrade(&admin_addr, &hash);
+    assert_eq!(result, Ok(Ok(())));
+
+    // New code is installed, the version was written despite the pause, and
+    // the pause state itself was not cleared.
+    assert!(call_v2_only(&env, &contract_id));
+    let stored_version: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+    assert_eq!(stored_version, Some(2));
+    let party_pause: Option<bool> =
+        env.as_contract(&contract_id, || env.storage().instance().get(&DataKey::Ep));
+    assert_eq!(party_pause, Some(true));
+}
+
+/// The admin pause switch must not block an incident patch either.
+#[test]
+fn upgrade_while_admin_paused_succeeds_and_bumps_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, _, admin_addr, _, contract_id, client) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    client.admin_pause_escrow(&admin_addr);
+
+    let hash = upload_v2(&env);
+    let result = client.try_upgrade(&admin_addr, &hash);
+    assert_eq!(result, Ok(Ok(())));
+
+    assert!(call_v2_only(&env, &contract_id));
+    let stored_version: Option<u32> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Version)
+    });
+    assert_eq!(stored_version, Some(2));
+    let admin_pause: Option<bool> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Paused)
+    });
+    assert_eq!(admin_pause, Some(true));
 }

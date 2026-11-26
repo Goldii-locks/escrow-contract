@@ -105,6 +105,8 @@ stateDiagram-v2
 | Admin pause | `DataKey::Paused` | `admin_pause_escrow`, `emergency_pause_admin_override` (deprecated alias) | `admin_resume_escrow`, `emergency_unpause` | `is_paused` |
 | Cancel approval | `DataKey::CancelApproval` (`CancelApprovalRecord`: `mask` + `approved_at`) | `cancel_escrow` (first party) | `revoke_cancel_approval`, `cancel_escrow` (second party), expiry after `CANCEL_APPROVAL_TTL_SECONDS` | `cancel_escrow`, `revoke_cancel_approval` |
 | Cancel lock | `DataKey::CancelLock` | `cancel_escrow` (second party) | `admin_override_cancel_release`, `admin_override_cancel_refund` | `ensure_not_paused` |
+| Pause clock | `DataKey::PausedAt`, `DataKey::PausedSeconds` | the first active pause (`admin_pause_escrow`, `emergency_pause`, `emergency_pause_admin_override`, `cancel_escrow` lock) | the last pause ending (`admin_resume_escrow`, `emergency_unpause`, `emergency_unpause_parties`, cancel-lock settlement) | deadline calculations |
+| Window baseline | `DataKey::WindowPauseBaseline(i)` | `set_milestone_due_dates`, `mark_delivered`, `raise_dispute` | `request_revision`, a cleared due date | `reclaim_overdue`, review/auto-release, dispute escalation |
 | Multisig lock | `DataKey::MultisigLocked` | `multisig_lock` | `multisig_admin_override_release`, `multisig_admin_override_refund` | the multisig override and split endpoints |
 | Tax record | `DataKey::TaxWithholdingLock(i)` | `tax_withholding_deductions` | `admin_override_tax_release`, `admin_override_tax_refund`, `admin_override_tax_split_refund` | the tax override endpoints |
 | Owed balance | `DataKey::Owed(address)`, `DataKey::TotalOwed` | any payout whose transfer fails | `withdraw`, `withdraw_to` | `withdraw`, `withdraw_to`, settlement balance caps |
@@ -115,6 +117,35 @@ true while either is set. `assert_not_paused` rejects with `Paused` while
 `is_paused` holds; `ensure_not_paused` does the same and also rejects with
 `EscrowLocked` while `CancelLock` is set. The emergency refund endpoints
 require `is_paused` instead (`NotPaused` otherwise).
+
+### Paused time does not consume response windows (#972)
+
+Because the guards above prevent the parties from acting, wall-clock time
+spent paused cannot count against them. `PausedAt` records when the first
+blocking state opens; `PausedSeconds` banks each completed interval when the
+last one closes. Overlapping admin, party and cancel-lock pauses share a
+single interval, so the same seconds are never counted twice. On migration an
+already-paused escrow anchors `PausedAt` at the migration ledger, since its
+original pause time is unknowable.
+
+Each time-limited window snapshots the cumulative pause clock when it opens
+in `WindowPauseBaseline(i)`:
+
+- the overdue window starts when the milestone's due date is set;
+- the client review / auto-release window starts at `mark_delivered`;
+- the dispute escalation window starts at `raise_dispute`.
+
+A deadline is then `window_start + configured_seconds + (current_paused_seconds -
+window_baseline)`. Pauses that ended before the window opened are excluded,
+and a pause still in progress contributes the seconds elapsed so far. The same
+adjustment is used by `reclaim_overdue`, `claim_auto_release` /
+`trigger_auto_release`, `request_revision`, `raise_dispute`,
+`escalate_dispute`, and `time_until_auto_release`. The admin cancel overrides
+deliberately keep the nominal dispute timeout: their own cancel lock would
+otherwise freeze the clock and deadlock the only endpoint that can settle a
+locked dispute. A request revision clears the baseline; the next delivery (or
+dispute) captures a fresh one. An incident pause therefore never decides which
+party gets paid.
 
 ## Payouts
 
@@ -249,7 +280,7 @@ overwritten, so the original approver must opt in again. `cxlappr` carries
 | `unlock_escrow_interest_yield` | admin | yield state locked | unlocks yield state | `yldunlock` |
 | `admin_set_yield_rate` | admin | `assert_not_paused`; not emergency paused; `rate_bps <= 10_000` | stores yield rate | `yldrate` |
 | `admin_accrue_yield` | admin | valid milestone; positive amount | adds to `YieldAccrued` | `yldacc` |
-| `upgrade` | admin | `ensure_not_paused` | replaces contract code; bumps version | `upgrade` |
+| `upgrade` | admin | `Upgrader` role only; runs even while paused/cancel-locked (#973) | replaces contract code; bumps version | `upgrade` |
 
 ### Calculation endpoints
 
@@ -320,4 +351,7 @@ These neither change state nor publish events: `get_job`, `get_reputation`,
 `get_platform_fee_allocation`, `is_multisig_approved`,
 `get_pending_admin_transfer`, `is_escrow_interest_yield_locked`,
 `get_escrow_interest_yield`, `get_yield_info`, `is_multisig_locked`,
-`get_dispute_info`.
+`get_dispute_info`, `get_acceptance`, `get_acceptance_deadline`,
+`get_dispute_timeout` (#971). `get_acceptance` returns
+`(freelancer, arbiter)`; `get_acceptance_deadline` is `None` until funding
+writes `FundedAt`.

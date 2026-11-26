@@ -100,7 +100,13 @@ Regenerate the bindings after upgrading; the generated types change in two place
   a `DisputeInfo` by hand (for example in test fixtures) must set it. Disputes
   that were open when an escrow migrated from schema 3 carry the job's client
   here as a placeholder; use the `dispute` event's `caller` topic for those.
-- The `escrow-factory` `EscrowCreatedEvent` has the new shape `{ escrow, token,
-  total_amount, milestone_count, auto_release_seconds, settings, wasm_hash }`,
-  and its party addresses are event topics rather than data fields. See
-  "Escrow factory events" in `EVENTS.md`.
+- The `escrow-factory` `EscrowCreatedEvent` has the new shape `{ escrow, index,
+  token, total_amount, milestone_count, auto_release_seconds, settings,
+  wasm_hash }` — `index` is the escrow's position in the factory registry
+  (#934) — and its party addresses are event topics rather than data fields.
+  See "Escrow factory events" in `EVENTS.md`.
+- Error codes are contract-scoped (issue #1082): this contract uses 1-43, while
+  `escrow-factory` renumbered its codes into 1001-1008 so no factory code
+  equals an escrow code. A client decoding `Error(Contract, #)` must know
+  which contract failed; the factory's codes are listed in the README's
+  "Factory error codes" table.

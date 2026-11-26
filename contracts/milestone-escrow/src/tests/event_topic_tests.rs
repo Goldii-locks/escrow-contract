@@ -190,6 +190,29 @@ fn sweep_topics_index_client_then_freelancer() {
     assert_topics(&env, symbol_short!("sweep"), &[client, freelancer]);
 }
 
+/// Issue #974: setting due dates is a state change and must publish the full
+/// index-aligned list, with the client indexed for filtering.
+#[test]
+fn duedates_topic_indexes_client_and_carries_full_list() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _, _, contract_id, escrow) =
+        setup_unfunded_escrow(&env, vec![&env, 1_000_i128, 2_000_i128]);
+    // The shared helper accepts the job for the fixture; `set_milestone_due_dates`
+    // is only open before freelancer acceptance, so clear that bit directly.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&crate::DataKey::Acceptance);
+    });
+
+    let due_dates = vec![&env, 10_000_u64, 0];
+    escrow.set_milestone_due_dates(&client, &due_dates);
+
+    assert_topics(&env, symbol_short!("duedates"), &[client]);
+    let events = crate::all_event_tuples(&env);
+    let payload = MilestoneDueDatesSetEvent::from_val(&env, &events.last().unwrap().2);
+    assert_eq!(payload.due_dates, due_dates);
+}
+
 #[test]
 fn overdue_topics_index_client_then_freelancer() {
     let env = Env::default();

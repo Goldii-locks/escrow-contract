@@ -38,6 +38,7 @@ freelancer when the client acts and the client otherwise:
 | `cxlappr`  | `caller`, counterparty                |
 | `cancelrev`| `caller`, counterparty                |
 | `arbchg`   | `new_arbiter`                         |
+| `duedates` | `client`                              |
 
 ## Events
 
@@ -62,6 +63,7 @@ freelancer when the client acts and the client otherwise:
 | `approve`  | `ApprovedEvent`                  | state change      |
 | `claim`    | `ClaimedEvent`                   | state change      |
 | `extend`   | `DeadlineExtendedEvent`          | state change      |
+| `duedates` | `MilestoneDueDatesSetEvent`      | state change      |
 | `dispute`  | `DisputeRaisedEvent`             | state change      |
 | `evidence` | `EvidenceSubmittedEvent`         | state change      |
 | `dispescal`| `DisputeEscalatedEvent`          | state change      |
@@ -169,16 +171,16 @@ is kept in sync with `contracts/escrow-factory/src/lib.rs` by the factory's
 `event_docs_sync` tests (#1086), just as `event_docs_sync_tests` does for the
 escrow.
 
-| Topic       | Event struct         | Kind         |
-| ----------- | -------------------- | ------------ |
-| `created`   | `EscrowCreatedEvent` | state change |
-| `allowed`   | none (data is `()`)  | state change |
-| `disallowd` | none (data is `()`)  | state change |
-
-`allowed` and `disallowd` are emitted by `allow_token` and `disallow_token`.
-Their topics are the event name followed by the token address. `allowed` fires
-only when a token is newly added, while `disallowd` fires on every call, even
-when the token was not listed.
+| Topic       | Event struct            | Kind         |
+| ----------- | ----------------------- | ------------ |
+| `created`   | `EscrowCreatedEvent`    | state change |
+| `tokallow`  | `TokenAllowedEvent`     | state change |
+| `disallowd` | `()`                    | state change |
+| `whashprp`  | `WasmHashProposedEvent` | state change |
+| `whashcxl`  | `WasmHashCancelledEvent`| state change |
+| `whashact`  | `WasmHashActivatedEvent`| state change |
+| `paused`    | `()`                    | state change |
+| `unpaused`  | `()`                    | state change |
 
 ### `created`
 
@@ -194,6 +196,7 @@ are indexed so RPC `getEvents` can filter by participant, as for the escrow's
 | Field                  | Type             | Meaning                                                    |
 | ---------------------- | ---------------- | ---------------------------------------------------------- |
 | `escrow`               | `Address`        | The newly deployed escrow contract.                        |
+| `index`                | `u64`            | Zero-based registry index of this escrow; `escrow_at(index)` returns the address, and a gap between consecutive events means a creation reverted (#934). |
 | `token`                | `Address`        | Escrow token (must be on the factory allow-list).          |
 | `total_amount`         | `i128`           | Sum of all milestone amounts, in the token's smallest unit.|
 | `milestone_count`      | `u32`            | Number of milestones the escrow was created with.          |
@@ -209,3 +212,70 @@ added. Consumers that decoded `client`, `freelancer` or `arbiter` from the data
 must read them from the topics instead. `wasm_hash` lets an indexer tell which
 escrow build an address runs without calling the factory, which matters because
 `set_wasm_hash` changes the hash for later escrows.
+
+The `index` field (#934) was added before the first mainnet deploy: consumers
+that decode the event structurally should ignore unknown fields, and new
+consumers should read `index` to detect gaps between creations.
+
+### `tokallow`
+
+Emitted by `allow_token` when a new token is added to the allow-list. Adding a
+token that is already allowed is a no-op and emits nothing.
+
+**Topics:** `tokallow`.
+
+**Data (`TokenAllowedEvent`):** `{ token: Address }` — the token that was
+added. Indexers that previously watched `allowed` should watch `tokallow`;
+its payload moved from the topic into the event data.
+
+### `disallowd`
+
+Emitted by `disallow_token`, whether or not the token was on the allow-list
+(removal is idempotent).
+
+**Topics:** `disallowd`, `token`.
+
+**Data:** `()` (empty).
+
+### `whashprp`
+
+Emitted by `propose_wasm_hash` after the WASM bytes have been uploaded and
+their hash verified.
+
+**Topics:** `whashprp`.
+
+**Data (`WasmHashProposedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+`effective_at` is the ledger timestamp at which the proposal may first be
+used. It is `WASM_HASH_DELAY` (7 days) after the proposal.
+
+### `whashcxl`
+
+Emitted by `cancel_wasm_hash_proposal` when a pending proposal is withdrawn.
+The currently active hash is unchanged.
+
+**Topics:** `whashcxl`.
+
+**Data (`WasmHashCancelledEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`
+— the cancelled proposal.
+
+### `whashact`
+
+Emitted by `create_escrow` on the first deployment at or after a proposal's
+`effective_at`. The proposal is applied to the stored hash and removed, and
+that same deployment uses the new code.
+
+**Topics:** `whashact`.
+
+**Data (`WasmHashActivatedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+The `created` event emitted later in the same invocation carries the same
+`hash` in its `wasm_hash` field.
+
+### `paused` and `unpaused`
+
+Emitted by `pause` and `unpause` when the factory's incident switch changes.
+Both have a single topic and empty data. Repeated calls that do not change the
+flag emit nothing.
+
+While paused, `create_escrow` returns `Error::Paused` before deploying or
+emitting `created`. Existing escrows keep running: the switch only blocks new
+deployments through the factory. `is_paused` exposes the current flag.

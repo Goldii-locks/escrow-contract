@@ -956,12 +956,24 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "PausedSeconds"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "SchemaVersion"
                           }
                         ]
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 6
                       }
                     },
                     {

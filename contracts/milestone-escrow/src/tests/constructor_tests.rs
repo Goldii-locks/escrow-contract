@@ -91,13 +91,20 @@ fn deploy_with_constructor_args_succeeds_and_asserts_stored_state() {
     assert_eq!(job.milestones.get(1).unwrap().amount, 600_i128);
     assert!(!job.funded);
 
-    // The checked-in release WASM still exposes the legacy u32 `version`.
-    let legacy_version = env.try_invoke_contract::<u32, soroban_sdk::Error>(
+    // The fixture is rebuilt from the current source, so it exposes the
+    // String `version()` ABI rather than the legacy u32 marker.
+    let version = env.try_invoke_contract::<soroban_sdk::String, soroban_sdk::Error>(
         &escrow.address,
         &soroban_sdk::Symbol::new(&env, "version"),
         vec![&env],
     );
-    assert_eq!(legacy_version, Ok(Ok(1)));
+    assert_eq!(
+        version,
+        Ok(Ok(soroban_sdk::String::from_str(
+            &env,
+            crate::CONTRACT_VERSION
+        )))
+    );
     assert_eq!(escrow.get_funding_mode(), FundingMode::Upfront);
     assert_eq!(escrow.get_arbiter_fee_bps(), 0);
     assert!(escrow.get_whitelisted_tokens().contains(&p.token));

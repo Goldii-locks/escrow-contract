@@ -18,6 +18,9 @@ use soroban_sdk::{
 
 pub mod math;
 
+// Shared with the factory so both contracts compile against one ABI definition.
+pub use escrow_types::{EscrowSettings, FundingMode};
+
 /// Code version embedded in the WASM and returned by `version()`.
 ///
 /// This is a compile-time constant taken from Cargo.toml. It must not be
@@ -323,7 +326,9 @@ const BPS_DENOMINATOR: i128 = 10_000;
 ///   raiser; `migrate` stamps them with the job's client (see `migrate`).
 /// * `5` – one admin pause flag: `DataKey::Paused`. `DataKey::Ep` holds only
 ///   the party emergency pause.
-pub const SCHEMA_VERSION: u32 = 5;
+/// * `6` – pause-time accounting keys `PausedAt`, `PausedSeconds` and
+///   `WindowPauseBaseline(i)` (#972). Their absence means zero paused time.
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -488,32 +493,6 @@ pub struct EscrowState {
     pub fee_allocation: PlatformFeeAllocation,
     /// Code version of the WASM serving this read (`CONTRACT_VERSION`).
     pub version: String,
-}
-
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FundingMode {
-    Upfront,
-    PerMilestone,
-}
-
-/// Per-escrow settings fixed at deployment by `__constructor` (issue #665).
-///
-/// They used to be set by separate `initialize_with_*` entry points, which a
-/// constructor-deployed contract can no longer call: the constructor has
-/// already initialised it.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct EscrowSettings {
-    /// `Upfront` funds the whole job at once; `PerMilestone` funds each
-    /// milestone separately (issue #766).
-    pub funding_mode: FundingMode,
-    /// Seconds after which a dispute may be escalated (issue #784). Must be
-    /// non-zero; `DISPUTE_TIMEOUT_SECONDS` is the usual value.
-    pub dispute_timeout_seconds: u64,
-    /// Arbiter fee on dispute resolution, in basis points, at most
-    /// `MAX_ARBITER_FEE_BPS` (issue #738). 0 means no fee.
-    pub arbiter_fee_bps: u32,
 }
 
 #[contracttype]
@@ -801,6 +780,19 @@ pub enum DataKey {
     Treasury,
     /// Instance: admin-timelocked treasury change awaiting execution.
     PendingTreasury,
+    // ── pause-time accounting (#972) ────────────────────────────────────────
+    // Appended at the end so existing variant discriminants stay stable.
+    /// Instance: ledger timestamp at which the current blocking pause
+    /// (admin `Paused`, party `Ep` or `CancelLock`) started. Absent when no
+    /// blocking state is active. Overlapping states share one interval.
+    PausedAt,
+    /// Instance: completed pause seconds accumulated across all intervals.
+    /// Together with `PausedAt` this gives the cumulative pause clock.
+    PausedSeconds,
+    /// Persistent per-milestone: value of the cumulative pause clock when the
+    /// milestone's current clock (due date, review window or dispute timeout)
+    /// started. Only pause time recorded after this point extends that window.
+    WindowPauseBaseline(u32),
 }
 
 #[contracttype]
@@ -926,6 +918,15 @@ pub struct DeadlineExtendedEvent {
     pub extra_seconds: u32,
     pub new_extension: u32,
     pub new_deadline: u64,
+}
+
+/// Emitted by `set_milestone_due_dates` with the full index-aligned list after
+/// every deadline has been written successfully (issue #974). A `0` entry
+/// means that milestone's deadline was cleared.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneDueDatesSetEvent {
+    pub due_dates: Vec<u64>,
 }
 
 /// Emitted once per approved milestone by `approve_partial`,
@@ -2119,6 +2120,13 @@ impl MilestoneEscrow {
 
     /// Reject while milestone `index`'s dispute is younger than the dispute
     /// timeout, so a resolver cannot pre-empt the arbiter (issue #761).
+    ///
+    /// This check guards the admin cancel overrides, whose cancel lock is
+    /// itself one of the pauses that opens the pause clock (#972). It therefore
+    /// uses the nominal timeout: adjusting it for the still-active cancel lock
+    /// would deadlock the only endpoint that can settle a locked, disputed
+    /// escrow. Party-initiated `escalate_dispute` applies the pause adjustment
+    /// separately, because parties really are blocked while the pause runs.
     fn assert_dispute_timeout_elapsed(env: &Env, index: u32) -> Result<(), Error> {
         let Some(info) = env
             .storage()
@@ -3025,6 +3033,15 @@ impl MilestoneEscrow {
             if Self::is_terminal_status(&milestone.status) {
                 continue;
             }
+            // PerMilestone jobs can have milestones whose tokens have not been
+            // deposited yet. They hold no escrow balance, so counting their
+            // amount as an obligation would make `sweep_excess` return
+            // InsufficientBalance for stray tokens until every milestone is
+            // funded (#943). Upfront jobs have `meta.funded` set, so they are
+            // unaffected.
+            if !Self::milestone_is_funded(meta, &milestone) {
+                continue;
+            }
             let remaining = milestone
                 .amount
                 .checked_sub(milestone.released_amount)
@@ -3078,7 +3095,9 @@ impl MilestoneEscrow {
         }
         let delivered_at = milestone.delivered_at;
         let extension = Self::load_time_extension(env, milestone_index);
-        let deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        let nominal_deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        let baseline = Self::window_pause_baseline(env, milestone_index);
+        let deadline = Self::adjusted_deadline(env, nominal_deadline, baseline)?;
         if env.ledger().timestamp() >= deadline {
             return Err(Error::ReviewWindowClosed);
         }
@@ -3103,6 +3122,91 @@ impl MilestoneEscrow {
             return Err(Error::Paused);
         }
         Ok(())
+    }
+
+    // ── pause-time accounting (#972) ──────────────────────────────────────────
+    //
+    // Every state that `ensure_not_paused` blocks stops the parties from
+    // acting, so none of that wall-clock time may consume a response window.
+    // One interval is shared by overlapping admin/party/cancel-lock pauses,
+    // and a per-window baseline records the cumulative clock when that window
+    // opened, so pauses that ended before the window started are not counted.
+
+    /// True while any state that blocks user actions is active.
+    fn is_pause_clock_active(env: &Env) -> bool {
+        if Self::is_paused(env) {
+            return true;
+        }
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    }
+
+    /// Open the pause interval once, when the first blocking state is entered.
+    fn start_pause_clock(env: &Env) {
+        let instance = env.storage().instance();
+        if !instance.has(&DataKey::PausedAt) {
+            instance.set(&DataKey::PausedAt, &env.ledger().timestamp());
+        }
+    }
+
+    /// Close the interval once every blocking state is gone and bank its
+    /// duration. An overlapping pause leaves the interval open, so the same
+    /// seconds are never counted twice.
+    fn end_pause_clock(env: &Env) -> Result<(), Error> {
+        if Self::is_pause_clock_active(env) {
+            return Ok(());
+        }
+        let instance = env.storage().instance();
+        let Some(started_at) = instance.get::<_, u64>(&DataKey::PausedAt) else {
+            return Ok(());
+        };
+        let elapsed = env.ledger().timestamp().saturating_sub(started_at);
+        let accumulated = instance
+            .get::<_, u64>(&DataKey::PausedSeconds)
+            .unwrap_or(0)
+            .checked_add(elapsed)
+            .ok_or(Error::ArithmeticOverflow)?;
+        instance.set(&DataKey::PausedSeconds, &accumulated);
+        instance.remove(&DataKey::PausedAt);
+        Ok(())
+    }
+
+    /// Cumulative paused seconds up to the current ledger timestamp, including
+    /// the still-open interval.
+    fn current_paused_seconds(env: &Env) -> Result<u64, Error> {
+        let accumulated = env
+            .storage()
+            .instance()
+            .get::<_, u64>(&DataKey::PausedSeconds)
+            .unwrap_or(0);
+        let Some(started_at) = env.storage().instance().get::<_, u64>(&DataKey::PausedAt) else {
+            return Ok(accumulated);
+        };
+        accumulated
+            .checked_add(env.ledger().timestamp().saturating_sub(started_at))
+            .ok_or(Error::ArithmeticOverflow)
+    }
+
+    /// Pause seconds that elapsed after a window opened at `baseline`.
+    fn pause_adjustment(env: &Env, baseline: u64) -> Result<u64, Error> {
+        Ok(Self::current_paused_seconds(env)?.saturating_sub(baseline))
+    }
+
+    /// Cumulative pause clock when milestone `index`'s current window opened.
+    fn window_pause_baseline(env: &Env, index: u32) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WindowPauseBaseline(index))
+            .unwrap_or(0)
+    }
+
+    /// Extend a nominal deadline by the pause time spent inside its window.
+    fn adjusted_deadline(env: &Env, nominal_deadline: u64, baseline: u64) -> Result<u64, Error> {
+        nominal_deadline
+            .checked_add(Self::pause_adjustment(env, baseline)?)
+            .ok_or(Error::ArithmeticOverflow)
     }
 
     fn increment_reputation(env: &Env, address: &Address, milestone_index: u32) {
@@ -4846,17 +4950,32 @@ impl MilestoneEscrow {
                 return Err(Error::InvalidDeadline);
             }
         }
+        let pause_clock = Self::current_paused_seconds(&env)?;
         for (index, due_at) in due_dates.iter().enumerate() {
             let key = DataKey::DueAt(index as u32);
+            let baseline_key = DataKey::WindowPauseBaseline(index as u32);
             if due_at == 0 {
                 env.storage().persistent().remove(&key);
+                env.storage().persistent().remove(&baseline_key);
             } else {
                 env.storage().persistent().set(&key, &due_at);
+                env.storage().persistent().set(&baseline_key, &pause_clock);
                 env.storage()
                     .persistent()
                     .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&baseline_key, TTL_THRESHOLD, TTL_EXTEND_TO);
             }
         }
+        // Publish only after all writes succeeded, so a rejected call never
+        // announces deadlines that were not stored (#974).
+        env.events().publish(
+            (symbol_short!("duedates"), client.clone()),
+            MilestoneDueDatesSetEvent {
+                due_dates: due_dates.clone(),
+            },
+        );
         Ok(())
     }
 
@@ -4918,9 +5037,11 @@ impl MilestoneEscrow {
         if due_at == 0 {
             return Err(Error::DeadlineNotPassed);
         }
-        let deadline = due_at
+        let nominal_deadline = due_at
             .checked_add(OVERDUE_GRACE_SECONDS)
             .ok_or(Error::ArithmeticOverflow)?;
+        let baseline = Self::window_pause_baseline(&env, milestone_index);
+        let deadline = Self::adjusted_deadline(&env, nominal_deadline, baseline)?;
         if env.ledger().timestamp() <= deadline {
             return Err(Error::DeadlineNotPassed);
         }
@@ -5035,6 +5156,12 @@ impl MilestoneEscrow {
         milestone.delivered_at = delivered_at;
         milestone.deliverable = deliverable.clone();
         Self::store_milestone(&env, milestone_index, &milestone);
+        // The review/auto-release window opens here (#972): record the pause
+        // clock so only pauses from this point on can extend it.
+        env.storage().persistent().set(
+            &DataKey::WindowPauseBaseline(milestone_index),
+            &Self::current_paused_seconds(&env)?,
+        );
 
         env.events().publish(
             (symbol_short!("deliver"), meta.freelancer.clone()),
@@ -5100,6 +5227,9 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Pending;
         milestone.delivered_at = 0;
         Self::store_milestone(&env, milestone_index, &milestone);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::WindowPauseBaseline(milestone_index));
         env.storage()
             .temporary()
             .remove(&DataKey::TimeExt(milestone_index));
@@ -5302,7 +5432,9 @@ impl MilestoneEscrow {
         let delivered_at = milestone.delivered_at;
         let extension = Self::load_time_extension(env, milestone_index);
 
-        let deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        let nominal_deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        let baseline = Self::window_pause_baseline(env, milestone_index);
+        let deadline = Self::adjusted_deadline(env, nominal_deadline, baseline)?;
         let current = env.ledger().timestamp();
         if current < deadline {
             return Err(Error::DeadlineNotPassed);
@@ -5403,7 +5535,9 @@ impl MilestoneEscrow {
         // fall back to the persistent Milestone field for pre-migration entries.
         let delivered_at = milestone.delivered_at;
         let extension = Self::load_time_extension(&env, milestone_index);
-        let deadline = Self::auto_release_deadline(&meta, delivered_at, extension)?;
+        let nominal_deadline = Self::auto_release_deadline(&meta, delivered_at, extension)?;
+        let baseline = Self::window_pause_baseline(&env, milestone_index);
+        let deadline = Self::adjusted_deadline(&env, nominal_deadline, baseline)?;
         let current = env.ledger().timestamp();
         let deadline_i64 = i64::try_from(deadline).map_err(|_| Error::ArithmeticOverflow)?;
         let current_i64 = i64::try_from(current).map_err(|_| Error::ArithmeticOverflow)?;
@@ -5948,6 +6082,14 @@ impl MilestoneEscrow {
                 raised_by: caller.clone(),
             },
         );
+        // Escalation timeout starts at the dispute (#972). The same key carries
+        // the baseline for every milestone clock, and the statuses are
+        // mutually exclusive: Pending (due date), Delivered (review) and
+        // Disputed never overlap.
+        env.storage().persistent().set(
+            &DataKey::WindowPauseBaseline(milestone_index),
+            &Self::current_paused_seconds(env)?,
+        );
         milestone.status = MilestoneStatus::Disputed;
         Self::store_milestone(env, milestone_index, &milestone);
 
@@ -6122,10 +6264,14 @@ impl MilestoneEscrow {
             .get(&DataKey::DisputeTimeout)
             .unwrap_or(DISPUTE_TIMEOUT_SECONDS);
         let escalated_at = env.ledger().timestamp();
-        let elapsed = escalated_at
-            .checked_sub(dispute_info.disputed_at)
+        let nominal_deadline = dispute_info
+            .disputed_at
+            .checked_add(timeout)
             .ok_or(Error::DisputeTimeoutNotReached)?;
-        if elapsed < timeout {
+        let baseline = Self::window_pause_baseline(&env, milestone_index);
+        let deadline = Self::adjusted_deadline(&env, nominal_deadline, baseline)
+            .map_err(|_| Error::DisputeTimeoutNotReached)?;
+        if escalated_at < deadline {
             return Err(Error::DisputeTimeoutNotReached);
         }
 
@@ -6596,6 +6742,7 @@ impl MilestoneEscrow {
         if new_mask == 3 {
             env.storage().instance().remove(&DataKey::CancelApproval);
             env.storage().instance().set(&DataKey::CancelLock, &true);
+            Self::start_pause_clock(&env);
             env.events().publish(
                 (symbol_short!("cancel"), caller.clone(), counterparty),
                 CancelEscrowInitiatedEvent {
@@ -6895,6 +7042,7 @@ impl MilestoneEscrow {
         // CEI: clear the lock and yield before the external transfer. Only an
         // existing yield entry is removed, so escrows without one pay no write.
         env.storage().instance().remove(&DataKey::CancelLock);
+        Self::end_pause_clock(env)?;
         if env.storage().persistent().has(&DataKey::YieldAccrued) {
             env.storage().persistent().remove(&DataKey::YieldAccrued);
         }
@@ -6913,19 +7061,20 @@ impl MilestoneEscrow {
     /// Upgrade the contract's WASM to `new_wasm_hash`.
     ///
     /// # Business rules
-    /// Caller authorization and pause/lock preconditions are checked before
-    /// any storage mutation or WASM upgrade, so a rejected call leaves the
-    /// contract's storage and installed code untouched.
+    /// Caller authorization is checked before any storage mutation or WASM
+    /// upgrade, so a rejected call leaves the contract's storage and installed
+    /// code untouched. Pause and cancel-lock state are deliberately **not**
+    /// guards: the incident flow is to freeze settlement first and then patch
+    /// the deployed code, and `migrate` is likewise allowed while paused
+    /// (issue #973).
     ///
     /// # Errors
     /// * `NotInitialized` – Admin key has never been stored.
     /// * `Unauthorized`   – `admin` is neither the `Upgrader` delegate nor, if none is set, the
     ///   stored admin.
-    /// * `Paused`         – The contract is currently emergency-paused.
-    /// * `EscrowLocked`   – A cancel is in progress and holds the cancel lock.
+    /// * `InvalidAmount`  – The version counter would overflow.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_role(&env, &admin, AdminRole::Upgrader)?;
-        Self::ensure_not_paused(&env)?;
 
         env.deployer()
             .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));
@@ -6987,6 +7136,9 @@ impl MilestoneEscrow {
     ///   raised after the upgrade record their actual raiser.
     /// * `4 → 5`: an admin-set emergency pause (`DataKey::Ep` without
     ///   `DataKey::EpParty`) becomes the admin pause `DataKey::Paused`.
+    /// * `5 → 6`: a deployment that is already paused anchors `PausedAt` at
+    ///   the migration ledger, because its original pause start was never
+    ///   recorded (#972).  Fresh deployments need no rewrite.
     ///
     /// Returns the new schema version and emits `("migrate",)` with a
     /// `MigratedEvent`.
@@ -7014,6 +7166,12 @@ impl MilestoneEscrow {
         }
         if from_version < 5 {
             Self::migrate_admin_pause_to_v5(&env);
+        }
+        // A deployment upgraded while paused has no historical start time.
+        // Anchor its clock at migration instead of silently counting the whole
+        // pre-upgrade outage against a party (#972).
+        if Self::is_pause_clock_active(&env) {
+            Self::start_pause_clock(&env);
         }
 
         env.storage()
@@ -7201,6 +7359,7 @@ impl MilestoneEscrow {
 
         env.storage().instance().set(&DataKey::Ep, &true);
         env.storage().instance().set(&DataKey::EpParty, &true);
+        Self::start_pause_clock(&env);
 
         env.events().publish(
             (symbol_short!("empause"),),
@@ -7243,6 +7402,7 @@ impl MilestoneEscrow {
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().instance().set(&DataKey::EpParty, &false);
         env.storage().instance().set(&DataKey::Paused, &false);
+        Self::end_pause_clock(&env)?;
 
         env.events().publish(
             (symbol_short!("emunpause"),),
@@ -7282,6 +7442,7 @@ impl MilestoneEscrow {
 
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().instance().set(&DataKey::EpParty, &false);
+        Self::end_pause_clock(&env)?;
 
         env.events().publish(
             (symbol_short!("emunpausp"),),
@@ -7318,6 +7479,7 @@ impl MilestoneEscrow {
 
         // Single write — no external call, no EmergencyPauseLock needed.
         env.storage().instance().set(&DataKey::Paused, &true);
+        Self::start_pause_clock(&env);
 
         env.events().publish(
             (symbol_short!("emoverrid"),),
@@ -9227,6 +9389,41 @@ impl MilestoneEscrow {
         Self::assemble_job(&env, &meta)
     }
 
+    /// Acceptance state as `(freelancer, arbiter)` (issue #971).
+    ///
+    /// Both flags default to `false` before the corresponding `accept_job` /
+    /// `accept_arbiter` call. This is a pure read: no write, TTL extension or
+    /// event.
+    pub fn get_acceptance(env: Env) -> (bool, bool) {
+        let mask = Self::load_acceptance(&env);
+        (mask & 1 != 0, mask & 2 != 0)
+    }
+
+    /// Ledger timestamp at which `withdraw_unaccepted` becomes available, or
+    /// `None` while the escrow has not been funded (issue #971).
+    ///
+    /// Mirrors the deadline used by `withdraw_unaccepted`: `FundedAt` plus
+    /// `ACCEPTANCE_WINDOW_SECONDS`. Returns `None` on overflow as well as when
+    /// `FundedAt` is absent, so an unreadable deadline is never reported as a
+    /// past one. This is a pure read.
+    pub fn get_acceptance_deadline(env: Env) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get::<_, u64>(&DataKey::FundedAt)?
+            .checked_add(ACCEPTANCE_WINDOW_SECONDS)
+    }
+
+    /// Configured dispute-escalation timeout in seconds (issue #971).
+    ///
+    /// Falls back to `DISPUTE_TIMEOUT_SECONDS` when no override was stored at
+    /// initialization. This is a pure read.
+    pub fn get_dispute_timeout(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DisputeTimeout)
+            .unwrap_or(DISPUTE_TIMEOUT_SECONDS)
+    }
+
     /// Return one milestone without assembling the rest of the job (issue
     /// #733): reads the job metadata and exactly one milestone entry,
     /// whatever the milestone count.
@@ -10596,6 +10793,7 @@ impl MilestoneEscrow {
         }
 
         env.storage().instance().set(&DataKey::Paused, &true);
+        Self::start_pause_clock(&env);
 
         env.events()
             .publish((symbol_short!("pause"),), EscrowPausedEvent { admin });
@@ -10650,6 +10848,7 @@ impl MilestoneEscrow {
 
         (|| {
             env.storage().instance().set(&DataKey::Paused, &false);
+            Self::end_pause_clock(&env)?;
 
             env.events().publish(
                 (symbol_short!("resume"),),
