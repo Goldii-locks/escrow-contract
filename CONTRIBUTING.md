@@ -39,6 +39,37 @@ bash scripts/e2e.sh
 It requires `cargo`, `docker`, and the `stellar` CLI. The same script runs
 nightly (and on demand) via the `E2E` GitHub Actions workflow.
 
+### Toolchain pins (issue #961)
+
+| Pin | Value | Where |
+|---|---|---|
+| Local network image | `stellar/quickstart:v695-b1655.1-latest`: Protocol 30, stellar-core v30.0.0, stellar-rpc v30.0.1 | `QUICKSTART_TAG` in `scripts/e2e.sh` and `.github/workflows/e2e.yml` |
+| `stellar-cli` | 30.0.1 | `.github/workflows/ci.yml`, `e2e.yml`, `mutants.yml` |
+| `soroban-sdk` | 28.0.0 | `Cargo.toml` |
+
+Why these values:
+
+- The CLI has to match the RPC. Quickstart's RPC 30 builds (from 2026-10-22)
+  failed every simulation sent by stellar-cli 28 with
+  `HostError: Error(Context, InternalError)`, so E2E was held on the RPC 29.0.1
+  image `v678-b1525.1-latest`. With the CLI on 30.0.1, the suite runs on a
+  Protocol 30 image again, which is what testnet and mainnet upgrade to next.
+- The SDK stays on 28. A protocol-30 host runs protocol-28 contracts, but a
+  contract built with soroban-sdk 29 or later is rejected by a protocol-28
+  network ("contract protocol number is newer than host"). Move the SDK only
+  when testnet and mainnet run the newer protocol.
+- Quickstart's tags move daily. Keep the image pinned, and move it, the CLI,
+  and escrow-backend's `e2e-nightly.yml` in one change, so the contract and
+  backend nightly suites run against the same network.
+- The reproducible build (`build/reproducible.Dockerfile`) pins its own
+  stellar-cli 28.0.0 by release checksum. Changing it changes the deployed
+  wasm's bytes (the CLI writes its version into the wasm metadata), so it
+  moves in a separate, deliberate release change.
+
+`escrow-backend`'s `.github/workflows/e2e-nightly.yml` must use the same
+`QUICKSTART_TAG` and stellar-cli version. That file lives in the backend repo;
+update it there in a change linked to issue #961.
+
 ## Documentation requirements
 
 Three references are checked in CI and must stay in sync with the contract:

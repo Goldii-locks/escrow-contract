@@ -234,9 +234,9 @@ overwritten, so the original approver must opt in again. `cxlappr` carries
 
 | Entry point | Signer(s) | Guards | Effect | Event |
 |---|---|---|---|---|
-| `transfer_admin` | current admin | no pending admin transfer | replaces admin | `admin` |
+| `transfer_admin` | current admin | no pending admin transfer | replaces admin; clears every assigned `AdminRole` (#955) | `rolechg` per cleared role, then `admin` |
 | `propose_admin_transfer` | admin | no pending admin transfer | stores pending transfer | `adminprp` |
-| `execute_admin_transfer` | anyone | pending transfer; its proposal reached the multisig threshold | replaces admin; clears pending transfer | `adminexc` |
+| `execute_admin_transfer` | anyone | pending transfer; its proposal reached the multisig threshold | replaces admin; clears pending transfer; clears every assigned `AdminRole` (#955) | `rolechg` per cleared role, then `adminexc` |
 | `cancel_admin_transfer_proposal` | admin | pending transfer | clears pending transfer | `admincxl` |
 | `multisig_approval_init` | admin | not already initialised; valid signer set and threshold | stores signer set and threshold | `msiginit` |
 | `multisig_approve` | registered signer | signer registered | sets the signer's bit for the proposal | `msigappr` |

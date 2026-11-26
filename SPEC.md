@@ -99,6 +99,43 @@ are not required to settle the escrow.
 - Pause state is per contract instance; unpausing one escrow does not affect
   another.
 
+## Delegated roles across admin transfers
+
+The root admin can delegate four narrower roles with
+`set_admin_role(admin, role, address)`: `Upgrader` (`upgrade`, `migrate`),
+`Operator` (pause and resume), `FeeManager` (fees, yield, tax, whitelist) and
+`Resolver` (payout overrides, multisig lock and setup). An unassigned role is
+held by the root admin. `get_admin_role(role)` returns the current holder.
+
+**Policy (#955): delegations end with the admin that made them.** Both
+`transfer_admin` and `execute_admin_transfer`:
+
+- remove every explicitly assigned `DataKey::AdminRole(role)`, so all four
+  roles fall back to the incoming admin;
+- emit one `rolechg` event (`AdminRoleChangedEvent`) per removed assignment,
+  in `AdminRole` declaration order (`Upgrader`, `Operator`, `FeeManager`,
+  `Resolver`), with `admin` = the outgoing admin, `previous` = the former
+  delegate and `new_address` = the incoming admin;
+- emit those events before the transfer's own `admin` / `adminexc` event,
+  which stays the last event of the call.
+
+Roles that were never assigned emit nothing: they already followed the root
+admin, and the `admin` / `adminexc` event records that change. A transfer
+that fails changes no role. A legacy same-admin proposal executed by
+`execute_admin_transfer` (recorded before #771) changes nobody's authority
+and keeps the delegations. After a transfer, the incoming admin re-delegates
+with `set_admin_role` if it wants delegates; the outgoing admin can no longer
+assign roles.
+
+Why reset rather than keep: an admin transfer is how a compromised or departing
+admin is replaced. If its delegations survived, an `Upgrader` or `Resolver`
+the old admin appointed (possibly the attacker) would keep the power to
+replace the contract code or move funds through overrides after the rotation,
+and the incoming admin would have to find and revoke each one. Resetting makes
+the transfer a complete hand-over; the `rolechg` events let indexers and the
+incoming admin see exactly which delegations ended. Instance storage holds the
+role keys, so the reset adds no ledger entries to either transfer's footprint.
+
 ## Dispute semantics
 
 A dispute is raised with `raise_dispute(caller, milestone_index, reason_hash)`.

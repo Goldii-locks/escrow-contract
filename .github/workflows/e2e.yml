@@ -23,6 +23,10 @@ jobs:
           targets: wasm32v1-none
 
       - name: Install stellar-cli
+        # Issue #961: the Protocol 30 quickstart below runs stellar-rpc 30,
+        # whose simulations stellar-cli 28 cannot use; 30.x matches it. Move
+        # this, QUICKSTART_TAG, and escrow-backend's e2e-nightly.yml (which
+        # runs the same pair) together.
         uses: stellar/stellar-cli@f2a7b74175c34585f3b30a1abf42a2d41cbcc390 # v30.0.1
         with:
           # A SHA ref carries no version, so name the release to download.
@@ -41,3 +45,8 @@ jobs:
         run: bash scripts/e2e.sh
         env:
           KEEP_NETWORK: "1"
+          # Protocol 30 quickstart (stellar-core v30.0.0, stellar-rpc v30.0.1),
+          # pinned so nightly runs are comparable. Same as the scripts/e2e.sh
+          # default; see the note there for why it moved off
+          # v678-b1525.1-latest.
+          QUICKSTART_TAG: "v695-b1655.1-latest"

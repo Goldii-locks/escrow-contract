@@ -85,8 +85,22 @@ hash for every commit in the `reproducible-wasm` job summary.
   `ms_add`, `ms_reduce`, `cancel`, `cxlappr`, `cancelrev`, `acceptjob` and
   `acceptarb` carry the party addresses as topics after the event name, actor
   first, so `getEvents` can filter them by participant (#1019).
+- `transfer_admin` and `execute_admin_transfer` clear every delegated
+  `AdminRole` assignment, so all four roles revert to the incoming admin, and
+  emit one `rolechg` event per cleared assignment before the `admin` /
+  `adminexc` event (#955). Delegates appointed by an outgoing (possibly
+  compromised) admin no longer keep `Upgrader` or `Resolver` after a rotation.
+- E2E runs on the Protocol 30 quickstart `v695-b1655.1-latest` (stellar-core
+  v30.0.0, stellar-rpc v30.0.1) with stellar-cli 30.0.1 (#961).
 
 ### Added
+
+- `@goldii-locks/escrow-factory-bindings`, generated from `escrow_factory.wasm`
+  and versioned, uploaded and published together with
+  `@goldii-locks/milestone-escrow-bindings` (#965).
+- Resource-cost test at `MAX_MILESTONES` for every entry point that walks all
+  milestones, checked against the per-transaction network limits with 20%
+  headroom (#963).
 
 - `increase_milestone(client, freelancer, milestone_index, new_amount)`:
   raise a `Pending` milestone's amount with both parties' consent. On a
