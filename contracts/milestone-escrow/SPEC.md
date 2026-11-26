@@ -29,7 +29,7 @@ PRs that add, remove or change a transition must update this file (see
 | `Delivered` | Freelancer marked it delivered; the auto-release window is running. |
 | `PartiallyReleased` | Client released part of the amount with `approve_partial`. |
 | `Disputed` | Frozen for arbitration. |
-| `Released` | Fully paid to the freelancer. Terminal. |
+| `Released` | Resolved in freelancer's favour (net of any arbiter fee). Terminal. released_amount reflects payout to freelancer; released_amount + arbiter_fee_amount == amount. |
 | `Refunded` | Remaining amount returned to the client. Terminal. |
 | `Split` | Remaining amount divided between client and freelancer by an arbitration or streaming split. |
 

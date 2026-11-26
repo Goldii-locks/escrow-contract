@@ -236,3 +236,37 @@ fn get_dispute_info_without_an_open_dispute_returns_invalid_status() {
         Err(Ok(Error::InvalidStatus))
     );
 }
+
+#[test]
+fn dispute_record_is_available_after_resolution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client_addr, freelancer_addr, arbiter_addr, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+
+    escrow.mark_delivered(&freelancer_addr, &0);
+    let reason_hash = evidence_hash(&env, 0x11);
+    escrow.raise_dispute(&client_addr, &0, &reason_hash);
+    escrow.submit_evidence(&freelancer_addr, &0, &evidence_hash(&env, 0x12));
+
+    // Initially, no dispute record exists while disputed
+    assert_eq!(
+        escrow.try_get_dispute_record(&0),
+        Err(Ok(Error::InvalidStatus))
+    );
+
+    // Resolve dispute
+    escrow.resolve_dispute(&arbiter_addr, &0, &true, &decision_hash(&env));
+
+    // Verify DisputeRecord is preserved
+    let rec = escrow.get_dispute_record(&0);
+    assert_eq!(rec.reason_hash, reason_hash);
+    assert_eq!(rec.evidence.len(), 1);
+    assert_eq!(rec.outcome, MilestoneStatus::Released);
+
+    // DisputeInfo is gone
+    assert_eq!(
+        escrow.try_get_dispute_info(&0),
+        Err(Ok(Error::InvalidStatus))
+    );
+}

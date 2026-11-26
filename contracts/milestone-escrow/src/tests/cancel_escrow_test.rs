@@ -50,6 +50,11 @@ fn test_cancel_escrow_sets_lock_and_emits_event() {
             .unwrap_or(false)
     });
     assert!(is_locked_after);
+
+    // Verify client received refund and milestones moved to Refunded
+    let job = client.get_job();
+    let ms = job.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Refunded);
 }
 
 #[test]

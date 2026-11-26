@@ -14,7 +14,7 @@ Each milestone carries a `MilestoneStatus`:
 | `Pending`           | Funded, not yet delivered.                                           |
 | `Delivered`         | The freelancer has marked the milestone delivered.                   |
 | `PartiallyReleased` | Some, but not all, of the milestone has been released to the freelancer. |
-| `Released`          | Fully paid out to the freelancer. Terminal.                          |
+| `Released`          | Resolved in freelancer's favour (net of any arbiter fee). Terminal. released_amount reflects amount paid to freelancer; released_amount + arbiter_fee_amount == amount. |
 | `Refunded`          | Fully refunded to the client. Terminal.                              |
 | `Disputed`          | Frozen for arbitration.                                              |
 | `Split`             | Settled by an arbiter-directed split. Terminal.                      |

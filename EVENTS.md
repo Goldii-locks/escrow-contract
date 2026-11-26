@@ -20,7 +20,10 @@ freelancer when the client acts and the client otherwise:
 | `deliver`  | `freelancer`                          |
 | `claim`    | `freelancer`                          |
 | `approve`  | `client`                              |
-| `dispute`  | `caller`                              |
+| `dispute`  | `caller`, `arbiter`                   |
+| `evidence` | `caller`                              |
+| `resolve`  | `arbiter`, `recipient`                |
+| `dispescal`| `caller`                              |
 | `freerot`  | `new_freelancer`                      |
 | `acceptjob`| `freelancer`, `client`                |
 | `acceptarb`| `arbiter`, `client`                   |

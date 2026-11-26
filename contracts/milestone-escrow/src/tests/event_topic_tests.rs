@@ -116,15 +116,56 @@ fn arbchg_topics_keep_event_name_and_index_new_arbiter() {
 }
 
 #[test]
-fn dispute_topics_keep_event_name_and_index_caller() {
+fn dispute_topics_keep_event_name_and_index_caller_and_arbiter() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, freelancer, arbiter, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.raise_dispute(&client, &0, &dispute_reason_hash(&env));
+
+    assert_topics(&env, symbol_short!("dispute"), &[client, arbiter]);
+}
+
+#[test]
+fn evidence_topics_index_caller() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, freelancer, _, _, _, _, escrow) =
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     escrow.mark_delivered(&freelancer, &0);
     escrow.raise_dispute(&client, &0, &dispute_reason_hash(&env));
+    escrow.submit_evidence(&freelancer, &0, &BytesN::from_array(&env, &[1; 32]));
 
-    assert_topics(&env, symbol_short!("dispute"), &[client]);
+    assert_topics(&env, symbol_short!("evidence"), &[freelancer]);
+}
+
+#[test]
+fn resolve_topics_index_arbiter_and_recipient() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, freelancer, arbiter, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.raise_dispute(&client, &0, &dispute_reason_hash(&env));
+    escrow.resolve_dispute(&arbiter, &0, &true, &decision_hash(&env));
+
+    assert_topics(&env, symbol_short!("resolve"), &[arbiter, freelancer]);
+}
+
+#[test]
+fn dispescal_topics_index_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, freelancer, _, _, _, _, escrow) =
+        setup_funded_escrow(&env, vec![&env, 1_000_i128]);
+    escrow.mark_delivered(&freelancer, &0);
+    escrow.raise_dispute(&client, &0, &dispute_reason_hash(&env));
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + crate::DISPUTE_TIMEOUT_SECONDS);
+    escrow.escalate_dispute(&client, &0);
+
+    assert_topics(&env, symbol_short!("dispescal"), &[client]);
 }
 
 #[test]
