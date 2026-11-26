@@ -255,7 +255,8 @@ fn ms_add_topics_index_client_then_freelancer() {
         setup_funded_escrow(&env, vec![&env, 1_000_i128]);
     token::StellarAssetClient::new(&env, &token).mint(&client, &500);
 
-    escrow.add_milestone(&client, &freelancer, &500);
+    let spec_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    escrow.add_milestone(&client, &freelancer, &500, &spec_hash, &0);
 
     assert_topics(&env, symbol_short!("ms_add"), &[client, freelancer]);
 }

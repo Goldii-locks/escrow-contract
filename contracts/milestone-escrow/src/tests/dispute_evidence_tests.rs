@@ -211,6 +211,40 @@ fn submit_evidence_enforces_the_per_dispute_cap() {
 }
 
 #[test]
+fn submit_evidence_caps_per_submitter_and_allows_counterparty() {
+    let env = Env::default();
+    let (client_addr, freelancer_addr, _, escrow) = disputed_escrow(&env);
+
+    // Client submits maximum allowed entries (5)
+    for i in 0..crate::MAX_DISPUTE_EVIDENCE_PER_PARTY {
+        escrow.submit_evidence(&client_addr, &0, &evidence_hash(&env, i as u8 + 1));
+    }
+
+    let info = escrow.get_dispute_info(&0);
+    assert_eq!(info.evidence.len(), crate::MAX_DISPUTE_EVIDENCE_PER_PARTY);
+
+    // Client trying to submit a 6th entry gets EvidenceLimitReached
+    assert_eq!(
+        escrow.try_submit_evidence(&client_addr, &0, &evidence_hash(&env, 0xEE)),
+        Err(Ok(Error::EvidenceLimitReached))
+    );
+
+    // Counterparty (freelancer) can still submit evidence up to their own cap
+    for i in 0..crate::MAX_DISPUTE_EVIDENCE_PER_PARTY {
+        escrow.submit_evidence(&freelancer_addr, &0, &evidence_hash(&env, 0xA0 + i as u8));
+    }
+
+    let info2 = escrow.get_dispute_info(&0);
+    assert_eq!(info2.evidence.len(), MAX_DISPUTE_EVIDENCE_ENTRIES);
+
+    // Freelancer now also exceeds cap
+    assert_eq!(
+        escrow.try_submit_evidence(&freelancer_addr, &0, &evidence_hash(&env, 0xFF)),
+        Err(Ok(Error::EvidenceLimitReached))
+    );
+}
+
+#[test]
 fn dispute_info_is_only_available_while_the_dispute_is_open() {
     let env = Env::default();
     let (_, _, arbiter_addr, escrow) = disputed_escrow(&env);

@@ -56,6 +56,7 @@ freelancer when the client acts and the client otherwise:
 | `msfund`   | `MilestoneFundedEvent`           | state change      |
 | `ms_add`   | `MilestoneAddedEvent`            | state change      |
 | `ms_reduce`| `MilestoneReducedEvent`          | state change      |
+| `ms_remove`| `MilestoneRemovedEvent`          | state change      |
 | `ms_incr`  | `MilestoneIncreasedEvent`        | state change      |
 | `deliver`  | `DeliveredEvent`                 | state change      |
 | `msrev`    | `RevisionRequestedEvent`         | state change      |

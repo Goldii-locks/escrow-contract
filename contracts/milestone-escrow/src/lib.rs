@@ -270,6 +270,7 @@ const MAX_REVISIONS: u32 = 3;
 /// party cannot grow it without limit (and therefore cannot inflate the
 /// ledger-rent footprint of the dispute record) by submitting repeatedly.
 pub const MAX_DISPUTE_EVIDENCE_ENTRIES: u32 = 10;
+pub const MAX_DISPUTE_EVIDENCE_PER_PARTY: u32 = 5;
 
 const MAX_TREASURY_FEE_BPS: u32 = 2000;
 const MAX_CLIENT_FEE_BPS: u32 = 5000;
@@ -853,6 +854,8 @@ pub struct MilestoneAddedEvent {
     pub total_amount: i128,
     /// Milestone count after the addition.
     pub milestone_count: u32,
+    pub spec_hash: BytesN<32>,
+    pub due_at: u64,
 }
 
 /// Emitted by `reduce_milestone` when both parties consent to lowering a
@@ -869,6 +872,20 @@ pub struct MilestoneReducedEvent {
     /// Amount refunded to the client (`old_amount - new_amount`).
     pub refund: i128,
     /// Contract-level total after the reduction.
+    pub total_amount: i128,
+    pub milestone_count: u32,
+}
+
+/// Emitted by `remove_milestone` when both parties consent to removing a
+/// `Pending` milestone (issue #946).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneRemovedEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestone_index: u32,
+    pub amount: i128,
+    pub refunded: i128,
     pub total_amount: i128,
     pub milestone_count: u32,
 }
@@ -4268,6 +4285,8 @@ impl MilestoneEscrow {
         client: Address,
         freelancer: Address,
         amount: i128,
+        spec_hash: BytesN<32>,
+        due_at: u64,
     ) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
 
@@ -4278,20 +4297,25 @@ impl MilestoneEscrow {
         client.require_auth();
         freelancer.require_auth();
 
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
+        Self::require_escrow_has_funding(&env, &meta)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
         if meta.milestone_count >= MAX_MILESTONES {
             return Err(Error::TooManyMilestones);
         }
+        let now = env.ledger().timestamp();
+        if due_at != 0 && due_at <= now {
+            return Err(Error::InvalidDeadline);
+        }
         let new_total = meta
             .total_amount
             .checked_add(amount)
             .ok_or(Error::InvalidAmount)?;
         let new_index = meta.milestone_count;
+
+        let funding_mode = Self::load_funding_mode(&env);
+        let funded = funding_mode == FundingMode::Upfront;
 
         Self::store_milestone(
             &env,
@@ -4301,24 +4325,38 @@ impl MilestoneEscrow {
                 released_amount: 0,
                 status: MilestoneStatus::Pending,
                 delivered_at: 0,
-                funded: true,
-                spec_hash: BytesN::from_array(&env, &[0u8; 32]),
+                funded,
+                spec_hash: spec_hash.clone(),
                 deliverable: BytesN::from_array(&env, &[0u8; 32]),
             },
         );
+
+        if due_at != 0 {
+            let key = DataKey::DueAt(new_index);
+            env.storage().persistent().set(&key, &due_at);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        }
+
         // Persist amended state BEFORE the token transfer so a reentrant call
         // sees the updated count/total (mirrors `fund`).
         meta.milestone_count = new_index + 1;
         meta.total_amount = new_total;
+        if funding_mode == FundingMode::PerMilestone {
+            meta.funded = false;
+        }
         Self::store_job_meta(&env, &meta);
-        // The job is funded, so every milestone, including this one, holds
-        // its deposit (#999).
-        env.storage()
-            .instance()
-            .set(&DataKey::FundedCount, &meta.milestone_count);
 
-        let token_client = token::Client::new(&env, &meta.token);
-        token_client.transfer(&client, env.current_contract_address(), &amount);
+        if funded {
+            // In upfront mode, every milestone, including this one, holds its deposit (#999).
+            env.storage()
+                .instance()
+                .set(&DataKey::FundedCount, &meta.milestone_count);
+
+            let token_client = token::Client::new(&env, &meta.token);
+            token_client.transfer(&client, env.current_contract_address(), &amount);
+        }
 
         env.events().publish(
             (symbol_short!("ms_add"), client.clone(), freelancer.clone()),
@@ -4329,6 +4367,8 @@ impl MilestoneEscrow {
                 amount,
                 total_amount: new_total,
                 milestone_count: meta.milestone_count,
+                spec_hash,
+                due_at,
             },
         );
 
@@ -4380,9 +4420,7 @@ impl MilestoneEscrow {
         client.require_auth();
         freelancer.require_auth();
 
-        if !meta.funded {
-            return Err(Error::NotFunded);
-        }
+        Self::require_escrow_has_funding(&env, &meta)?;
         if milestone_index >= meta.milestone_count {
             return Err(Error::InvalidMilestone);
         }
@@ -4424,6 +4462,78 @@ impl MilestoneEscrow {
                 old_amount: new_amount + refund,
                 new_amount,
                 refund,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Jointly remove a `Pending` milestone and refund its deposited amount (if any)
+    /// to the client (issue #946).
+    ///
+    /// Both parties must sign. Marks the milestone with terminal status `Refunded`
+    /// without shifting milestone indexes.
+    pub fn remove_milestone(
+        env: Env,
+        client: Address,
+        freelancer: Address,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        Self::ensure_not_paused(&env)?;
+
+        let mut meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
+        Self::require_escrow_has_funding(&env, &meta)?;
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        if milestone.status != MilestoneStatus::Pending {
+            return Err(Error::InvalidStatus);
+        }
+
+        let funded = Self::milestone_is_funded(&meta, &milestone);
+        let refund = if funded {
+            let amount = milestone.amount;
+            let token_client = token::Client::new(&env, &meta.token);
+            if Self::available_balance(&env, &token_client) < amount {
+                return Err(Error::InsufficientBalance);
+            }
+            Self::pay_or_credit(&env, &token_client, &client, &amount)?;
+            amount
+        } else {
+            0
+        };
+
+        let old_amount = milestone.amount;
+        milestone.status = MilestoneStatus::Refunded;
+        Self::store_milestone(&env, milestone_index, &milestone);
+
+        if refund > 0 {
+            meta.total_amount -= refund;
+            Self::store_job_meta(&env, &meta);
+        }
+
+        env.events().publish(
+            (
+                symbol_short!("ms_remove"),
+                client.clone(),
+                freelancer.clone(),
+            ),
+            MilestoneRemovedEvent {
+                client,
+                freelancer,
+                milestone_index,
+                amount: old_amount,
+                refunded: refund,
                 total_amount: meta.total_amount,
                 milestone_count: meta.milestone_count,
             },
@@ -6023,6 +6133,16 @@ impl MilestoneEscrow {
             .get(&key)
             .ok_or(Error::InvalidStatus)?;
         if dispute_info.evidence.len() >= MAX_DISPUTE_EVIDENCE_ENTRIES {
+            return Err(Error::EvidenceLimitReached);
+        }
+
+        let mut caller_count: u32 = 0;
+        for entry in dispute_info.evidence.iter() {
+            if entry.submitter == caller {
+                caller_count = caller_count.saturating_add(1);
+            }
+        }
+        if caller_count >= MAX_DISPUTE_EVIDENCE_PER_PARTY {
             return Err(Error::EvidenceLimitReached);
         }
 
