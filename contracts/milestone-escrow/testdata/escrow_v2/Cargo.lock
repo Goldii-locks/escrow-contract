@@ -688,6 +688,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bfcf67fea2815c2fc3b90873fae90957be12ff417335dfadc7f52927feb03b2"
 
 [[package]]
+name = "escrow-types"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "escrow-v2"
 version = "0.0.0"
 dependencies = [
@@ -1072,6 +1079,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "milestone-escrow"
 version = "0.1.0"
 dependencies = [
+ "escrow-types",
  "soroban-sdk",
 ]
 
