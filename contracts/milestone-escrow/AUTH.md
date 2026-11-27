@@ -25,7 +25,6 @@ are listed at the bottom as **No auth required**.
 | `add_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `remove_whitelisted_token` | `FeeManager` role (root `admin` by default) | `require_role(AdminRole::FeeManager)` |
 | `upgrade` | `Upgrader` role (root `admin` by default) | `require_role(AdminRole::Upgrader)` |
-| `migrate_cold_config` | `Upgrader` role (root `admin` by default) | `require_role(AdminRole::Upgrader)` |
 | `fund` | `client` | `client.require_auth()` |
 | `fund_milestone` | `client` | `client.require_auth()` |
 | `accept_job` | `freelancer` | `freelancer.require_auth()` |
@@ -38,6 +37,7 @@ are listed at the bottom as **No auth required**.
 | `approve_partial` | `client` | `client.require_auth()` |
 | `approve_milestone` | `client` | `client.require_auth()` |
 | `withdraw` | `caller` (any address with owed balance) | `caller.require_auth()` |
+| `withdraw_to` | `caller` (any address with owed balance) | `caller.require_auth()` |
 | `raise_dispute` | `caller` (client **or** freelancer) | `require_dispute_party` |
 | `escalate_dispute` | `caller` (client **or** freelancer) | `require_dispute_party` |
 | `resolve_dispute` | `arbiter` | `arbiter.require_auth()` |
@@ -94,6 +94,7 @@ are listed at the bottom as **No auth required**.
 | `execute_multisig_config` | none: controlled by the current signers' approvals of the proposal | — |
 | `add_milestone` | `client` **and** `freelancer` (both) | `client.require_auth()` + `freelancer.require_auth()` |
 | `reduce_milestone` | `client` **and** `freelancer` (both) | `client.require_auth()` + `freelancer.require_auth()` |
+| `increase_milestone` | `client` **and** `freelancer` (both) | `client.require_auth()` + `freelancer.require_auth()` |
 | `approve_milestones` | `client` | `client.require_auth()` |
 | `rotate_freelancer` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |
 | `replace_arbiter` | `client` **and** `freelancer` (both) | `require_client_and_freelancer_consent` |

@@ -8,28 +8,36 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Default: read-only token for every job. Widened per-job where needed.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
         # Pinned to match rust-toolchain.toml. stellar-cli rejects 1.81, 1.82,
         # 1.83 and 1.91.0 outright, so this cannot float on @stable.
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # toolchain version set via `with:`
         with:
+          toolchain: "1.96.0"
           targets: wasm32v1-none
           components: clippy, rustfmt
 
       - name: Install stellar-cli
         # soroban-sdk 28 refuses to build under a bare `cargo build` and
         # requires stellar-cli v25.2.0+. The action installs a prebuilt binary;
-        # the version comes from the ref, so bump the tag to change it.
-        uses: stellar/stellar-cli@v28.0.0
+        # pin to a commit SHA so a retagged release cannot change CI output.
+        uses: stellar/stellar-cli@f2a7b74175c34585f3b30a1abf42a2d41cbcc390 # v30.0.1
+        with:
+          # A SHA ref carries no version, so name the release to download.
+          version: "30.0.1"
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -101,7 +109,7 @@ jobs:
           fi
 
       - name: Upload optimized wasm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: milestone_escrow-optimized-${{ github.sha }}
           path: dist/optimized/milestone_escrow.wasm
@@ -119,19 +127,78 @@ jobs:
       - name: Build factory WASM
         run: stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml
 
+      - name: Build and optimize factory WASM
+        # `--optimize` runs wasm-opt on the release build; that is the wasm
+        # which gets deployed, so it is the one measured and published below.
+        run: stellar contract build --manifest-path contracts/escrow-factory/Cargo.toml --optimize --out-dir dist/optimized-factory
+
+      - name: Factory WASM size budget
+        # The factory is a small wrapper (token allowlist + create_escrow) with
+        # no escrow state machine, so 64 KiB is deliberately generous while
+        # still well under the network's 131,072-byte contract code cap. It
+        # catches an order-of-magnitude regression without pinning a measured
+        # byte count for a contract this small. Raise with a rationale.
+        env:
+          FACTORY_WASM_BUDGET_BYTES: "65536"
+        run: |
+          set -euo pipefail
+          wasm=dist/optimized-factory/escrow_factory.wasm
+          size=$(stat -c %s "$wasm")
+          sha=$(sha256sum "$wasm" | cut -d' ' -f1)
+          echo "escrow_factory.wasm: $size bytes (budget $FACTORY_WASM_BUDGET_BYTES), sha256 $sha"
+          {
+            echo "### Optimized escrow_factory.wasm"
+            echo ""
+            echo "| size (bytes) | budget (bytes) | sha256 |"
+            echo "|---|---|---|"
+            echo "| $size | $FACTORY_WASM_BUDGET_BYTES | \`$sha\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt "$FACTORY_WASM_BUDGET_BYTES" ]; then
+            echo "::error::escrow_factory.wasm is $size bytes, over the $FACTORY_WASM_BUDGET_BYTES-byte budget"
+            exit 1
+          fi
+
+      - name: Upload optimized factory wasm
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: escrow_factory-optimized-${{ github.sha }}.wasm
+          path: dist/optimized-factory/escrow_factory.wasm
+
   dependencies:
     # RUSTSEC advisories (vulnerable, unsound, unmaintained), yanked crates,
     # disallowed licenses and unknown sources in Cargo.lock fail CI. Policy
     # and accepted exceptions live in deny.toml.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
         with:
           command: check
           arguments: --all-features
+
+  shellcheck:
+    # scripts/ builds the artefact whose hash is published, handles deployer
+    # identities and writes deployments/*.json (issue #1083), but nothing
+    # else looked at them. Unquoted variables and missing `set -euo pipefail`
+    # are exactly what shellcheck finds, and a mistake in a deploy script can
+    # write the wrong contract id or skip a failed step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Scripts are executable
+        run: |
+          for script in scripts/*.sh; do
+            if [ ! -x "$script" ]; then
+              echo "::error::$script is not executable"
+              exit 1
+            fi
+          done
 
   typescript-bindings:
     # Issue #744: clients hand-encode ScVals today (backend build-tx mapper,
@@ -146,19 +213,23 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
         # Pinned to match rust-toolchain.toml; see the note in the test job.
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # toolchain version set via `with:`
         with:
+          toolchain: "1.96.0"
           targets: wasm32v1-none
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@v28.0.0
+        uses: stellar/stellar-cli@f2a7b74175c34585f3b30a1abf42a2d41cbcc390 # v30.0.1
+        with:
+          # A SHA ref carries no version, so name the release to download.
+          version: "30.0.1"
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -169,7 +240,7 @@ jobs:
       - name: Build WASM
         run: stellar contract build --manifest-path contracts/milestone-escrow/Cargo.toml
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -198,7 +269,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload bindings
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: |
@@ -215,12 +286,12 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: milestone-escrow-bindings-ts-${{ github.sha }}
           path: bindings/ts
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           registry-url: https://npm.pkg.github.com
@@ -238,10 +309,24 @@ jobs:
     # can be traced back to the commit that produced it.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Reproducible build
         run: bash scripts/build-reproducible.sh "$GITHUB_SHA"
+
+      - name: Verify upgrade-test fixture
+        # Rebuilds the committed escrow_v2.wasm from the source under test with
+        # the same pinned container (issue #940). A constructor or storage
+        # layout change without a fixture rebuild therefore fails CI.
+        run: bash scripts/build-reproducible.sh --check-testdata "$GITHUB_SHA"
+
+      - name: Upload rebuilt fixture for mismatch triage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: escrow_v2-rebuilt-${{ github.sha }}
+          path: dist/escrow_v2.rebuilt.wasm
+          if-no-files-found: ignore
 
       - name: Publish hash
         run: |
@@ -251,11 +336,25 @@ jobs:
             echo "| commit | sha256 |"
             echo "|---|---|"
             echo "| \`$GITHUB_SHA\` | \`$(cut -d' ' -f1 dist/milestone_escrow.wasm.sha256)\` |"
+            echo
+            echo "### escrow_factory.wasm"
+            echo
+            echo "| commit | sha256 |"
+            echo "|---|---|"
+            echo "| \`$GITHUB_SHA\` | \`$(cut -d' ' -f1 dist/escrow_factory.wasm.sha256)\` |"
           } >> "$GITHUB_STEP_SUMMARY"
           cat dist/build-info.json
 
       - name: Upload wasm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: milestone_escrow-wasm-${{ github.sha }}
           path: dist/
+
+      - name: Upload factory wasm and hash
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: escrow_factory-wasm-${{ github.sha }}
+          path: |
+            dist/escrow_factory.wasm
+            dist/escrow_factory.wasm.sha256

@@ -214,10 +214,10 @@ fn successful_call_writes_to_no_durability_tier() {
 
 // ── 3 ─ the event must survive ───────────────────────────────────────────────
 
-/// A storage write must never be "fixed" by deleting the audit trail: exactly
-/// one `pf_split` event is still required on success.
+/// `calculate_platform_fee_split` is an unauthenticated preview, so it
+/// publishes no event that an indexer could mistake for activity (#676).
 #[test]
-fn successful_call_still_publishes_exactly_one_pf_split_event() {
+fn successful_call_publishes_no_pf_split_event() {
     let env = Env::default();
     let f = fixture(&env, 2_000, 7_000, 1_000);
 
@@ -225,8 +225,8 @@ fn successful_call_still_publishes_exactly_one_pf_split_event() {
 
     assert_eq!(
         pf_split_event_count(&env),
-        1,
-        "a successful call publishes exactly one pf_split event"
+        0,
+        "a preview publishes no pf_split event (#676)"
     );
 }
 

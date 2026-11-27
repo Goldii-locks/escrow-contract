@@ -12,11 +12,28 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
-    ContractExecutable, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec,
+    contract, contracterror, contractimpl, contractmeta, contracttype, symbol_short, token,
+    Address, BytesN, ContractExecutable, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 pub mod math;
+
+// Shared with the factory so both contracts compile against one ABI definition.
+pub use escrow_types::{EscrowSettings, FundingMode};
+
+/// Code version embedded in the WASM and returned by `version()`.
+///
+/// This is a compile-time constant taken from Cargo.toml. It must not be
+/// confused with `SCHEMA_VERSION` (the storage layout version) or with the
+/// `DataKey::Version` marker, which is retained only as a migration marker.
+pub const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+contractmeta!(key = "name", val = "milesto-milestone-escrow");
+contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
+contractmeta!(
+    key = "source",
+    val = "https://github.com/Goldii-locks/escrow-contract"
+);
 
 /// Maximum number of ratio slots accepted by `compute_ratio_allocation`.
 /// A multisig setup with more than this many signers is operationally
@@ -41,6 +58,12 @@ const MAX_EMERGENCY_ALLOCATION_PARTIES: u32 = 255;
 /// Default window before either party may return an unresolved dispute to its
 /// pre-dispute milestone state.
 pub const DISPUTE_TIMEOUT_SECONDS: u64 = 30 * 24 * 60 * 60;
+/// Minimum allowed `dispute_timeout_seconds` (1 day), so the arbiter always
+/// gets time to act before either party can escalate.
+pub const MIN_DISPUTE_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+/// Maximum allowed `dispute_timeout_seconds` (180 days), so escalation and
+/// admin settlement of a disputed milestone stay reachable.
+pub const MAX_DISPUTE_TIMEOUT_SECONDS: u64 = 180 * 24 * 60 * 60;
 /// Maximum number of milestones `approve_milestones` accepts in one call.
 /// Validation does a duplicate scan over the index list, so the cap bounds
 /// its worst-case CPU cost along with the per-milestone storage writes.
@@ -126,13 +149,13 @@ pub enum Error {
     /// code space stay valid.
     MultiSigEmptyBalance = 25,
     /// A guarded endpoint was called while `tax_withholding_deductions` is
-    /// mid-execution and holds `DataKey::TaxWithholdingExecutionLock`.
+    /// mid-execution and holds `the former reentrancy guard`.
     TaxWithholdingInProgress = 26,
     /// A guarded endpoint was called while a platform-fee allocation is
-    /// mid-execution and holds `DataKey::PlatformFeeAllocationLock`.
+    /// mid-execution and holds `the former reentrancy guard`.
     PlatformFeeAllocationInProgress = 27,
     /// A guarded endpoint was called while an emergency pause transition is
-    /// mid-execution and holds `DataKey::EpLk`.
+    /// mid-execution and holds `the former reentrancy guard`.
     EmergencyPauseInProgress = 28,
     /// `emergency_pause` was called while the contract is already paused.
     /// Re-pausing is rejected rather than silently no-opping so an operator
@@ -150,10 +173,10 @@ pub enum Error {
     /// contract holds zero token balance, so there is nothing to settle.
     EmptyBalance = 32,
     /// A guarded endpoint was called while `milestone_time_extensions` is
-    /// mid-execution and holds `DataKey::TimeExtExecutionLock`.
+    /// mid-execution and holds `the former reentrancy guard`.
     TimeExtInProgress = 33,
     /// A guarded endpoint was called while `payment_streaming_milestones` is
-    /// mid-execution and holds `DataKey::PaymentStreamingExecutionLock`.
+    /// mid-execution and holds `the former reentrancy guard`.
     PaymentStreamingInProgress = 34,
     /// A platform-fee allocation exceeded its per-party cap: treasury above
     /// `MAX_TREASURY_FEE_BPS` or client above `MAX_CLIENT_FEE_BPS`.
@@ -178,7 +201,8 @@ pub enum Error {
     /// A settlement asked to distribute more than the contract currently
     /// holds in the escrowed token.
     InsufficientBalance = 37,
-    /// A dispute timeout must be greater than zero.
+    /// A dispute timeout must be between `MIN_DISPUTE_TIMEOUT_SECONDS` and
+    /// `MAX_DISPUTE_TIMEOUT_SECONDS`.
     InvalidDisputeTimeout = 38,
     /// The configured dispute timeout has not elapsed yet.
     DisputeTimeoutNotReached = 39,
@@ -233,6 +257,13 @@ pub enum Error {
     /// arbiter once every dispute has been resolved, split, or timed out and
     /// escalated.
     DisputePending = 55,
+    /// `raise_dispute` or `request_revision` was called on a `Delivered`
+    /// milestone whose auto-release deadline has already passed; the
+    /// freelancer is entitled to `claim_auto_release`.
+    ReviewWindowClosed = 56,
+    /// A non-zero milestone due date was not in the future at the time
+    /// `set_milestone_due_dates` was called.
+    InvalidDeadline = 57,
 }
 
 const MAX_REVISIONS: u32 = 3;
@@ -261,6 +292,8 @@ const ACCEPTANCE_WINDOW_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const OVERDUE_GRACE_SECONDS: u64 = 24 * 60 * 60;
 
 const BPS_SCALE: u32 = 10_000;
+/// Timelock for treasury address changes (#674): seven days.
+const TREASURY_UPDATE_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
 // Keep active escrow state available for roughly one year of ledger time.
 const TTL_THRESHOLD: u32 = 30 * 24 * 60 * 5;
 const TTL_EXTEND_TO: u32 = 365 * 24 * 60 * 5;
@@ -270,9 +303,11 @@ const MAX_ARBITER_FEE_BPS: u32 = 1_000;
 
 /// Seconds in a standard Gregorian year (365 days). Used by the simple-interest
 /// estimator in `escrow_interest_yield`.
+#[cfg(test)]
 const SECONDS_PER_YEAR: i128 = 31_536_000;
 
 /// Basis-point denominator for interest math (`1 bp = 1 / 10_000`).
+#[cfg(test)]
 const BPS_DENOMINATOR: i128 = 10_000;
 
 /// Storage layout this code reads and writes.  Bump it whenever a stored
@@ -286,7 +321,14 @@ const BPS_DENOMINATOR: i128 = 10_000;
 ///   storage (#772).
 /// * `3` – `Milestone::deliverable`, the hash recorded by
 ///   `mark_delivered_with_hash`.
-pub const SCHEMA_VERSION: u32 = 3;
+/// * `4` – `DisputeInfo::raised_by` (#997), the party that called
+///   `raise_dispute`.  Disputes already open at the upgrade have no recorded
+///   raiser; `migrate` stamps them with the job's client (see `migrate`).
+/// * `5` – one admin pause flag: `DataKey::Paused`. `DataKey::Ep` holds only
+///   the party emergency pause.
+/// * `6` – pause-time accounting keys `PausedAt`, `PausedSeconds` and
+///   `WindowPauseBaseline(i)` (#972). Their absence means zero paused time.
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -374,6 +416,23 @@ pub struct DisputeInfo {
     pub reason_hash: BytesN<32>,
     /// Evidence hashes added by either party while the milestone is Disputed.
     pub evidence: Vec<EvidenceRecord>,
+    /// The escrow party (client or freelancer) that called `raise_dispute`
+    /// (#997).  Disputes that were already open when the escrow migrated from
+    /// schema 3 carry the job's client here, because the raiser was never
+    /// recorded; for those, the original `dispute` event's `caller` topic is
+    /// authoritative.
+    pub raised_by: Address,
+}
+
+/// `DisputeInfo` as stored by schema version 3, before `raised_by`.
+/// Only `migrate` and `get_dispute_info` read it.
+#[contracttype]
+#[derive(Clone, Debug)]
+struct DisputeInfoV3 {
+    disputed_at: u64,
+    previous_status: MilestoneStatus,
+    reason_hash: BytesN<32>,
+    evidence: Vec<EvidenceRecord>,
 }
 
 #[contracttype]
@@ -388,9 +447,9 @@ pub struct Job {
     pub auto_release_seconds: u64,
 }
 
-/// Both pause switches. `emergency` is `DataKey::Ep` (`emergency_pause`);
-/// `admin` is `DataKey::Paused` (the admin pause also reported by
-/// `get_yield_info`).
+/// Both pauses. `emergency` is the party pause, `DataKey::Ep`
+/// (`emergency_pause`); `admin` is the single admin pause, `DataKey::Paused`
+/// (`admin_pause_escrow`).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowPausedState {
@@ -432,33 +491,8 @@ pub struct EscrowState {
     /// `fee_allocation` is all zeros.
     pub fee_allocation_set: bool,
     pub fee_allocation: PlatformFeeAllocation,
-    pub version: u32,
-}
-
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FundingMode {
-    Upfront,
-    PerMilestone,
-}
-
-/// Per-escrow settings fixed at deployment by `__constructor` (issue #665).
-///
-/// They used to be set by separate `initialize_with_*` entry points, which a
-/// constructor-deployed contract can no longer call: the constructor has
-/// already initialised it.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct EscrowSettings {
-    /// `Upfront` funds the whole job at once; `PerMilestone` funds each
-    /// milestone separately (issue #766).
-    pub funding_mode: FundingMode,
-    /// Seconds after which a dispute may be escalated (issue #784). Must be
-    /// non-zero; `DISPUTE_TIMEOUT_SECONDS` is the usual value.
-    pub dispute_timeout_seconds: u64,
-    /// Arbiter fee on dispute resolution, in basis points, at most
-    /// `MAX_ARBITER_FEE_BPS` (issue #738). 0 means no fee.
-    pub arbiter_fee_bps: u32,
+    /// Code version of the WASM serving this read (`CONTRACT_VERSION`).
+    pub version: String,
 }
 
 #[contracttype]
@@ -500,7 +534,7 @@ pub struct SplitRefundFeeDistribution {
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdminRole {
-    /// `upgrade`, `migrate`, `migrate_cold_config`.
+    /// `upgrade`, `migrate`.
     Upgrader,
     /// Pause and resume, including the emergency pause controls.
     Operator,
@@ -521,23 +555,12 @@ pub enum DataKey {
     /// (2 chars vs 16) to minimise on-ledger symbol bytes.
     Ep,
     PlatformFeeAllocation,
-    /// Temporary key: records the ledger timestamp at which a milestone was
-    /// marked delivered.  Written by `mark_delivered`, consumed by
-    /// `claim_auto_release` and `time_until_auto_release`.  Uses temporary
-    /// storage because it is single-use, deadline-scoped workflow state whose
-    /// ledger footprint cost should not persist beyond the auto-release window.
+    /// Retired (#1001): no longer read or written; `Milestone.delivered_at`
+    /// is the only delivery timestamp. Kept for discriminant stability.
     DeliveredAt(u32),
-    /// Temporary key: written by `approve_milestone` when a milestone reaches
-    /// the terminal `Released` state via a full approval.  Acts as a cheap
-    /// short-lived completion signal so callers can confirm terminal state
-    /// without loading the full persistent `Milestone` entry.  Uses temporary
-    /// storage because the signal is transient: once the milestone is released,
-    /// the approval workflow for that milestone is permanently closed and this
-    /// flag has no further use.
+    /// Retired (#1001): no longer read or written; the persisted milestone
+    /// status is the completion signal. Kept for discriminant stability.
     MilestoneReleased(u32),
-    /// Temporary: lock set when dispute arbitration split execution is in
-    /// progress for a milestone to prevent reentrant or concurrent mutations.
-    DisputeLock(u32),
     Reputation(Address),
     /// Instance: client/freelancer yield-share configuration and execution lock
     /// for the `escrow_interest_yield` module. Written by
@@ -561,12 +584,8 @@ pub enum DataKey {
     /// raise_dispute, resolve_dispute) so that an emergency admin investigation
     /// cannot be interfered with.
     Paused,
-    /// Temporary key: written by `raise_dispute` when a milestone enters the
-    /// `Disputed` state.  Acts as a cheap short-lived signal so that callers
-    /// can verify dispute status without loading the full persistent
-    /// `Milestone` entry.  Uses temporary storage because the dispute workflow
-    /// is transient: once resolved, the flag has no further use and its ledger
-    /// footprint should not persist.
+    /// Retired (#1001): no longer read or written; the persisted milestone
+    /// status is the dispute signal. Kept for discriminant stability.
     DisputeFlag(u32),
     /// Persistent: boolean flag set to `true` when the multisig approval
     /// workflow enters a locked condition that requires admin intervention.
@@ -630,20 +649,9 @@ pub enum DataKey {
     /// Key type: `u32` (the proposal index) — significantly smaller than a
     /// composite `(Address, u32)` alternative.
     MultiSigApproval(u32),
-    // ── dispute_arbitration_split compact storage keys ─────────────────────
-    /// Temporary: records the client-refund BPS applied by
-    /// `apply_dispute_arbitration_split` for a given milestone.
-    ///
-    /// Key type is only `u32` (the milestone index) — no `Address` payload —
-    /// so the ledger key footprint stays minimal compared to a composite
-    /// `(Address, u32)` alternative.  Presence of the entry signals that a
-    /// split was applied; the value is a single `u32` BPS rather than a full
-    /// `RefundAllocation` (2×i128 + 2×u32).  Freelancer BPS is derived as
-    /// `BPS_SCALE - value`, removing redundant stored bytes.  Uses temporary
-    /// storage so the footprint is auto-evicted after the dispute workflow.
-    ///
-    /// Appended at the end of `DataKey` so existing variant discriminants stay
-    /// stable (serialization compatibility for already-written ledger entries).
+    /// Retired (#1001): no longer read or written; the applied split is
+    /// reported by `ArbitrationSplitAppliedEvent`. Kept for discriminant
+    /// stability.
     ArbitrationSplitBps(u32),
     /// Persistent: records an in-flight multisig-gated admin transfer
     /// proposal created by `propose_admin_transfer`. Presence of this key
@@ -667,23 +675,6 @@ pub enum DataKey {
     // Appended at the end of `DataKey` so existing variant discriminants
     // stay stable (serialization compatibility for already-written ledger
     // entries).
-    /// Instance: held while `tax_withholding_deductions` executes.
-    ///
-    /// Distinct from `TaxWithholdingLock(u32)` above, which is a *per-milestone
-    /// record* rather than an execution lock. The two arrived from separate
-    /// PRs that both chose the name `TaxWithholdingLock`; this one is renamed
-    /// to keep both behaviours.
-    TaxWithholdingExecutionLock,
-    /// Instance: held while a platform-fee allocation executes.
-    PlatformFeeAllocationLock,
-    /// Instance: held while an emergency pause/resume transition executes.
-    /// Short key `EpLk` (4 chars vs 19) to minimise on-ledger symbol bytes.
-    EpLk,
-    /// Instance: held while `milestone_time_extensions` executes.
-    TimeExtExecutionLock,
-    /// Instance: held while `payment_streaming_milestones` (or its consent
-    /// counterpart) executes.
-    PaymentStreamingExecutionLock,
     /// Instance: the **consolidated multisig configuration** — the registered
     /// signer set and the approval threshold — held as a single `MultiSigConfig`
     /// value under this one key (issue #456).  Written once by
@@ -726,6 +717,18 @@ pub enum DataKey {
     /// Instance: ledger timestamp at which `fund` ran.  Starts the
     /// `ACCEPTANCE_WINDOW_SECONDS` window checked by `withdraw_unaccepted`.
     FundedAt,
+    /// Instance: number of milestones that hold their own deposit (#999).
+    /// `fund_milestone` advances it by one, so deciding whether the job is
+    /// fully funded is a comparison with `milestone_count` instead of a scan
+    /// over every milestone.  `fund` sets it to `milestone_count` and
+    /// `add_milestone` keeps it equal to the new count, so a funded job
+    /// always satisfies `FundedCount == milestone_count`.  `reduce_milestone`
+    /// leaves it alone: a reduced milestone stays funded.  There is no
+    /// milestone-removal endpoint; one would have to decrement it for every
+    /// funded milestone it removes.  Escrows created before this key existed
+    /// have no entry; `load_funded_count` counts their milestones once and
+    /// the next `fund_milestone` stores the result.
+    FundedCount,
     /// Persistent: the monotonic counter behind contract-assigned
     /// admin-transfer proposal IDs (issue #785).  `propose_admin_transfer`
     /// reads it, advances it with `checked_add` (`ArithmeticOverflow` instead
@@ -771,6 +774,25 @@ pub enum DataKey {
     /// Persistent: delivery deadline (ledger timestamp) of milestone `u32`,
     /// set by `set_milestone_due_dates`.  Absent or `0` means no deadline.
     DueAt(u32),
+    /// Instance: address receiving the configured treasury share of payouts.
+    /// Absent means the admin address is used, so existing deployments keep
+    /// working without a migration.
+    Treasury,
+    /// Instance: admin-timelocked treasury change awaiting execution.
+    PendingTreasury,
+    // ── pause-time accounting (#972) ────────────────────────────────────────
+    // Appended at the end so existing variant discriminants stay stable.
+    /// Instance: ledger timestamp at which the current blocking pause
+    /// (admin `Paused`, party `Ep` or `CancelLock`) started. Absent when no
+    /// blocking state is active. Overlapping states share one interval.
+    PausedAt,
+    /// Instance: completed pause seconds accumulated across all intervals.
+    /// Together with `PausedAt` this gives the cumulative pause clock.
+    PausedSeconds,
+    /// Persistent per-milestone: value of the cumulative pause clock when the
+    /// milestone's current clock (due date, review window or dispute timeout)
+    /// started. Only pause time recorded after this point extends that window.
+    WindowPauseBaseline(u32),
 }
 
 #[contracttype]
@@ -843,6 +865,21 @@ pub struct MilestoneReducedEvent {
     pub milestone_count: u32,
 }
 
+/// Emitted by `increase_milestone` when both parties consent to raising a
+/// `Pending` milestone's amount (issue #1020).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneIncreasedEvent {
+    pub client: Address,
+    pub freelancer: Address,
+    pub milestone_index: u32,
+    pub old_amount: i128,
+    pub new_amount: i128,
+    /// Contract-level total after the increase.
+    pub total_amount: i128,
+    pub milestone_count: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MilestoneFundedEvent {
@@ -881,6 +918,15 @@ pub struct DeadlineExtendedEvent {
     pub extra_seconds: u32,
     pub new_extension: u32,
     pub new_deadline: u64,
+}
+
+/// Emitted by `set_milestone_due_dates` with the full index-aligned list after
+/// every deadline has been written successfully (issue #974). A `0` entry
+/// means that milestone's deadline was cleared.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneDueDatesSetEvent {
+    pub due_dates: Vec<u64>,
 }
 
 /// Emitted once per approved milestone by `approve_partial`,
@@ -956,14 +1002,22 @@ pub struct DisputeResolvedEvent {
     pub arbiter_fee_amount: i128,
     pub released_to_freelancer: bool,
     pub status: MilestoneStatus,
+    /// Commitment to the arbiter's written decision (#1015). The contract
+    /// never sees the decision itself, only this 32-byte hash of it; the
+    /// document lives in escrow-backend storage, keyed by this hash. Echoed
+    /// from `resolve_dispute` / `apply_dispute_arbitration_split` so the
+    /// on-chain resolution is cryptographically anchored to the reasoning
+    /// that produced it. The `DisputeInfo` record is deleted when the
+    /// dispute closes, so this event is where the commitment survives.
+    pub decision_hash: BytesN<32>,
 }
 
 /// Immutable record of a successful `apply_dispute_arbitration_split` call.
 ///
 /// Every field reconciles exactly with the state the call persisted:
 /// `client_refund` / `freelancer_payout` are the amounts actually transferred
-/// (capped to the contract balance), `client_refund_bps` is the value written
-/// under `ArbitrationSplitBps(milestone_index)`, `released_amount` is the
+/// (capped to the contract balance), `client_refund_bps` is the BPS the arbiter
+/// applied, `released_amount` is the
 /// milestone's cumulative release after the split, and `status` is the terminal
 /// milestone status stored by the call. Emitted only on the success path.
 #[contracttype]
@@ -983,8 +1037,7 @@ pub struct ArbitrationSplitAppliedEvent {
     /// Arbiter fee taken from the disputed balance before the split (issue
     /// #738). Zero when the escrow has no arbiter fee.
     pub arbiter_fee_amount: i128,
-    /// Basis points of the disputed balance awarded to the client. Matches the
-    /// value persisted under `ArbitrationSplitBps(milestone_index)`.
+    /// Basis points of the disputed balance awarded to the client.
     pub client_refund_bps: u32,
     /// Basis points awarded to the freelancer (`10_000 - client_refund_bps`).
     pub freelancer_payout_bps: u32,
@@ -992,6 +1045,10 @@ pub struct ArbitrationSplitAppliedEvent {
     pub released_amount: i128,
     /// Terminal milestone status after the split.
     pub status: MilestoneStatus,
+    /// Commitment to the arbiter's written decision (#1015). Same value the
+    /// call echoes in the accompanying `resolve` event; the written decision
+    /// itself stays off-chain in escrow-backend storage, keyed by this hash.
+    pub decision_hash: BytesN<32>,
 }
 
 #[contracttype]
@@ -1005,6 +1062,19 @@ pub struct TaxWithholdingDeductionsEvent {
     pub tax_rate_bps: u32,
 }
 
+/// Emitted whenever a reputation score changes, so indexers can follow score
+/// history without polling `get_reputation` for every address after a release.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReputationChangedEvent {
+    /// Address whose score changed (client or freelancer).
+    pub address: Address,
+    /// Score stored after the increment.
+    pub new_score: u32,
+    /// Milestone whose full release caused the change.
+    pub milestone_index: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformFeeAllocation {
@@ -1012,6 +1082,30 @@ pub struct PlatformFeeAllocation {
     pub freelancer_bps: u32,
     pub treasury_bps: u32,
     pub locked: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingTreasury {
+    pub address: Address,
+    pub effective_at: u64,
+}
+
+/// Emitted on every freelancer payout that charges a treasury fee (#674).
+/// Published by `apply_treasury_update` when the fee treasury changes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreasuryUpdatedEvent {
+    pub treasury: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformFeeChargedEvent {
+    pub recipient: Address,
+    pub gross_amount: i128,
+    pub fee_amount: i128,
+    pub treasury: Address,
 }
 
 #[contracttype]
@@ -1333,14 +1427,14 @@ pub struct EmergencyPauseClaimRefundEvent {
 
 /// Emitted by `emergency_pause_admin_override` when the admin overrides the
 /// pause state. Every field reconciles with the state the call persisted:
-/// `paused` is the new value written to `DataKey::Ep` and `previous` is the
-/// value it replaced. Emitted only on the success path.
+/// `paused` is the new value written to `DataKey::Paused` and `previous` is
+/// whether any pause was in effect before. Emitted only on the success path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyPauseAdminOverrideEvent {
     /// Admin that authorised and applied the override (the acting address).
     pub admin: Address,
-    /// Pause flag persisted by this call (`DataKey::Ep`).
+    /// Pause flag persisted by this call (`DataKey::Paused`).
     pub paused: bool,
     /// Pause flag that was in effect immediately before this call.
     pub previous: bool,
@@ -1984,9 +2078,14 @@ impl MilestoneEscrow {
             .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 
+    /// Load the single source of truth for the admin: the **instance** entry.
+    ///
+    /// Pre-#679 deployments also carry a legacy persistent `DataKey::Admin`
+    /// copy. It is deliberately ignored here; see the migration note on
+    /// `migrate`.
     fn load_admin(env: &Env) -> Result<Address, Error> {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
     }
@@ -1994,32 +2093,6 @@ impl MilestoneEscrow {
     fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = Self::load_admin(env)?;
-        if stored_admin != *admin {
-            return Err(Error::Unauthorized);
-        }
-        Ok(())
-    }
-
-    /// Variant of `require_admin` that reads `DataKey::Admin` from **instance**
-    /// storage instead of persistent storage.
-    ///
-    /// During `initialize` the admin address is written to both
-    /// `instance()` and `persistent()` storage (see `initialize`).  Callers
-    /// that also write other instance-storage keys in the same call can use
-    /// this helper so that both the admin read and the subsequent instance write
-    /// touch a **single** ledger entry rather than two.
-    ///
-    /// # Errors
-    /// * `NotInitialized` – The instance `Admin` key is absent (contract has
-    ///   not been initialised).
-    /// * `Unauthorized`   – `admin` does not match the stored admin.
-    fn require_admin_from_instance(env: &Env, admin: &Address) -> Result<(), Error> {
-        admin.require_auth();
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
         if stored_admin != *admin {
             return Err(Error::Unauthorized);
         }
@@ -2047,6 +2120,13 @@ impl MilestoneEscrow {
 
     /// Reject while milestone `index`'s dispute is younger than the dispute
     /// timeout, so a resolver cannot pre-empt the arbiter (issue #761).
+    ///
+    /// This check guards the admin cancel overrides, whose cancel lock is
+    /// itself one of the pauses that opens the pause clock (#972). It therefore
+    /// uses the nominal timeout: adjusting it for the still-active cancel lock
+    /// would deadlock the only endpoint that can settle a locked, disputed
+    /// escrow. Party-initiated `escalate_dispute` applies the pause adjustment
+    /// separately, because parties really are blocked while the pause runs.
     fn assert_dispute_timeout_elapsed(env: &Env, index: u32) -> Result<(), Error> {
         let Some(info) = env
             .storage()
@@ -2082,7 +2162,7 @@ impl MilestoneEscrow {
     /// 32-signer multisig set.
     ///
     /// A deployment upgraded from the old layout still holds these values in
-    /// instance storage until the admin calls `migrate_cold_config`, so an
+    /// instance storage until the admin calls `migrate`, so an
     /// absent persistent entry falls back to the instance copy. The instance
     /// entry is loaded by every call anyway, so the fallback costs no extra
     /// ledger entry, and the persistent copy always wins once written.
@@ -2146,6 +2226,17 @@ impl MilestoneEscrow {
         Ok(meta)
     }
 
+    /// Fee changes are only unilateral before funding. Once the parties have
+    /// committed funds, the allocation is frozen into `JobMeta` and any change
+    /// needs both parties' signatures (issue #694).
+    fn require_fee_allocation_change_allowed(env: &Env) -> Result<(), Error> {
+        let meta = Self::load_job_meta(env)?;
+        if meta.funded {
+            Self::require_client_and_freelancer_consent(env)?;
+        }
+        Ok(())
+    }
+
     /// The one "has `initialize` run?" predicate. `DataKey::Job` is written by
     /// every initialisation path and is what `load_job_meta` reads, so it is
     /// the marker; do not test `Admin` or `Version` ad hoc.
@@ -2175,45 +2266,8 @@ impl MilestoneEscrow {
         Ok(meta)
     }
 
-    /// Read the dispute flag for `index`.  Returns `false` when the flag
-    /// was never written or has been evicted.
-    #[allow(dead_code)]
-    fn is_dispute_flag(env: &Env, index: u32) -> bool {
-        env.storage()
-            .temporary()
-            .get::<_, bool>(&DataKey::DisputeFlag(index))
-            .unwrap_or(false)
-    }
-
-    /// Write the dispute flag to temporary storage.  This is a cheap,
-    /// short-lived signal that the milestone at `index` has been disputed.
-    /// Callers that need to verify dispute status can read this temporary key
-    /// rather than fetching the full persistent `Milestone` entry, reducing
-    /// ledger footprint rent on the read path.
-    fn store_dispute_flag(env: &Env, index: u32) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::DisputeFlag(index), &true);
-    }
-
-    /// Release the dispute lock for a given milestone index.  Called
-    /// unconditionally after every `raise_dispute` attempt — success or
-    /// failure — so the lock can never become permanently held.
-    fn release_dispute_lock(env: &Env, milestone_index: u32) {
-        env.storage()
-            .temporary()
-            .remove(&DataKey::DisputeLock(milestone_index));
-    }
-
     fn ensure_not_paused(env: &Env) -> Result<(), Error> {
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
-        if paused || Self::read_emergency_paused(env) {
-            return Err(Error::Paused);
-        }
+        Self::assert_not_paused(env)?;
         let cancel_locked = env
             .storage()
             .instance()
@@ -2221,51 +2275,6 @@ impl MilestoneEscrow {
             .unwrap_or(false);
         if cancel_locked {
             return Err(Error::EscrowLocked);
-        }
-        Ok(())
-    }
-
-    /// Return `Err(Error::TaxWithholdingInProgress)` when a tax withholding
-    /// calculation is active so that state-modifying operations can block
-    /// concurrent mutations.
-    fn assert_tax_withholding_not_locked(env: &Env) -> Result<(), Error> {
-        let locked: bool = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::TaxWithholdingExecutionLock)
-            .unwrap_or(false);
-        if locked {
-            return Err(Error::TaxWithholdingInProgress);
-        }
-        Ok(())
-    }
-
-    /// Return `Err(Error::PlatformFeeAllocationInProgress)` when a platform
-    /// fee allocation operation is active so that state-modifying operations
-    /// can block concurrent mutations.
-    fn assert_platform_fee_allocation_not_locked(env: &Env) -> Result<(), Error> {
-        let locked: bool = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::PlatformFeeAllocationLock)
-            .unwrap_or(false);
-        if locked {
-            return Err(Error::PlatformFeeAllocationInProgress);
-        }
-        Ok(())
-    }
-
-    /// Return `Err(Error::EmergencyPauseInProgress)` when an emergency pause
-    /// operation is active so that state-modifying operations can block
-    /// concurrent mutations.
-    fn assert_emergency_pause_not_locked(env: &Env) -> Result<(), Error> {
-        let locked: bool = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::EpLk)
-            .unwrap_or(false);
-        if locked {
-            return Err(Error::EmergencyPauseInProgress);
         }
         Ok(())
     }
@@ -2325,6 +2334,75 @@ impl MilestoneEscrow {
     /// * `InsufficientBalance` – the transfer failed and the contract does not
     ///   hold `amount` beyond what is already owed.
     /// * `ArithmeticOverflow`  – the credited totals overflow `i128`.
+    /// Treasury receiving platform fees. Defaults to the admin until an
+    /// admin-timelocked update is applied, so old deployments need no migration.
+    fn treasury_address(env: &Env) -> Result<Address, Error> {
+        match env.storage().instance().get(&DataKey::Treasury) {
+            Some(treasury) => Ok(treasury),
+            None => Self::load_admin(env),
+        }
+    }
+
+    /// Treasury share using the same rounding as `calculate_platform_fee_split`.
+    /// No allocation stored means no fee (fee-free legacy behaviour).
+    fn treasury_fee_for(env: &Env, amount: i128) -> Result<i128, Error> {
+        let allocation = match Self::load_platform_fee_allocation(env) {
+            Ok(allocation) => allocation,
+            Err(_) => return Ok(0),
+        };
+        if allocation.treasury_bps == 0 {
+            return Ok(0);
+        }
+        // For ordinary amounts use the shared split so rounding matches
+        // `calculate_platform_fee_split` exactly. At the i128 ceiling the
+        // intermediate `amount * bps` can overflow, so divide first there.
+        if amount > i128::MAX / BPS_SCALE as i128 {
+            let scale = BPS_SCALE as i128;
+            let bps = allocation.treasury_bps as i128;
+            return amount
+                .checked_div(scale)
+                .and_then(|q| q.checked_mul(bps))
+                .and_then(|q| {
+                    q.checked_add(
+                        amount
+                            .checked_rem(scale)?
+                            .checked_mul(bps)?
+                            .checked_div(scale)?,
+                    )
+                })
+                .ok_or(Error::ArithmeticOverflow);
+        }
+        Ok(Self::allocate_platform_fee(amount, &allocation)?.treasury_amount)
+    }
+
+    /// Pay a freelancer, deducting the configured treasury fee. Refund paths
+    /// never call this helper, so they remain fee-free.
+    fn pay_freelancer_with_fee(
+        env: &Env,
+        meta: &JobMeta,
+        token_client: &token::Client,
+        amount: &i128,
+    ) -> Result<(), Error> {
+        let fee = Self::treasury_fee_for(env, *amount)?;
+        if fee <= 0 {
+            return Self::pay_or_credit(env, token_client, &meta.freelancer, amount);
+        }
+        let net = amount.checked_sub(fee).ok_or(Error::ArithmeticOverflow)?;
+        Self::pay_or_credit(env, token_client, &meta.freelancer, &net)?;
+        let treasury = Self::treasury_address(env)?;
+        Self::pay_or_credit(env, token_client, &treasury, &fee)?;
+        env.events().publish(
+            (symbol_short!("pf_charge"),),
+            PlatformFeeChargedEvent {
+                recipient: meta.freelancer.clone(),
+                gross_amount: *amount,
+                fee_amount: fee,
+                treasury,
+            },
+        );
+        Ok(())
+    }
+
     fn pay_or_credit(
         env: &Env,
         token_client: &token::Client,
@@ -2357,34 +2435,6 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Return `Err(Error::TimeExtInProgress)` when a milestone
-    /// time-extension split is mid-execution.
-    fn assert_time_ext_not_locked(env: &Env) -> Result<(), Error> {
-        let locked: bool = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::TimeExtExecutionLock)
-            .unwrap_or(false);
-        if locked {
-            return Err(Error::TimeExtInProgress);
-        }
-        Ok(())
-    }
-
-    /// Return `Err(Error::PaymentStreamingInProgress)` when a payment-streaming
-    /// split is mid-execution.
-    fn assert_payment_streaming_not_locked(env: &Env) -> Result<(), Error> {
-        let locked: bool = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
-            .unwrap_or(false);
-        if locked {
-            return Err(Error::PaymentStreamingInProgress);
-        }
-        Ok(())
-    }
-
     fn validate_fee_allocation(
         client_bps: u32,
         freelancer_bps: u32,
@@ -2408,6 +2458,7 @@ impl MilestoneEscrow {
     ///
     /// Rejects zero/negative principal, rate, or duration immediately, and
     /// rejects rates above 100 % (`BPS_SCALE`) as an unsupported configuration.
+    #[cfg(test)]
     fn validate_interest_yield_params(
         principal: i128,
         annual_rate_bps: i128,
@@ -2430,6 +2481,7 @@ impl MilestoneEscrow {
 
     /// Validate stored yield-share configuration: both shares must be finite and
     /// sum exactly to `BPS_SCALE` (10_000).
+    #[cfg(test)]
     fn validate_interest_yield_share_config(
         client_share_bps: u32,
         freelancer_share_bps: u32,
@@ -2445,6 +2497,7 @@ impl MilestoneEscrow {
 
     /// Validate an admin-configured annual yield rate in basis points.
     /// `0` is allowed (disables accrual); values above `BPS_SCALE` are rejected.
+    #[cfg(test)]
     fn validate_yield_rate_bps(rate_bps: u32) -> Result<(), Error> {
         if rate_bps > BPS_SCALE {
             return Err(Error::InvalidRatio);
@@ -2469,6 +2522,7 @@ impl MilestoneEscrow {
     /// `get_escrow_interest_yield_no_mutation_tests` pins that guarantee by
     /// comparing whole-ledger snapshots (`Env::to_ledger_snapshot`) taken
     /// around the public read paths that call this helper.
+    #[cfg(test)]
     fn load_interest_yield_state(env: &Env) -> Result<EscrowInterestYieldState, Error> {
         Self::cold_get(env, &DataKey::InterestYieldState).ok_or(Error::NotInitialized)
     }
@@ -2499,6 +2553,7 @@ impl MilestoneEscrow {
             .unwrap_or(false))
     }
 
+    #[cfg(test)]
     fn store_interest_yield_state(env: &Env, state: &EscrowInterestYieldState) {
         env.storage()
             .persistent()
@@ -2563,10 +2618,6 @@ impl MilestoneEscrow {
 
         // After preconditions pass, check authorization and contract state
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // 1. Calculate gross split with explicit round-to-nearest arithmetic.
         // Client receives the nearest stroop; freelancer payout receives the exact
@@ -2608,23 +2659,10 @@ impl MilestoneEscrow {
             treasury_fee_share,
         };
 
-        // 4. Emit a structured event carrying the inputs and the resulting state.
-        env.events().publish(
-            (symbol_short!("sprefnet"),),
-            SplitRefundNetDistributionEvent {
-                total_amount,
-                client_refund_bps,
-                freelancer_payout_bps,
-                client_net_refund: distribution.client_net_refund,
-                client_fee_share: distribution.client_fee_share,
-                freelancer_net_payout: distribution.freelancer_net_payout,
-                treasury_fee_share: distribution.treasury_fee_share,
-            },
-        );
-
         Ok(distribution)
     }
 
+    #[cfg(test)]
     fn ensure_interest_yield_unlocked(env: &Env) -> Result<(), Error> {
         let state = Self::load_interest_yield_state(env)?;
         if state.locked {
@@ -2649,6 +2687,7 @@ impl MilestoneEscrow {
     /// * absent state  – not locked, so the write is allowed to create it;
     /// * present, `locked == false` – writable;
     /// * present, `locked == true`  – the illegal source state, `EscrowLocked`.
+    #[cfg(test)]
     fn ensure_interest_yield_writable(env: &Env) -> Result<(), Error> {
         let state: Option<EscrowInterestYieldState> =
             Self::cold_get(env, &DataKey::InterestYieldState);
@@ -2863,7 +2902,13 @@ impl MilestoneEscrow {
 
     /// Record `bit` in the acceptance mask on behalf of `party` and publish
     /// the acceptance under `topic`.
-    fn record_acceptance(env: &Env, party: Address, bit: u32, topic: Symbol) -> Result<(), Error> {
+    fn record_acceptance(
+        env: &Env,
+        party: Address,
+        client: Address,
+        bit: u32,
+        topic: Symbol,
+    ) -> Result<(), Error> {
         let mask = Self::load_acceptance(env);
         if mask & bit != 0 {
             return Err(Error::InvalidStatus);
@@ -2874,13 +2919,33 @@ impl MilestoneEscrow {
             .set(&DataKey::Acceptance, &new_mask);
 
         env.events().publish(
-            (topic,),
+            (topic, party.clone(), client),
             JobAcceptedEvent {
                 party,
                 acceptance_mask: new_mask,
             },
         );
         Ok(())
+    }
+
+    /// Number of milestones holding their own deposit (see
+    /// `DataKey::FundedCount`).  O(1) once the counter exists; escrows that
+    /// predate it fall back to counting `Milestone::funded` once.
+    fn load_funded_count(env: &Env, meta: &JobMeta) -> Result<u32, Error> {
+        if let Some(count) = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::FundedCount)
+        {
+            return Ok(count);
+        }
+        let mut count = 0u32;
+        for index in 0..meta.milestone_count {
+            if Self::load_milestone(env, index)?.funded {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     fn load_milestone(env: &Env, index: u32) -> Result<Milestone, Error> {
@@ -2968,6 +3033,15 @@ impl MilestoneEscrow {
             if Self::is_terminal_status(&milestone.status) {
                 continue;
             }
+            // PerMilestone jobs can have milestones whose tokens have not been
+            // deposited yet. They hold no escrow balance, so counting their
+            // amount as an obligation would make `sweep_excess` return
+            // InsufficientBalance for stray tokens until every milestone is
+            // funded (#943). Upfront jobs have `meta.funded` set, so they are
+            // unaffected.
+            if !Self::milestone_is_funded(meta, &milestone) {
+                continue;
+            }
             let remaining = milestone
                 .amount
                 .checked_sub(milestone.released_amount)
@@ -2996,22 +3070,6 @@ impl MilestoneEscrow {
         Ok(outstanding)
     }
 
-    /// Write the delivery timestamp to temporary storage.  Temporary entries
-    /// are automatically evicted by the network after their TTL expires, which
-    /// makes them the correct storage tier for single-use, deadline-scoped
-    /// workflow state like the auto-release window.
-    fn store_delivered_at(env: &Env, index: u32, timestamp: u64) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::DeliveredAt(index), &timestamp);
-    }
-
-    /// Read the delivery timestamp from temporary storage.  Returns `None` if
-    /// the entry has already been evicted (TTL expired) or was never written.
-    fn load_delivered_at(env: &Env, index: u32) -> Option<u64> {
-        env.storage().temporary().get(&DataKey::DeliveredAt(index))
-    }
-
     fn auto_release_deadline(
         meta: &JobMeta,
         delivered_at: u64,
@@ -3023,16 +3081,27 @@ impl MilestoneEscrow {
             .ok_or(Error::ArithmeticOverflow)
     }
 
-    /// Write the terminal approval flag to temporary storage.  This is a
-    /// cheap, short-lived signal that the milestone at `index` has been fully
-    /// released via `approve_milestone`.  Callers that only need to verify
-    /// completion can read this temporary key rather than fetching the full
-    /// persistent `Milestone` entry, reducing ledger footprint rent on the
-    /// hot read path.
-    fn store_milestone_released(env: &Env, index: u32) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::MilestoneReleased(index), &true);
+    /// Reject client review actions on a `Delivered` milestone once its
+    /// auto-release deadline has passed, so the expired window cannot be
+    /// undone before the freelancer claims.
+    fn assert_review_window_open(
+        env: &Env,
+        meta: &JobMeta,
+        milestone_index: u32,
+        milestone: &Milestone,
+    ) -> Result<(), Error> {
+        if milestone.status != MilestoneStatus::Delivered {
+            return Ok(());
+        }
+        let delivered_at = milestone.delivered_at;
+        let extension = Self::load_time_extension(env, milestone_index);
+        let nominal_deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        let baseline = Self::window_pause_baseline(env, milestone_index);
+        let deadline = Self::adjusted_deadline(env, nominal_deadline, baseline)?;
+        if env.ledger().timestamp() >= deadline {
+            return Err(Error::ReviewWindowClosed);
+        }
+        Ok(())
     }
 
     fn load_time_extension(env: &Env, index: u32) -> u32 {
@@ -3043,62 +3112,116 @@ impl MilestoneEscrow {
             .unwrap_or(0)
     }
 
-    /// Check whether `approve_milestone` has marked the given milestone index
-    /// as fully released via the temporary completion flag.  Returns `false`
-    /// if the flag was never written or has been evicted.
-    #[allow(dead_code)]
-    fn is_milestone_released_flag(env: &Env, index: u32) -> bool {
-        env.storage()
-            .temporary()
-            .get::<_, bool>(&DataKey::MilestoneReleased(index))
-            .unwrap_or(false)
-    }
-
-    /// Persist the applied client-refund BPS under the compact temporary key
-    /// `ArbitrationSplitBps(index)`.  Only a single `u32` is written — the
-    /// freelancer share is always `BPS_SCALE - client_refund_bps` and is never
-    /// stored separately.
-    fn store_arbitration_split_bps(env: &Env, index: u32, client_refund_bps: u32) {
-        env.storage()
-            .temporary()
-            .set(&DataKey::ArbitrationSplitBps(index), &client_refund_bps);
-    }
-
-    /// Read the compact arbitration-split BPS for `index` from temporary
-    /// storage.  Returns `None` if the entry was never written or was evicted.
-    fn load_arbitration_split_bps(env: &Env, index: u32) -> Option<u32> {
-        env.storage()
-            .temporary()
-            .get(&DataKey::ArbitrationSplitBps(index))
-    }
-
-    /// Cheap presence check for whether an arbitration split has been applied
-    /// to `index`, without loading the full persistent `Milestone` entry.
-    #[allow(dead_code)]
-    fn is_arbitration_split_applied(env: &Env, index: u32) -> bool {
-        Self::load_arbitration_split_bps(env, index).is_some()
-    }
-
     // ── pause guard ──────────────────────────────────────────────────────────
 
-    /// Return `Err(Error::EscrowPaused)` when an admin pause is active so that
-    /// every user-facing endpoint can call this as its first operation.
+    /// Return `Err(Error::Paused)` when the admin pause or the party
+    /// emergency pause is active (see `is_paused`) so that every user-facing
+    /// endpoint can call this as its first operation.
     fn assert_not_paused(env: &Env) -> Result<(), Error> {
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
-        if paused {
+        if Self::is_paused(env) {
             return Err(Error::Paused);
         }
         Ok(())
     }
 
-    fn increment_reputation(env: &Env, address: &Address) {
+    // ── pause-time accounting (#972) ──────────────────────────────────────────
+    //
+    // Every state that `ensure_not_paused` blocks stops the parties from
+    // acting, so none of that wall-clock time may consume a response window.
+    // One interval is shared by overlapping admin/party/cancel-lock pauses,
+    // and a per-window baseline records the cumulative clock when that window
+    // opened, so pauses that ended before the window started are not counted.
+
+    /// True while any state that blocks user actions is active.
+    fn is_pause_clock_active(env: &Env) -> bool {
+        if Self::is_paused(env) {
+            return true;
+        }
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::CancelLock)
+            .unwrap_or(false)
+    }
+
+    /// Open the pause interval once, when the first blocking state is entered.
+    fn start_pause_clock(env: &Env) {
+        let instance = env.storage().instance();
+        if !instance.has(&DataKey::PausedAt) {
+            instance.set(&DataKey::PausedAt, &env.ledger().timestamp());
+        }
+    }
+
+    /// Close the interval once every blocking state is gone and bank its
+    /// duration. An overlapping pause leaves the interval open, so the same
+    /// seconds are never counted twice.
+    fn end_pause_clock(env: &Env) -> Result<(), Error> {
+        if Self::is_pause_clock_active(env) {
+            return Ok(());
+        }
+        let instance = env.storage().instance();
+        let Some(started_at) = instance.get::<_, u64>(&DataKey::PausedAt) else {
+            return Ok(());
+        };
+        let elapsed = env.ledger().timestamp().saturating_sub(started_at);
+        let accumulated = instance
+            .get::<_, u64>(&DataKey::PausedSeconds)
+            .unwrap_or(0)
+            .checked_add(elapsed)
+            .ok_or(Error::ArithmeticOverflow)?;
+        instance.set(&DataKey::PausedSeconds, &accumulated);
+        instance.remove(&DataKey::PausedAt);
+        Ok(())
+    }
+
+    /// Cumulative paused seconds up to the current ledger timestamp, including
+    /// the still-open interval.
+    fn current_paused_seconds(env: &Env) -> Result<u64, Error> {
+        let accumulated = env
+            .storage()
+            .instance()
+            .get::<_, u64>(&DataKey::PausedSeconds)
+            .unwrap_or(0);
+        let Some(started_at) = env.storage().instance().get::<_, u64>(&DataKey::PausedAt) else {
+            return Ok(accumulated);
+        };
+        accumulated
+            .checked_add(env.ledger().timestamp().saturating_sub(started_at))
+            .ok_or(Error::ArithmeticOverflow)
+    }
+
+    /// Pause seconds that elapsed after a window opened at `baseline`.
+    fn pause_adjustment(env: &Env, baseline: u64) -> Result<u64, Error> {
+        Ok(Self::current_paused_seconds(env)?.saturating_sub(baseline))
+    }
+
+    /// Cumulative pause clock when milestone `index`'s current window opened.
+    fn window_pause_baseline(env: &Env, index: u32) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::WindowPauseBaseline(index))
+            .unwrap_or(0)
+    }
+
+    /// Extend a nominal deadline by the pause time spent inside its window.
+    fn adjusted_deadline(env: &Env, nominal_deadline: u64, baseline: u64) -> Result<u64, Error> {
+        nominal_deadline
+            .checked_add(Self::pause_adjustment(env, baseline)?)
+            .ok_or(Error::ArithmeticOverflow)
+    }
+
+    fn increment_reputation(env: &Env, address: &Address, milestone_index: u32) {
         let key = DataKey::Reputation(address.clone());
         let current: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(current + 1));
+        let new_score = current + 1;
+        env.storage().persistent().set(&key, &new_score);
+        env.events().publish(
+            (symbol_short!("rep"),),
+            ReputationChangedEvent {
+                address: address.clone(),
+                new_score,
+                milestone_index,
+            },
+        );
     }
 
     fn checked_add_amount(total: i128, amount: i128) -> Result<i128, Error> {
@@ -3265,7 +3388,7 @@ impl MilestoneEscrow {
     ///   `MilestoneStatus::Pending` with `released_amount = 0`.
     /// * Each `Milestone.spec_hash` – the corresponding hash from
     ///   `milestone_spec_hashes`.
-    /// * `DataKey::Admin` (instance **and** persistent storage) – the `admin`
+    /// * `DataKey::Admin` (instance storage only) – the `admin`
     ///   address.
     /// * `DataKey::Version` (instance storage) – version marker `1u32`.
     /// * `DataKey::Ep` (instance storage) – emergency-pause flag set to
@@ -3294,10 +3417,8 @@ impl MilestoneEscrow {
     ///
     /// * [`Error::InvalidAddress`] – Any address argument fails the internal
     ///   `validate_address` check, which rejects:
-    ///   - The Stellar zero account
-    ///     (`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF`),
-    ///   - The canonical Soroban zero contract address
-    ///     (`CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4`),
+    ///   - The Stellar zero account,
+    ///   - The canonical Soroban zero contract address,
     ///   - The escrow contract's own address
     ///     (`env.current_contract_address()`).
     ///   The check is applied in parameter order: `admin`, `client`,
@@ -3372,7 +3493,7 @@ impl MilestoneEscrow {
     /// * [`Error::InvalidRatio`] – `settings.arbiter_fee_bps` exceeds
     ///   `MAX_ARBITER_FEE_BPS`.
     /// * [`Error::InvalidDisputeTimeout`] – `settings.dispute_timeout_seconds`
-    ///   is zero.
+    ///   is outside `MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS`.
     /// * Every error documented on `__constructor`.
     #[allow(clippy::too_many_arguments)]
     fn initialize_with_settings(
@@ -3460,10 +3581,12 @@ impl MilestoneEscrow {
     ///
     /// After `dispute_timeout_seconds`, either the client or freelancer may
     /// call `escalate_dispute` to restore the milestone to its status before
-    /// the dispute was raised. The timeout must be non-zero.
+    /// the dispute was raised. The timeout must be within
+    /// `MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS`.
     ///
     /// # Errors
-    /// * [`Error::InvalidDisputeTimeout`] – `dispute_timeout_seconds` is zero.
+    /// * [`Error::InvalidDisputeTimeout`] – `dispute_timeout_seconds` is out
+    ///   of range.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn initialize_with_dispute_timeout(
@@ -3541,6 +3664,9 @@ impl MilestoneEscrow {
         // milestone_count is u32 (Soroban Vec::len() returns u32) so no cast
         // is needed and there is no overflow risk on the count itself.
         let milestone_count = milestone_amounts.len();
+        if milestone_count > MAX_MILESTONES {
+            return Err(Error::InvalidMilestone);
+        }
         // All per-amount and running-total arithmetic is performed inside
         // checked_initialize_total via i128::checked_add (see its rustdoc).
         // Non-positive amounts and sum overflow both return Err(InvalidAmount).
@@ -3554,7 +3680,9 @@ impl MilestoneEscrow {
         if auto_release_seconds == 0 || auto_release_seconds > MAX_AUTO_RELEASE_SECONDS {
             return Err(Error::InvalidDuration);
         }
-        if dispute_timeout_seconds == 0 {
+        if !(MIN_DISPUTE_TIMEOUT_SECONDS..=MAX_DISPUTE_TIMEOUT_SECONDS)
+            .contains(&dispute_timeout_seconds)
+        {
             return Err(Error::InvalidDisputeTimeout);
         }
 
@@ -3580,8 +3708,8 @@ impl MilestoneEscrow {
             },
         );
 
+        // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().persistent().set(
             &DataKey::PlatformFeeAllocation,
@@ -3630,6 +3758,7 @@ impl MilestoneEscrow {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage().instance().set(&DataKey::FundedCount, &0u32);
 
         let meta = JobMeta {
             client,
@@ -3840,10 +3969,7 @@ impl MilestoneEscrow {
             return Err(Error::AdminTransferPending);
         }
 
-        env.storage().persistent().set(&DataKey::Admin, &new_admin);
-        // Keep the instance copy in sync: `require_admin_from_instance`
-        // authorizes against it, so a stale value would leave the old admin
-        // in control of those endpoints.
+        // Single source of truth: instance storage only (#679).
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
         env.events().publish(
@@ -3865,7 +3991,7 @@ impl MilestoneEscrow {
     /// whitelist, and only before the escrow is funded.
     ///
     /// # Parameters
-    /// * `admin` – Must match the stored admin address. Must authorize the
+    /// * `admin` – Must hold the `FeeManager` role (root admin by default). Must authorize the
     ///             call (`admin.require_auth()` is called internally).
     /// * `token` – Token contract address to add to the whitelist. Must not
     ///             be a sentinel zero address or the escrow contract itself.
@@ -3882,7 +4008,7 @@ impl MilestoneEscrow {
     ///
     /// * [`Error::NotInitialized`] – Returned from any of three call sites
     ///   inside the function:
-    ///   1. `require_admin` fails to load `DataKey::Admin` from persistent
+    ///   1. `require_admin` fails to load `DataKey::Admin` from instance
     ///      storage (the contract was never initialized).
     ///   2. `load_job_meta` fails to load `DataKey::JobMeta` from instance
     ///      storage (initialize was never called or storage was cleared).
@@ -3891,17 +4017,15 @@ impl MilestoneEscrow {
     ///   In practice, all three keys are written atomically by `initialize`,
     ///   so only case 1 is reachable after a fully successful initialization.
     ///
-    /// * [`Error::Unauthorized`] – `admin` does not match the stored admin
-    ///   address, or `admin.require_auth()` was not satisfied by the
-    ///   transaction's authorization envelope.
+    /// * [`Error::Unauthorized`] – `admin` is neither the `FeeManager` delegate
+    ///   nor, if none is set, the stored admin, or `admin.require_auth()` was
+    ///   not satisfied by the transaction's authorization envelope.
     ///
     /// * [`Error::InvalidAddress`] – `token` is one of the sentinel invalid
     ///   addresses (checked immediately after the admin check, before any
     ///   storage reads for job metadata or the whitelist):
-    ///   - The Stellar zero account
-    ///     (`GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF`),
-    ///   - The canonical Soroban zero contract
-    ///     (`CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4`),
+    ///   - The Stellar zero account,
+    ///   - The canonical Soroban zero contract,
     ///   - The escrow contract's own address
     ///     (`env.current_contract_address()`).
     ///
@@ -3923,17 +4047,7 @@ impl MilestoneEscrow {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
 
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if token == zero_account || token == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &token)?;
         if token == env.current_contract_address() {
             return Err(Error::InvalidAddress);
         }
@@ -3977,7 +4091,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`      - The contract has not been initialized (missing admin, job, or whitelisted tokens data).
-    /// * `Unauthorized`        - The provided `admin` address does not match the stored admin address.
+    /// * `Unauthorized`        - `admin` is neither the `FeeManager` delegate nor, if none is set,
+    ///   the stored admin.
     /// * `AlreadyFunded`       - The job has already been funded, preventing further whitelist modifications.
     /// * `InvalidAddress`      - The provided `token` address is the zero account or the zero contract.
     /// * `TokenNotWhitelisted` - The whitelist is empty, or the provided `token` is not present in the whitelist.
@@ -3993,17 +4108,7 @@ impl MilestoneEscrow {
 
         // Kept (unlike a bare lookup miss) so the zero sentinels still report
         // `InvalidAddress` rather than `TokenNotWhitelisted`.
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if token == zero_account || token == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &token)?;
 
         let mut whitelist: Vec<Address> =
             Self::cold_get(&env, &DataKey::WhitelistedTokens).ok_or(Error::NotInitialized)?;
@@ -4066,6 +4171,16 @@ impl MilestoneEscrow {
         Self::read_whitelist(&env).ok_or(Error::NotInitialized)
     }
 
+    /// The single settlement token fixed for this escrow at creation (issue #680).
+    ///
+    /// Read-only replacement for the legacy per-escrow whitelist: token
+    /// admission is enforced platform-wide by the factory's allow-list, not by
+    /// the escrow's whitelist, so callers should use this getter when they need
+    /// the currency a job actually settles in.
+    pub fn token(env: Env) -> Result<Address, Error> {
+        Ok(Self::load_job_meta(&env)?.token)
+    }
+
     /// Read-only accessor for `DataKey::WhitelistedTokens`.
     fn read_whitelist(env: &Env) -> Option<Vec<Address>> {
         Self::cold_get(env, &DataKey::WhitelistedTokens)
@@ -4094,11 +4209,6 @@ impl MilestoneEscrow {
     pub fn fund(env: Env, client: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
         Self::validate_fund_client(&env, &client)?;
         client.require_auth();
         let mut meta = Self::load_job_meta(&env)?;
@@ -4119,6 +4229,9 @@ impl MilestoneEscrow {
         // and prevent double-funding via reentrancy
         meta.funded = true;
         Self::store_job_meta(&env, &meta);
+        env.storage()
+            .instance()
+            .set(&DataKey::FundedCount, &meta.milestone_count);
         env.storage()
             .instance()
             .set(&DataKey::FundedAt, &env.ledger().timestamp());
@@ -4146,11 +4259,6 @@ impl MilestoneEscrow {
     pub fn fund_milestone(env: Env, client: Address, milestone_index: u32) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
 
         Self::validate_fund_client(&env, &client)?;
         client.require_auth();
@@ -4173,6 +4281,11 @@ impl MilestoneEscrow {
         if milestone.amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        // Read before this milestone is marked funded: the legacy fallback
+        // counts stored flags, and this milestone is still unfunded.
+        let funded_count = Self::load_funded_count(&env, &meta)?
+            .checked_add(1)
+            .ok_or(Error::ArithmeticOverflow)?;
 
         let token_client = token::Client::new(&env, &meta.token);
         let before = token_client.balance(&env.current_contract_address());
@@ -4192,20 +4305,20 @@ impl MilestoneEscrow {
                 .set(&DataKey::FundedAt, &env.ledger().timestamp());
         }
 
-        let mut all_funded = true;
-        for index in 0..meta.milestone_count {
-            if !Self::load_milestone(&env, index)?.funded {
-                all_funded = false;
-                break;
-            }
-        }
-        if all_funded {
+        env.storage()
+            .instance()
+            .set(&DataKey::FundedCount, &funded_count);
+        if funded_count == meta.milestone_count {
             meta.funded = true;
             Self::store_job_meta(&env, &meta);
         }
 
         env.events().publish(
-            (symbol_short!("msfund"),),
+            (
+                symbol_short!("msfund"),
+                client.clone(),
+                meta.freelancer.clone(),
+            ),
             MilestoneFundedEvent {
                 client,
                 milestone_index,
@@ -4261,11 +4374,6 @@ impl MilestoneEscrow {
         amount: i128,
     ) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
 
         let mut meta = Self::load_job_meta(&env)?;
         if client != meta.client || freelancer != meta.freelancer {
@@ -4307,12 +4415,17 @@ impl MilestoneEscrow {
         meta.milestone_count = new_index + 1;
         meta.total_amount = new_total;
         Self::store_job_meta(&env, &meta);
+        // The job is funded, so every milestone, including this one, holds
+        // its deposit (#999).
+        env.storage()
+            .instance()
+            .set(&DataKey::FundedCount, &meta.milestone_count);
 
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&client, env.current_contract_address(), &amount);
 
         env.events().publish(
-            (symbol_short!("ms_add"),),
+            (symbol_short!("ms_add"), client.clone(), freelancer.clone()),
             MilestoneAddedEvent {
                 client,
                 freelancer,
@@ -4363,11 +4476,6 @@ impl MilestoneEscrow {
         new_amount: i128,
     ) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
 
         let mut meta = Self::load_job_meta(&env)?;
         if client != meta.client || freelancer != meta.freelancer {
@@ -4408,7 +4516,11 @@ impl MilestoneEscrow {
         Self::pay_or_credit(&env, &token_client, &client, &refund)?;
 
         env.events().publish(
-            (symbol_short!("ms_reduce"),),
+            (
+                symbol_short!("ms_reduce"),
+                client.clone(),
+                freelancer.clone(),
+            ),
             MilestoneReducedEvent {
                 client,
                 freelancer,
@@ -4416,6 +4528,111 @@ impl MilestoneEscrow {
                 old_amount: new_amount + refund,
                 new_amount,
                 refund,
+                total_amount: meta.total_amount,
+                milestone_count: meta.milestone_count,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Raise the amount of a `Pending` milestone (issue #1020).
+    ///
+    /// Both parties must sign.  Only `Pending` milestones can be raised, as
+    /// with `reduce_milestone`.  On a funded milestone the client deposits the
+    /// difference in the same call and the received amount is checked, so the
+    /// conservation invariant `total_amount == Σ milestone.amounts` holds
+    /// across the amendment.  In per-milestone mode an unfunded milestone only
+    /// has its stored amount changed; `fund_milestone` later collects it.
+    ///
+    /// # Parameters
+    /// * `client`          – The job's client; pays the difference.
+    /// * `freelancer`      – The job's freelancer; consents to the larger scope.
+    /// * `milestone_index` – Index of the milestone to raise.
+    /// * `new_amount`      – Replacement amount.  Must be strictly above the
+    ///                        milestone's current amount.
+    ///
+    /// # Errors
+    /// * `Paused` / `EscrowLocked`     – Emergency pause or cancel lock is on.
+    /// * `NotInitialized`              – Contract has not been initialized.
+    /// * `Unauthorized`                – `client` / `freelancer` do not match
+    ///                                    the stored job parties.
+    /// * `InvalidMilestone`            – `milestone_index` is out of range.
+    /// * `NotFunded`                   – An upfront escrow has not been funded
+    ///                                    yet.
+    /// * `InvalidStatus`               – The milestone is not `Pending`.
+    /// * `InvalidAmount`               – `new_amount` is not strictly above the
+    ///                                    current amount, or `total_amount`
+    ///                                    overflows `i128`.
+    /// * `InsufficientBalance`         – The escrow received less than the
+    ///                                    difference.
+    pub fn increase_milestone(
+        env: Env,
+        client: Address,
+        freelancer: Address,
+        milestone_index: u32,
+        new_amount: i128,
+    ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::ensure_not_paused(&env)?;
+
+        let mut meta = Self::load_job_meta(&env)?;
+        if client != meta.client || freelancer != meta.freelancer {
+            return Err(Error::Unauthorized);
+        }
+        client.require_auth();
+        freelancer.require_auth();
+
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
+
+        let mut milestone = Self::load_milestone(&env, milestone_index)?;
+        let funded = Self::milestone_is_funded(&meta, &milestone);
+        if !funded && Self::load_funding_mode(&env) != FundingMode::PerMilestone {
+            return Err(Error::NotFunded);
+        }
+        if milestone.status != MilestoneStatus::Pending {
+            return Err(Error::InvalidStatus);
+        }
+        if new_amount <= milestone.amount {
+            return Err(Error::InvalidAmount);
+        }
+        let old_amount = milestone.amount;
+        let difference = new_amount
+            .checked_sub(old_amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let new_total = meta
+            .total_amount
+            .checked_add(difference)
+            .ok_or(Error::InvalidAmount)?;
+
+        milestone.amount = new_amount;
+        Self::store_milestone(&env, milestone_index, &milestone);
+        // Persist amended state BEFORE the token transfer so a reentrant call
+        // sees the updated amount/total (mirrors `fund`).
+        meta.total_amount = new_total;
+        Self::store_job_meta(&env, &meta);
+
+        if funded {
+            let token_client = token::Client::new(&env, &meta.token);
+            let before = token_client.balance(&env.current_contract_address());
+            token_client.transfer(&client, env.current_contract_address(), &difference);
+            let after = token_client.balance(&env.current_contract_address());
+            let received = after.checked_sub(before).unwrap_or(0);
+            if received != difference {
+                return Err(Error::InsufficientBalance);
+            }
+        }
+
+        env.events().publish(
+            (symbol_short!("ms_incr"), client.clone(), freelancer.clone()),
+            MilestoneIncreasedEvent {
+                client,
+                freelancer,
+                milestone_index,
+                old_amount,
+                new_amount,
                 total_amount: meta.total_amount,
                 milestone_count: meta.milestone_count,
             },
@@ -4441,7 +4658,7 @@ impl MilestoneEscrow {
         if meta.freelancer != freelancer {
             return Err(Error::Unauthorized);
         }
-        Self::record_acceptance(&env, freelancer, 1, symbol_short!("acceptjob"))
+        Self::record_acceptance(&env, freelancer, meta.client, 1, symbol_short!("acceptjob"))
     }
 
     /// Accept the job as its arbiter, agreeing to resolve its disputes.
@@ -4460,7 +4677,7 @@ impl MilestoneEscrow {
         if meta.arbiter != arbiter {
             return Err(Error::Unauthorized);
         }
-        Self::record_acceptance(&env, arbiter, 2, symbol_short!("acceptarb"))
+        Self::record_acceptance(&env, arbiter, meta.client, 2, symbol_short!("acceptarb"))
     }
 
     /// Appoint a new arbiter, jointly authorized by the client and the
@@ -4546,7 +4763,7 @@ impl MilestoneEscrow {
         Self::store_job_meta(&env, &meta);
 
         env.events().publish(
-            (symbol_short!("arbchg"),),
+            (symbol_short!("arbchg"), new_arbiter.clone()),
             ArbiterReplacedEvent {
                 client: meta.client.clone(),
                 freelancer: meta.freelancer.clone(),
@@ -4677,7 +4894,11 @@ impl MilestoneEscrow {
         Self::pay_or_credit(&env, &token_client, &meta.client, &total_refunded)?;
 
         env.events().publish(
-            (symbol_short!("unaccref"),),
+            (
+                symbol_short!("unaccref"),
+                meta.client.clone(),
+                meta.freelancer.clone(),
+            ),
             UnacceptedWithdrawnEvent {
                 client: meta.client,
                 token: meta.token,
@@ -4699,6 +4920,8 @@ impl MilestoneEscrow {
     /// * `AlreadyFunded`  – The escrow (or any milestone) is already funded.
     /// * `InvalidStatus`  – The freelancer has already accepted the job.
     /// * `InvalidAmount`  – `due_dates.len()` differs from the milestone count.
+    /// * `InvalidDeadline` – A non-zero due date is at or before the current
+    ///                       ledger timestamp (`0` still clears a deadline).
     pub fn set_milestone_due_dates(
         env: Env,
         client: Address,
@@ -4719,17 +4942,40 @@ impl MilestoneEscrow {
         if due_dates.len() != meta.milestone_count {
             return Err(Error::InvalidAmount);
         }
+        // Validate every date before writing any, so a rejected call cannot
+        // leave a partially updated set of deadlines behind (#924).
+        let now = env.ledger().timestamp();
+        for due_at in due_dates.iter() {
+            if due_at != 0 && due_at <= now {
+                return Err(Error::InvalidDeadline);
+            }
+        }
+        let pause_clock = Self::current_paused_seconds(&env)?;
         for (index, due_at) in due_dates.iter().enumerate() {
             let key = DataKey::DueAt(index as u32);
+            let baseline_key = DataKey::WindowPauseBaseline(index as u32);
             if due_at == 0 {
                 env.storage().persistent().remove(&key);
+                env.storage().persistent().remove(&baseline_key);
             } else {
                 env.storage().persistent().set(&key, &due_at);
+                env.storage().persistent().set(&baseline_key, &pause_clock);
                 env.storage()
                     .persistent()
                     .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&baseline_key, TTL_THRESHOLD, TTL_EXTEND_TO);
             }
         }
+        // Publish only after all writes succeeded, so a rejected call never
+        // announces deadlines that were not stored (#974).
+        env.events().publish(
+            (symbol_short!("duedates"), client.clone()),
+            MilestoneDueDatesSetEvent {
+                due_dates: due_dates.clone(),
+            },
+        );
         Ok(())
     }
 
@@ -4791,9 +5037,11 @@ impl MilestoneEscrow {
         if due_at == 0 {
             return Err(Error::DeadlineNotPassed);
         }
-        let deadline = due_at
+        let nominal_deadline = due_at
             .checked_add(OVERDUE_GRACE_SECONDS)
             .ok_or(Error::ArithmeticOverflow)?;
+        let baseline = Self::window_pause_baseline(&env, milestone_index);
+        let deadline = Self::adjusted_deadline(&env, nominal_deadline, baseline)?;
         if env.ledger().timestamp() <= deadline {
             return Err(Error::DeadlineNotPassed);
         }
@@ -4812,7 +5060,11 @@ impl MilestoneEscrow {
         Self::pay_or_credit(&env, &token_client, &meta.client, &remaining)?;
 
         env.events().publish(
-            (symbol_short!("overdue"),),
+            (
+                symbol_short!("overdue"),
+                meta.client.clone(),
+                meta.freelancer.clone(),
+            ),
             OverdueReclaimedEvent {
                 client: meta.client,
                 milestone_index,
@@ -4874,24 +5126,8 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
         // Check for zero addresses (both account and contract types)
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-
-        if freelancer == zero_account || freelancer == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &freelancer)?;
         freelancer.require_auth();
 
         let meta = Self::load_job_meta(&env)?;
@@ -4920,10 +5156,12 @@ impl MilestoneEscrow {
         milestone.delivered_at = delivered_at;
         milestone.deliverable = deliverable.clone();
         Self::store_milestone(&env, milestone_index, &milestone);
-        // Write the delivery timestamp to temporary storage so that
-        // claim_auto_release and time_until_auto_release can read it from the
-        // optimised temporary tier without touching the persistent Milestone entry.
-        Self::store_delivered_at(&env, milestone_index, delivered_at);
+        // The review/auto-release window opens here (#972): record the pause
+        // clock so only pauses from this point on can extend it.
+        env.storage().persistent().set(
+            &DataKey::WindowPauseBaseline(milestone_index),
+            &Self::current_paused_seconds(&env)?,
+        );
 
         env.events().publish(
             (symbol_short!("deliver"), meta.freelancer.clone()),
@@ -4945,7 +5183,8 @@ impl MilestoneEscrow {
     ///
     /// Returns the milestone to `Pending`, clears `delivered_at` so the previous
     /// auto-release clock cannot fire, and increments `revision_count` up to
-    /// `MAX_REVISIONS` (3). Accounting and funding are unchanged.
+    /// `MAX_REVISIONS` (3). Accounting and funding are unchanged. Returns
+    /// `ReviewWindowClosed` once the auto-release deadline has passed.
     pub fn request_revision(
         env: Env,
         client: Address,
@@ -4954,11 +5193,6 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
         if meta.client != client {
@@ -4975,6 +5209,7 @@ impl MilestoneEscrow {
         if milestone.status != MilestoneStatus::Delivered {
             return Err(Error::InvalidStatus);
         }
+        Self::assert_review_window_open(&env, &meta, milestone_index, &milestone)?;
 
         let current: u32 = env
             .storage()
@@ -4993,15 +5228,19 @@ impl MilestoneEscrow {
         milestone.delivered_at = 0;
         Self::store_milestone(&env, milestone_index, &milestone);
         env.storage()
-            .temporary()
-            .remove(&DataKey::DeliveredAt(milestone_index));
+            .persistent()
+            .remove(&DataKey::WindowPauseBaseline(milestone_index));
         env.storage()
             .temporary()
             .remove(&DataKey::TimeExt(milestone_index));
         Self::clear_time_ext(&env, milestone_index);
 
         env.events().publish(
-            (symbol_short!("msrev"),),
+            (
+                symbol_short!("msrev"),
+                client.clone(),
+                meta.freelancer.clone(),
+            ),
             RevisionRequestedEvent {
                 milestone_index,
                 client,
@@ -5033,11 +5272,6 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::assert_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -5067,15 +5301,18 @@ impl MilestoneEscrow {
         let new_extension = current_extension
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
-        let delivered_at =
-            Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
+        let delivered_at = milestone.delivered_at;
         let new_deadline = Self::auto_release_deadline(&meta, delivered_at, new_extension)?;
         env.storage()
             .persistent()
             .set(&DataKey::TimeExt(milestone_index), &new_extension);
 
         env.events().publish(
-            (symbol_short!("extend"),),
+            (
+                symbol_short!("extend"),
+                client.clone(),
+                meta.freelancer.clone(),
+            ),
             DeadlineExtendedEvent {
                 milestone_index,
                 client,
@@ -5096,7 +5333,6 @@ impl MilestoneEscrow {
     /// writes regardless of the total milestone count:
     ///
     /// - 1× instance read  (`DataKey::Job` → `JobMeta`)
-    /// - 1× temporary read (`DataKey::DeliveredAt(milestone_index)`)
     /// - 1× persistent read  (`DataKey::Milestone(milestone_index)`)
     /// - 1× persistent write (`DataKey::Milestone(milestone_index)`)
     /// - 1× token transfer
@@ -5115,22 +5351,7 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if freelancer == zero_account || freelancer == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &freelancer)?;
         freelancer.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -5172,11 +5393,6 @@ impl MilestoneEscrow {
         milestone_index: u32,
     ) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
         let meta = Self::load_job_meta(&env)?;
 
         Self::release_overdue_milestone(&env, &meta, caller, milestone_index)
@@ -5199,23 +5415,26 @@ impl MilestoneEscrow {
         let mut milestone = Self::load_milestone(env, milestone_index)?;
         Self::require_milestone_is_funded(env, meta, &milestone)?;
 
-        // CHECK 2: Milestone must be in the Delivered state.  Any other status —
-        // including Released (double-claim), Disputed, Refunded, Pending, or
-        // PartiallyReleased — is rejected here, making the guard the sole
-        // gatekeeper against double-execution and out-of-sequence calls.
-        if milestone.status != MilestoneStatus::Delivered {
+        // CHECK 2: Delivered and PartiallyReleased are both eligible. A
+        // partial payment must not switch off the client-silence protection:
+        // the freelancer can claim the remaining balance after the deadline.
+        // The deadline still runs from the original `delivered_at` (no clock
+        // reset on partial payment), so a partial payment cannot postpone it.
+        // Released (double-claim), Disputed, Refunded and Pending are rejected,
+        // making this guard the gatekeeper against out-of-sequence calls.
+        if milestone.status != MilestoneStatus::Delivered
+            && milestone.status != MilestoneStatus::PartiallyReleased
+        {
             return Err(Error::InvalidStatus);
         }
 
-        // CHECK 3: Read the delivery timestamp from temporary storage first
-        //    (optimised ledger-footprint path).  Fall back to the value stored on
-        //    the persistent Milestone entry so that entries written before this
-        //    migration remain fully functional.
-        let delivered_at =
-            Self::load_delivered_at(env, milestone_index).unwrap_or(milestone.delivered_at);
+        // CHECK 3: Read the delivery timestamp from the Milestone entry.
+        let delivered_at = milestone.delivered_at;
         let extension = Self::load_time_extension(env, milestone_index);
 
-        let deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        let nominal_deadline = Self::auto_release_deadline(meta, delivered_at, extension)?;
+        let baseline = Self::window_pause_baseline(env, milestone_index);
+        let deadline = Self::adjusted_deadline(env, nominal_deadline, baseline)?;
         let current = env.ledger().timestamp();
         if current < deadline {
             return Err(Error::DeadlineNotPassed);
@@ -5241,8 +5460,8 @@ impl MilestoneEscrow {
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(env, milestone_index, &milestone);
         Self::clear_time_ext(env, milestone_index);
-        Self::increment_reputation(env, &meta.client);
-        Self::increment_reputation(env, &meta.freelancer);
+        Self::increment_reputation(env, &meta.client, milestone_index);
+        Self::increment_reputation(env, &meta.freelancer, milestone_index);
 
         // INTERACTION: Token transfer is the sole external call and executes only
         //    after all state mutations have been durably persisted.
@@ -5286,23 +5505,39 @@ impl MilestoneEscrow {
     ///   - The timestamp conversion to i64 fails.
     ///   - The subtraction overflows (current > deadline, rare in i64).
     ///   - The job metadata is missing (`NotInitialized`).
-    ///   - The milestone is missing (`InvalidMilestone`).
+    ///   - The milestone index is out of range or the milestone is missing
+    ///     (`InvalidMilestone`).
+    ///   - The milestone is not `Delivered` or `PartiallyReleased`
+    ///     (`InvalidStatus`).
     ///
     /// # Behavior in Edge Cases
     ///
-    /// - Empty state (no milestone): Returns `InvalidMilestone`.
+    /// - Out-of-range index: Returns `InvalidMilestone`.
+    /// - Undelivered / settled milestone: Returns `InvalidStatus` instead of a
+    ///   huge negative "overdue" value.
     /// - Boundary state (large extensions/timestamps): Returns error on overflow.
     /// - Expired milestone: Returns 0 or negative value (seconds past deadline).
     /// - Just-delivered (delivered_at = current): Returns approximately `auto_release_seconds + extension_seconds`.
     pub fn time_until_auto_release(env: Env, milestone_index: u32) -> Result<i64, Error> {
         let meta = Self::load_job_meta(&env)?;
+        if milestone_index >= meta.milestone_count {
+            return Err(Error::InvalidMilestone);
+        }
         let milestone = Self::load_milestone(&env, milestone_index)?;
+        // Only a claimable delivery has an auto-release deadline. Pending,
+        // Released, Refunded and Disputed milestones have delivered_at == 0 or
+        // a stale value, which would otherwise yield a nonsense overdue result.
+        match milestone.status {
+            MilestoneStatus::Delivered | MilestoneStatus::PartiallyReleased => {}
+            _ => return Err(Error::InvalidStatus),
+        }
         // Read delivery timestamp from temporary storage (optimised path) and
         // fall back to the persistent Milestone field for pre-migration entries.
-        let delivered_at =
-            Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
+        let delivered_at = milestone.delivered_at;
         let extension = Self::load_time_extension(&env, milestone_index);
-        let deadline = Self::auto_release_deadline(&meta, delivered_at, extension)?;
+        let nominal_deadline = Self::auto_release_deadline(&meta, delivered_at, extension)?;
+        let baseline = Self::window_pause_baseline(&env, milestone_index);
+        let deadline = Self::adjusted_deadline(&env, nominal_deadline, baseline)?;
         let current = env.ledger().timestamp();
         let deadline_i64 = i64::try_from(deadline).map_err(|_| Error::ArithmeticOverflow)?;
         let current_i64 = i64::try_from(current).map_err(|_| Error::ArithmeticOverflow)?;
@@ -5346,22 +5581,7 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_1 = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_2 = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if client == zero_1 || client == zero_2 || client == env.current_contract_address() {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &client)?;
 
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -5397,7 +5617,7 @@ impl MilestoneEscrow {
         }
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &amount)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &amount)?;
 
         let mut updated_milestone = milestone;
         updated_milestone.released_amount = updated_milestone
@@ -5407,10 +5627,9 @@ impl MilestoneEscrow {
 
         if updated_milestone.released_amount == updated_milestone.amount {
             updated_milestone.status = MilestoneStatus::Released;
-            Self::store_milestone_released(&env, milestone_index);
             Self::clear_time_ext(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         } else {
             updated_milestone.status = MilestoneStatus::PartiallyReleased;
         }
@@ -5459,22 +5678,7 @@ impl MilestoneEscrow {
     pub fn approve_milestone(env: Env, client: Address, milestone_index: u32) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if client == zero_account || client == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &client)?;
 
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -5490,7 +5694,12 @@ impl MilestoneEscrow {
 
         let mut milestone = Self::load_milestone(&env, milestone_index)?;
         Self::require_milestone_is_funded(&env, &meta, &milestone)?;
-        if milestone.status != MilestoneStatus::Delivered {
+        // #673: a partial approval leaves the milestone PartiallyReleased;
+        // the client must still be able to approve the remaining balance in
+        // one call. Other statuses remain invalid here.
+        if milestone.status != MilestoneStatus::Delivered
+            && milestone.status != MilestoneStatus::PartiallyReleased
+        {
             return Err(Error::InvalidStatus);
         }
 
@@ -5503,22 +5712,14 @@ impl MilestoneEscrow {
         }
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &remaining)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &remaining)?;
         milestone.released_amount = milestone.amount;
 
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
         Self::clear_time_ext(&env, milestone_index);
-        Self::increment_reputation(&env, &meta.client);
-        Self::increment_reputation(&env, &meta.freelancer);
-
-        // Write a short-lived completion flag to temporary storage.  This is
-        // transient workflow state: the milestone approval window is now
-        // permanently closed, so this signal does not need to survive beyond
-        // the TTL of the ledger entry.  Using temporary storage avoids the
-        // higher rent cost of a persistent or instance entry for data that has
-        // no long-term value.
-        Self::store_milestone_released(&env, milestone_index);
+        Self::increment_reputation(&env, &meta.client, milestone_index);
+        Self::increment_reputation(&env, &meta.freelancer, milestone_index);
 
         let event_remaining = milestone
             .amount
@@ -5575,10 +5776,76 @@ impl MilestoneEscrow {
         let token_client = token::Client::new(&env, &meta.token);
         token_client.transfer(&env.current_contract_address(), &caller, &amount);
 
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
         env.events().publish(
-            (symbol_short!("withdraw"),),
+            (symbol_short!("withdraw"), caller.clone(), counterparty),
             WithdrawnEvent {
                 recipient: caller,
+                token: meta.token,
+                amount,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Withdraw the amount owed to `caller` to a different `recipient`
+    /// address (#1012).
+    ///
+    /// Credits exist because a transfer to `caller` failed. When that cannot
+    /// be fixed (e.g. the issuer deauthorized the account), `caller` can still
+    /// sign and send the credit somewhere it can be received. Otherwise this
+    /// behaves like `withdraw`: the credit is cleared before the transfer and
+    /// the whole call reverts, keeping the credit, if the transfer fails.
+    ///
+    /// Like `withdraw`, the `withdraw` event's topics are `caller` and the
+    /// counterparty; `recipient` is in its body.
+    ///
+    /// # Parameters
+    /// * `caller`    – Address with an owed balance. Must authorize the call.
+    /// * `recipient` – Address that receives the owed balance.
+    ///
+    /// # Errors
+    /// * `NotInitialized` – Contract has not been initialized.
+    /// * `InvalidAddress` – `recipient` is a zero address or the contract.
+    /// * `InvalidAmount`  – Nothing is owed to `caller`.
+    pub fn withdraw_to(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        caller.require_auth();
+        Self::validate_address(&env, &recipient)?;
+        let meta = Self::load_job_meta(&env)?;
+
+        let key = DataKey::Owed(caller.clone());
+        let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let total_owed = Self::load_total_owed(&env)
+            .checked_sub(amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        // CEI: clear the credit before the external transfer.
+        env.storage().persistent().remove(&key);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalOwed, &total_owed);
+
+        let token_client = token::Client::new(&env, &meta.token);
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
+        env.events().publish(
+            (symbol_short!("withdraw"), caller, counterparty),
+            WithdrawnEvent {
+                recipient,
                 token: meta.token,
                 amount,
             },
@@ -5623,22 +5890,7 @@ impl MilestoneEscrow {
     ///                        positive, or the sum overflows.
     pub fn approve_milestones(env: Env, client: Address, indices: Vec<u32>) -> Result<(), Error> {
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if client == zero_account || client == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &client)?;
 
         client.require_auth();
         let meta = Self::load_job_meta(&env)?;
@@ -5694,9 +5946,8 @@ impl MilestoneEscrow {
             milestone.released_amount = milestone.amount;
             milestone.status = MilestoneStatus::Released;
             Self::store_milestone(&env, milestone_index, &milestone);
-            Self::store_milestone_released(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         // INTERACTION: one transfer for the whole batch.
@@ -5755,6 +6006,8 @@ impl MilestoneEscrow {
     ///                        `PartiallyReleased`.
     /// * `NotAccepted`      – The freelancer or arbiter has not accepted the
     ///                        job.
+    /// * `ReviewWindowClosed` – The milestone is `Delivered` and its
+    ///                        auto-release deadline has passed.
     pub fn raise_dispute(
         env: Env,
         caller: Address,
@@ -5763,54 +6016,16 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
 
         // ── Caller validation (before any storage write) ─────────────────
         // Reject zero addresses before touching ledger state so that no
         // storage entry is mutated on an invalid caller.
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
 
         // require_dispute_party performs caller.require_auth() + verifies the
         // caller matches the stored client or freelancer in a single step.
-        // Running this before the DisputeLock write ensures that neither an
-        // unauthorized caller nor a wrong-party caller can cause any storage
-        // mutation.
         let meta = Self::require_dispute_party(&env, &caller)?;
-
-        // ── Re-entrancy lock ─────────────────────────────────────────────
-        // The lock is acquired only after the caller is confirmed to be
-        // authorized, so a rejected call leaves no trace in storage.
-        if env
-            .storage()
-            .temporary()
-            .has(&DataKey::DisputeLock(milestone_index))
-        {
-            return Err(Error::DisputeAlreadyRaised);
-        }
-        env.storage()
-            .temporary()
-            .set(&DataKey::DisputeLock(milestone_index), &true);
-
-        let result = Self::raise_dispute_inner(&env, caller, milestone_index, reason_hash, meta);
-
-        // Always release the lock regardless of success or failure.
-        Self::release_dispute_lock(&env, milestone_index);
-
-        result
+        Self::raise_dispute_inner(&env, caller, milestone_index, reason_hash, meta)
     }
 
     /// Core dispute logic extracted so that the lock guard in
@@ -5854,6 +6069,7 @@ impl MilestoneEscrow {
             MilestoneStatus::Delivered | MilestoneStatus::PartiallyReleased => {}
             _ => return Err(Error::InvalidStatus),
         }
+        Self::assert_review_window_open(env, &meta, milestone_index, &milestone)?;
 
         let disputed_at = env.ledger().timestamp();
         env.storage().persistent().set(
@@ -5863,15 +6079,19 @@ impl MilestoneEscrow {
                 previous_status: milestone.status.clone(),
                 reason_hash: reason_hash.clone(),
                 evidence: Vec::new(env),
+                raised_by: caller.clone(),
             },
+        );
+        // Escalation timeout starts at the dispute (#972). The same key carries
+        // the baseline for every milestone clock, and the statuses are
+        // mutually exclusive: Pending (due date), Delivered (review) and
+        // Disputed never overlap.
+        env.storage().persistent().set(
+            &DataKey::WindowPauseBaseline(milestone_index),
+            &Self::current_paused_seconds(env)?,
         );
         milestone.status = MilestoneStatus::Disputed;
         Self::store_milestone(env, milestone_index, &milestone);
-
-        // Write a short-lived dispute flag to temporary storage so that callers
-        // can verify dispute status without loading the full persistent
-        // Milestone entry, reducing ledger footprint on the read path.
-        Self::store_dispute_flag(env, milestone_index);
 
         env.events().publish(
             (symbol_short!("dispute"), caller.clone()),
@@ -5919,26 +6139,12 @@ impl MilestoneEscrow {
         milestone_index: u32,
         evidence_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
 
         // Validate the caller before any storage read/write so an unauthorized
         // address neither pays for the dispute lookup nor mutates state.
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
         let meta = Self::require_dispute_party(&env, &caller)?;
         if !meta.funded {
             return Err(Error::NotFunded);
@@ -5985,25 +6191,40 @@ impl MilestoneEscrow {
 
     /// Read the on-chain record for an open dispute (#712).
     ///
-    /// Returns the raising party's `reason_hash`, the ledger timestamp of the
-    /// raise (`disputed_at`), the status to restore on escalation, and every
-    /// evidence hash submitted so far. Callers use this to anchor arbitration
+    /// Returns the raising party's `reason_hash`, who raised the dispute
+    /// (`raised_by`), the ledger timestamp of the raise (`disputed_at`), the
+    /// status to restore on escalation, and every evidence hash submitted so
+    /// far. Callers use this to anchor arbitration
     /// context without relying on off-chain metadata.
     ///
     /// # Errors
     /// * [`Error::InvalidStatus`] – No open dispute exists for the milestone.
     pub fn get_dispute_info(env: Env, milestone_index: u32) -> Result<DisputeInfo, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::DisputeInfo(milestone_index))
-            .ok_or(Error::InvalidStatus)
+        let key = DataKey::DisputeInfo(milestone_index);
+        let persistent = env.storage().persistent();
+        let fields: Map<Symbol, Val> = persistent.get(&key).ok_or(Error::InvalidStatus)?;
+        if fields.contains_key(Symbol::new(&env, "raised_by")) {
+            return persistent.get(&key).ok_or(Error::InvalidStatus);
+        }
+        // Schema-3 record read between `upgrade` and `migrate`: getters keep
+        // working, with the same client placeholder `migrate` would write.
+        let old: DisputeInfoV3 = persistent.get(&key).ok_or(Error::InvalidStatus)?;
+        let meta = Self::load_job_meta(&env)?;
+        Ok(DisputeInfo {
+            disputed_at: old.disputed_at,
+            previous_status: old.previous_status,
+            reason_hash: old.reason_hash,
+            evidence: old.evidence,
+            raised_by: meta.client,
+        })
     }
 
     /// Escalate an unresolved dispute after its configured timeout by
     /// restoring the milestone to the status it had before the dispute.
     ///
     /// Either escrow party may call this function. A restored Delivered
-    /// milestone receives a fresh auto-release window starting at escalation.
+    /// milestone keeps its original auto-release deadline, so a dispute and
+    /// escalation loop cannot extend the review window.
     ///
     /// # Errors
     /// * [`Error::Paused`] – The contract is emergency-paused.
@@ -6018,23 +6239,8 @@ impl MilestoneEscrow {
     pub fn escalate_dispute(env: Env, caller: Address, milestone_index: u32) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
 
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
         let meta = Self::require_dispute_party(&env, &caller)?;
         if !meta.funded {
             return Err(Error::NotFunded);
@@ -6058,25 +6264,22 @@ impl MilestoneEscrow {
             .get(&DataKey::DisputeTimeout)
             .unwrap_or(DISPUTE_TIMEOUT_SECONDS);
         let escalated_at = env.ledger().timestamp();
-        let elapsed = escalated_at
-            .checked_sub(dispute_info.disputed_at)
+        let nominal_deadline = dispute_info
+            .disputed_at
+            .checked_add(timeout)
             .ok_or(Error::DisputeTimeoutNotReached)?;
-        if elapsed < timeout {
+        let baseline = Self::window_pause_baseline(&env, milestone_index);
+        let deadline = Self::adjusted_deadline(&env, nominal_deadline, baseline)
+            .map_err(|_| Error::DisputeTimeoutNotReached)?;
+        if escalated_at < deadline {
             return Err(Error::DisputeTimeoutNotReached);
         }
 
         milestone.status = dispute_info.previous_status.clone();
-        if milestone.status == MilestoneStatus::Delivered {
-            milestone.delivered_at = escalated_at;
-            Self::store_delivered_at(&env, milestone_index, escalated_at);
-        }
         Self::store_milestone(&env, milestone_index, &milestone);
         env.storage()
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
-        env.storage()
-            .temporary()
-            .remove(&DataKey::DisputeFlag(milestone_index));
 
         env.events().publish(
             (symbol_short!("dispescal"),),
@@ -6107,6 +6310,19 @@ impl MilestoneEscrow {
     ///                              the freelancer (milestone → `Released`);
     ///                              `false` refunds it to the client
     ///                              (milestone → `Refunded`).
+    /// * `decision_hash`          – 32-byte commitment to the arbiter's
+    ///                              written decision (#1015). The document
+    ///                              itself stays off-chain (escrow-backend
+    ///                              storage, keyed by this hash); the contract
+    ///                              only stores/echoes the hash in the `resolve`
+    ///                              event. Not validated on-chain — any
+    ///                              32 bytes are accepted, exactly like
+    ///                              `raise_dispute`'s `reason_hash`.
+    ///
+    /// # Notes
+    /// The `DisputeInfo` record is deleted by this call (existing behaviour),
+    /// so the decision hash is anchored by the emitted `resolve` event rather
+    /// than persisted in dispute storage.
     ///
     /// # Errors
     /// * `Paused`           – The contract is emergency-paused.
@@ -6125,29 +6341,11 @@ impl MilestoneEscrow {
         arbiter: Address,
         milestone_index: u32,
         release_to_freelancer: bool,
+        decision_hash: BytesN<32>,
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-
-        if arbiter == zero_account
-            || arbiter == zero_contract
-            || arbiter == env.current_contract_address()
-        {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &arbiter)?;
         arbiter.require_auth();
         let meta = Self::load_job_meta(&env)?;
 
@@ -6209,10 +6407,10 @@ impl MilestoneEscrow {
             Self::store_milestone(&env, milestone_index, &milestone);
 
             if payout > 0 {
-                Self::pay_or_credit(&env, &token_client, &meta.freelancer, &payout)?;
+                Self::pay_freelancer_with_fee(&env, &meta, &token_client, &payout)?;
             }
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         } else {
             milestone.status = MilestoneStatus::Refunded;
             Self::store_milestone(&env, milestone_index, &milestone);
@@ -6239,42 +6437,20 @@ impl MilestoneEscrow {
                 arbiter_fee_amount,
                 released_to_freelancer: release_to_freelancer,
                 status: milestone.status.clone(),
+                decision_hash,
             },
         );
 
         Ok(())
     }
 
-    // ── dispute_arbitration_split: storage-optimised key design ────────────
-    //
-    // Design rationale
-    // ─────────────────
-    // A naïve split-state layout would persist a full `RefundAllocation`
-    // (2×i128 + 2×u32) under Address-bearing keys such as
-    // `(arbiter: Address, milestone_index: u32)`.  On Soroban each Address
-    // contributes ~32 bytes to the ledger key footprint.
-    //
-    // This implementation uses three optimisations to minimise bytes stored:
-    //
-    // 1. **Key is only `u32`** (`ArbitrationSplitBps(milestone_index)`) —
-    //    no Address payload in the key.
-    //
-    // 2. **Value is a single `u32` BPS** — freelancer BPS is derived as
-    //    `BPS_SCALE - client_refund_bps`, so the second BPS field and both
-    //    i128 payout amounts are never written to storage (amounts live in
-    //    the persistent `Milestone` entry already required for settlement).
-    //
-    // 3. **Temporary storage tier** — the compact BPS signal is auto-evicted
-    //    after the dispute workflow ends rather than accruing persistent rent.
-    //
-    // Deterministic access: the same milestone index always maps to the same
-    // key; reads never require scanning Address-keyed maps.
-
     /// Allocate a disputed amount into client refund vs freelancer payout by BPS.
     ///
-    /// Uses floor division for the client share and assigns the remainder to the
-    /// freelancer so the two legs always sum exactly to `total_amount` (no value
-    /// is lost to rounding).
+    /// This is the single allocation helper for arbitration splits. Rounding is
+    /// defined once here: the **client leg is rounded down** (floor) and the
+    /// **freelancer receives the exact remainder**, so the two legs always sum
+    /// to `total_amount` (no value is lost to rounding). Both the read-only
+    /// preview and the payout path call this helper, so they cannot disagree.
     fn allocate_refund_by_bps(
         total_amount: i128,
         client_refund_bps: u32,
@@ -6293,62 +6469,36 @@ impl MilestoneEscrow {
     /// Pure refund-allocation algorithm for split-refund dispute claims.
     ///
     /// Split a disputed milestone amount between client and freelancer using
-    /// arbiter-specified basis points.
-    ///
-    /// The arbiter decides how much of the escrowed `total_amount` the
-    /// freelancer receives, expressed in basis points (1 bp = 0.01 %).
-    /// The client receives the remainder.  Both values are guaranteed to sum
-    /// exactly to `total_amount` because the client share is computed as
-    /// `total_amount - freelancer_share` rather than independently.
+    /// the arbiter-specified `client_refund_bps`. This is the exact same
+    /// allocation (same parameter, same floor rounding) used by
+    /// `apply_dispute_arbitration_split`, so a UI can preview here and execute
+    /// there without a one-stroop surprise.
     ///
     /// # Parameters
-    /// * `total_amount`         – Total escrowed balance to distribute. Must be ≥ 0.
-    /// * `freelancer_bps`       – Basis points awarded to the freelancer. Range: 0 – 10_000.
-    ///                            0 → full refund to client, 10_000 → full release to freelancer.
+    /// * `total_amount`      – Total escrowed balance to distribute. Must be ≥ 0.
+    /// * `client_refund_bps` – Basis points awarded to the client (0 – 10_000).
+    ///                         The freelancer receives the remainder.
     ///
     /// # Returns
-    /// A [`RefundAllocation`] with:
-    /// * `freelancer_payout`      = round_nearest(`total_amount` × `freelancer_bps` / 10_000)
-    /// * `client_refund`          = `total_amount` − `freelancer_payout`
-    /// * `freelancer_payout_bps`  = `freelancer_bps` (echoed for auditability)
-    /// * `client_refund_bps`      = 10_000 − `freelancer_bps`
+    /// A [`RefundAllocation`]. Rounding direction is documented once on
+    /// [`Self::allocate_refund_by_bps`].
     ///
     /// # Errors
     /// * `InvalidAmount` – `total_amount` is negative, or an intermediate
     ///                     multiplication overflows `i128`.
-    /// * `InvalidRatio`  – `freelancer_bps` exceeds 10_000.
+    /// * `InvalidRatio`  – `client_refund_bps` exceeds 10_000.
     pub fn dispute_arbitration_split(
         _env: Env,
         total_amount: i128,
-        freelancer_bps: u32,
+        client_refund_bps: u32,
     ) -> Result<RefundAllocation, Error> {
-        // Guard: total must be non-negative.
         if total_amount < 0 {
             return Err(Error::InvalidAmount);
         }
-        // Guard: basis points must be within [0, 10_000].
-        if freelancer_bps > BPS_SCALE {
+        if client_refund_bps > BPS_SCALE {
             return Err(Error::InvalidRatio);
         }
-
-        // Use the shared split_round_nearest primitive for consistent rounding.
-        // numerator   = freelancer_bps
-        // denominator = BPS_SCALE (10_000)
-        let split =
-            Self::split_round_nearest(total_amount, freelancer_bps as i128, BPS_SCALE as i128)?;
-
-        let freelancer_payout = split.first;
-        let client_refund = split.second;
-        let client_refund_bps = BPS_SCALE
-            .checked_sub(freelancer_bps)
-            .ok_or(Error::InvalidRatio)?;
-
-        Ok(RefundAllocation {
-            client_refund,
-            freelancer_payout,
-            client_refund_bps,
-            freelancer_payout_bps: freelancer_bps,
-        })
+        Self::allocate_refund_by_bps(total_amount, client_refund_bps)
     }
 
     /// Apply a BPS split-refund to a disputed milestone and transfer funds.
@@ -6357,33 +6507,23 @@ impl MilestoneEscrow {
     /// receives the remainder. Milestones end `Refunded` or `Released` for a
     /// one-sided outcome and `Split` when both parties receive a payout.
     ///
-    /// After a successful apply, a compact temporary entry
-    /// `ArbitrationSplitBps(milestone_index) → client_refund_bps` is written so
-    /// downstream readers can confirm the applied split without loading a full
-    /// `RefundAllocation` or an Address-keyed map.
+    /// `decision_hash` is a 32-byte commitment to the arbiter's written
+    /// decision (#1015). The document itself stays off-chain (escrow-backend
+    /// storage, keyed by this hash); the contract only echoes the hash in the
+    /// `resolve` and `arbsplit` events. It is not validated on-chain — any 32
+    /// bytes are accepted, exactly like `raise_dispute`'s `reason_hash`. The
+    /// `DisputeInfo` record is deleted by this call (existing behaviour), so
+    /// the event is where the commitment survives.
     pub fn apply_dispute_arbitration_split(
         env: Env,
         arbiter: Address,
         milestone_index: u32,
         client_refund_bps: u32,
+        decision_hash: BytesN<32>,
     ) -> Result<RefundAllocation, Error> {
         Self::ensure_migrated(&env)?;
         Self::ensure_not_paused(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-
-        if arbiter == zero_account
-            || arbiter == zero_contract
-            || arbiter == env.current_contract_address()
-        {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &arbiter)?;
         arbiter.require_auth();
 
         let meta = Self::load_job_meta(&env)?;
@@ -6433,7 +6573,7 @@ impl MilestoneEscrow {
             Self::pay_or_credit(&env, &token_client, &meta.client, &client_refund)?;
         }
         if freelancer_payout > 0 {
-            Self::pay_or_credit(&env, &token_client, &meta.freelancer, &freelancer_payout)?;
+            Self::pay_freelancer_with_fee(&env, &meta, &token_client, &freelancer_payout)?;
         }
 
         milestone.released_amount = milestone
@@ -6447,9 +6587,8 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::store_milestone_released(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
@@ -6457,10 +6596,6 @@ impl MilestoneEscrow {
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
         Self::clear_time_ext(&env, milestone_index);
-
-        // Compact temporary signal: one u32 key + one u32 value (not a full
-        // RefundAllocation, and not an Address-bearing composite key).
-        Self::store_arbitration_split_bps(&env, milestone_index, client_refund_bps);
 
         let resolved = RefundAllocation {
             client_refund,
@@ -6483,6 +6618,7 @@ impl MilestoneEscrow {
                 arbiter_fee_amount,
                 released_to_freelancer: freelancer_payout > 0,
                 status: milestone.status.clone(),
+                decision_hash: decision_hash.clone(),
             },
         );
 
@@ -6504,6 +6640,7 @@ impl MilestoneEscrow {
                 freelancer_payout_bps: allocation.freelancer_payout_bps,
                 released_amount: milestone.released_amount,
                 status: milestone.status.clone(),
+                decision_hash,
             },
         );
 
@@ -6545,27 +6682,10 @@ impl MilestoneEscrow {
     ///                      in this round (duplicate single-party call).
     pub fn cancel_escrow(env: Env, caller: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
 
-        // Reject if the contract is emergency-paused.
-        let emergency_paused = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Ep)
-            .unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
+        // Reject if the contract is paused.
+        Self::assert_not_paused(&env)?;
 
         // Reject a duplicate cancel — CancelLock already active.
         let already_locked = env
@@ -6613,12 +6733,18 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
         let new_mask = live_mask | bit;
         if new_mask == 3 {
             env.storage().instance().remove(&DataKey::CancelApproval);
             env.storage().instance().set(&DataKey::CancelLock, &true);
+            Self::start_pause_clock(&env);
             env.events().publish(
-                (symbol_short!("cancel"),),
+                (symbol_short!("cancel"), caller.clone(), counterparty),
                 CancelEscrowInitiatedEvent {
                     caller_is_client: caller == meta.client,
                     client: meta.client.clone(),
@@ -6642,7 +6768,7 @@ impl MilestoneEscrow {
             },
         );
         env.events().publish(
-            (symbol_short!("cxlappr"),),
+            (symbol_short!("cxlappr"), caller.clone(), counterparty),
             CancelApprovalRecordedEvent {
                 caller,
                 approval_mask: new_mask,
@@ -6681,17 +6807,7 @@ impl MilestoneEscrow {
     /// * `InvalidStatus`  – `caller` has no recorded approval to revoke.
     pub fn revoke_cancel_approval(env: Env, caller: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if caller == zero_account || caller == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &caller)?;
 
         // Initialization guard runs before `require_auth` so an uninitialized
         // contract returns `NotInitialized` instead of failing on auth.
@@ -6737,8 +6853,13 @@ impl MilestoneEscrow {
             );
         }
 
+        let counterparty = if caller == meta.client {
+            meta.freelancer.clone()
+        } else {
+            meta.client.clone()
+        };
         env.events().publish(
-            (symbol_short!("cancelrev"),),
+            (symbol_short!("cancelrev"), caller.clone(), counterparty),
             CancelApprovalRevokedEvent {
                 caller,
                 approval_mask: new_mask,
@@ -6773,7 +6894,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract not initialised.
-    /// * `Unauthorized`    – Caller is not the verified admin.
+    /// * `Unauthorized`    – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidStatus`   – the compact `C` lock is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to pay out).
@@ -6818,7 +6940,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract not initialised.
-    /// * `Unauthorized`    – Caller is not the verified admin.
+    /// * `Unauthorized`    – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidStatus`   – the compact `C` lock is not active.
     /// * `InvalidAmount`   – Total remaining balance is zero (nothing to refund).
@@ -6906,8 +7029,7 @@ impl MilestoneEscrow {
                     milestone.released_amount = milestone.amount;
                 }
                 milestone.status = settled_status.clone();
-                // Only the persistent Milestone entry is written; the temporary
-                // MilestoneReleased flag is redundant here (issue #383).
+                // Only the persistent Milestone entry is written.
                 Self::store_milestone(env, index, &milestone);
                 Self::clear_time_ext(env, index);
             }
@@ -6920,6 +7042,7 @@ impl MilestoneEscrow {
         // CEI: clear the lock and yield before the external transfer. Only an
         // existing yield entry is removed, so escrows without one pay no write.
         env.storage().instance().remove(&DataKey::CancelLock);
+        Self::end_pause_clock(env)?;
         if env.storage().persistent().has(&DataKey::YieldAccrued) {
             env.storage().persistent().remove(&DataKey::YieldAccrued);
         }
@@ -6938,18 +7061,20 @@ impl MilestoneEscrow {
     /// Upgrade the contract's WASM to `new_wasm_hash`.
     ///
     /// # Business rules
-    /// Caller authorization and pause/lock preconditions are checked before
-    /// any storage mutation or WASM upgrade, so a rejected call leaves the
-    /// contract's storage and installed code untouched.
+    /// Caller authorization is checked before any storage mutation or WASM
+    /// upgrade, so a rejected call leaves the contract's storage and installed
+    /// code untouched. Pause and cancel-lock state are deliberately **not**
+    /// guards: the incident flow is to freeze settlement first and then patch
+    /// the deployed code, and `migrate` is likewise allowed while paused
+    /// (issue #973).
     ///
     /// # Errors
     /// * `NotInitialized` – Admin key has never been stored.
-    /// * `Unauthorized`   – `admin` is not the stored admin.
-    /// * `Paused`         – The contract is currently emergency-paused.
-    /// * `EscrowLocked`   – A cancel is in progress and holds the cancel lock.
+    /// * `Unauthorized`   – `admin` is neither the `Upgrader` delegate nor, if none is set, the
+    ///   stored admin.
+    /// * `InvalidAmount`  – The version counter would overflow.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_role(&env, &admin, AdminRole::Upgrader)?;
-        Self::ensure_not_paused(&env)?;
 
         env.deployer()
             .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));
@@ -6976,30 +7101,6 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Migrate a deployment upgraded from the old storage layout (issue #772).
-    ///
-    /// Moves `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
-    /// `PlatformFeeAllocation` out of the contract-instance entry, which every
-    /// invocation loads, into persistent keys read only by the functions that
-    /// use them. A multisig regime still stored under the pre-#456
-    /// `MultiSigSigners` / `MultiSigThreshold` keys is folded into a persistent
-    /// `MultiSigConfig` on the way.
-    ///
-    /// Call it once, right after `upgrade` to this version. Until then the
-    /// contract keeps working, because every cold-config read falls back to the
-    /// instance copy; the migration only shrinks the instance entry. It is
-    /// idempotent: a second call finds nothing to move.
-    ///
-    /// Returns the number of instance entries that were moved or folded.
-    ///
-    /// # Errors
-    /// * `NotInitialized` – Admin key has never been stored.
-    /// * `Unauthorized`   – `admin` is not the stored admin.
-    pub fn migrate_cold_config(env: Env, admin: Address) -> Result<u32, Error> {
-        Self::require_role(&env, &admin, AdminRole::Upgrader)?;
-        Ok(Self::move_cold_config(&env))
-    }
-
     /// Bring storage written by an older version of this contract up to
     /// `SCHEMA_VERSION`.
     ///
@@ -7012,22 +7113,40 @@ impl MilestoneEscrow {
     /// 2. `migrate(admin)` rewrites the stored entries one schema step at a
     ///    time and records `SCHEMA_VERSION`.  Normal operation resumes.
     ///
+    /// Migration note (#679): before this change the admin was written to both
+    /// instance and persistent storage. The persistent `DataKey::Admin` copy is
+    /// no longer read or written by any code path; the instance copy is the
+    /// single source of truth. Contracts deployed with both copies need no
+    /// state rewrite: a stale persistent value is inert and cannot grant or
+    /// revoke authority, and every admin-changing path now updates exactly one
+    /// entry, so no stale-authority window remains.
+    ///
     /// Steps:
     /// * `1 → 2`: every `Milestone` stored without `spec_hash` gains a zero
     ///   `spec_hash` (#767), and the whitelist, multisig, yield and fee
-    ///   configuration moves to persistent storage (#772, as
-    ///   `migrate_cold_config`).  Milestones that already carry a `spec_hash`
-    ///   (deployments created after #767 but before the schema marker) are
-    ///   left as they are.
+    ///   configuration moves to persistent storage (#772).  Milestones that
+    ///   already carry a `spec_hash` (deployments created after #767 but
+    ///   before the schema marker) are left as they are.
     /// * `2 → 3`: every `Milestone` stored without `deliverable` gains a zero
     ///   `deliverable`.
+    /// * `3 → 4`: every `DisputeInfo` stored without `raised_by` gains one
+    ///   (#997).  The raiser of a dispute that is already open was never
+    ///   stored, so it is set to the job's client as a placeholder; the
+    ///   `dispute` event for that dispute names the real caller.  Disputes
+    ///   raised after the upgrade record their actual raiser.
+    /// * `4 → 5`: an admin-set emergency pause (`DataKey::Ep` without
+    ///   `DataKey::EpParty`) becomes the admin pause `DataKey::Paused`.
+    /// * `5 → 6`: a deployment that is already paused anchors `PausedAt` at
+    ///   the migration ledger, because its original pause start was never
+    ///   recorded (#972).  Fresh deployments need no rewrite.
     ///
     /// Returns the new schema version and emits `("migrate",)` with a
     /// `MigratedEvent`.
     ///
     /// # Errors
     /// * `NotInitialized`  – Admin key has never been stored.
-    /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `Upgrader` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `AlreadyMigrated` – Storage is already at `SCHEMA_VERSION`.
     pub fn migrate(env: Env, admin: Address) -> Result<u32, Error> {
         Self::require_role(&env, &admin, AdminRole::Upgrader)?;
@@ -7039,8 +7158,20 @@ impl MilestoneEscrow {
         if from_version < 3 {
             Self::migrate_milestones_to_v3(&env)?;
         }
+        if from_version < 4 {
+            Self::migrate_disputes_to_v4(&env)?;
+        }
         if from_version < 2 {
             Self::move_cold_config(&env);
+        }
+        if from_version < 5 {
+            Self::migrate_admin_pause_to_v5(&env);
+        }
+        // A deployment upgraded while paused has no historical start time.
+        // Anchor its clock at migration instead of silently counting the whole
+        // pre-upgrade outage against a party (#972).
+        if Self::is_pause_clock_active(&env) {
+            Self::start_pause_clock(&env);
         }
 
         env.storage()
@@ -7055,6 +7186,18 @@ impl MilestoneEscrow {
             },
         );
         Ok(SCHEMA_VERSION)
+    }
+
+    /// Schema 3 → 4: move an admin-set emergency pause (`Ep` set while
+    /// `EpParty` is not) onto the single admin pause flag, `Paused`.
+    fn migrate_admin_pause_to_v5(env: &Env) {
+        let instance = env.storage().instance();
+        let ep: bool = instance.get(&DataKey::Ep).unwrap_or(false);
+        let ep_party: bool = instance.get(&DataKey::EpParty).unwrap_or(false);
+        if ep && !ep_party {
+            instance.set(&DataKey::Paused, &true);
+            instance.set(&DataKey::Ep, &false);
+        }
     }
 
     /// Schema 1/2 → 3 for milestones: add a zero `spec_hash` (#767) and a
@@ -7101,8 +7244,42 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Body of `migrate_cold_config`, shared with `migrate`.  Returns the
-    /// number of instance entries that were moved or folded.
+    /// Schema 3 → 4 for disputes: add `raised_by` (the job's client, as a
+    /// placeholder) to every open `DisputeInfo` stored without it (#997).
+    /// Records that already carry the field are left untouched.
+    fn migrate_disputes_to_v4(env: &Env) -> Result<(), Error> {
+        let meta = Self::load_job_meta(env)?;
+        let persistent = env.storage().persistent();
+        let raised_by_field = Symbol::new(env, "raised_by");
+        for index in 0..meta.milestone_count {
+            let key = DataKey::DisputeInfo(index);
+            let Some(fields) = persistent.get::<_, Map<Symbol, Val>>(&key) else {
+                continue;
+            };
+            if fields.contains_key(raised_by_field.clone()) {
+                continue;
+            }
+            let old: DisputeInfoV3 = persistent.get(&key).ok_or(Error::InvalidStatus)?;
+            persistent.set(
+                &key,
+                &DisputeInfo {
+                    disputed_at: old.disputed_at,
+                    previous_status: old.previous_status,
+                    reason_hash: old.reason_hash,
+                    evidence: old.evidence,
+                    raised_by: meta.client.clone(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Move `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
+    /// `PlatformFeeAllocation` out of the contract-instance entry into
+    /// persistent keys, folding a pre-#456 `MultiSigSigners` /
+    /// `MultiSigThreshold` pair into `MultiSigConfig` (issue #772).  Run by
+    /// `migrate` for the `1 → 2` step.  Returns the number of instance entries
+    /// that were moved or folded.
     fn move_cold_config(env: &Env) -> u32 {
         let mut moved = 0u32;
         if Self::migrate_cold_entry::<Vec<Address>>(env, &DataKey::WhitelistedTokens) {
@@ -7151,7 +7328,7 @@ impl MilestoneEscrow {
     ///    stored `client` and `freelancer` (`Unauthorized`), and each must
     ///    authorise the call (`require_auth`).  Neither party -- nor the admin
     ///    -- can freeze the escrow alone; the admin's unilateral path is
-    ///    `emergency_pause_admin_override`.
+    ///    `admin_pause_escrow`.
     /// 3. No pause transition may already be mid-execution
     ///    (`EmergencyPauseInProgress`).
     /// 4. The contract must not already be paused (`AlreadyPaused`).  A
@@ -7173,8 +7350,6 @@ impl MilestoneEscrow {
         client.require_auth();
         freelancer.require_auth();
 
-        Self::assert_emergency_pause_not_locked(&env)?;
-
         // `load_job_meta` above already proved the contract is initialized, so
         // the pause-flag read cannot miss here; `?` keeps the path honest
         // rather than defaulting a missing flag to `false`.
@@ -7182,10 +7357,9 @@ impl MilestoneEscrow {
             return Err(Error::AlreadyPaused);
         }
 
-        env.storage().instance().set(&DataKey::EpLk, &true);
         env.storage().instance().set(&DataKey::Ep, &true);
         env.storage().instance().set(&DataKey::EpParty, &true);
-        env.storage().instance().set(&DataKey::EpLk, &false);
+        Self::start_pause_clock(&env);
 
         env.events().publish(
             (symbol_short!("empause"),),
@@ -7195,7 +7369,8 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Lift an emergency freeze, restoring normal operation.
+    /// Lift any pause (the party emergency pause and the admin pause),
+    /// restoring normal operation.
     ///
     /// # Business rules
     /// Mirrors `emergency_pause`: the contract must be initialised, the
@@ -7207,7 +7382,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`            – Admin key has never been stored.
-    /// * `Unauthorized`              – `admin` is not the stored admin.
+    /// * `Unauthorized`              – `admin` is neither the `Operator` delegate nor, if none is
+    ///   set, the stored admin.
     /// * `NotPaused`                 – The contract is not currently paused.
     /// * `EmergencyPauseInProgress`  – A pause transition is already running.
     pub fn emergency_unpause(env: Env, admin: Address) -> Result<(), Error> {
@@ -7221,12 +7397,12 @@ impl MilestoneEscrow {
             return Err(Error::NotPaused);
         }
 
-        Self::assert_emergency_pause_not_locked(&env)?;
-
         // Single write — no external call inside the transition body, so no
         // reentrancy lock is needed (mirrors emergency_pause_admin_override).
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().instance().set(&DataKey::EpParty, &false);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Self::end_pause_clock(&env)?;
 
         env.events().publish(
             (symbol_short!("emunpause"),),
@@ -7264,47 +7440,46 @@ impl MilestoneEscrow {
             return Err(Error::Unauthorized);
         }
 
-        Self::assert_emergency_pause_not_locked(&env)?;
         env.storage().instance().set(&DataKey::Ep, &false);
         env.storage().instance().set(&DataKey::EpParty, &false);
+        Self::end_pause_clock(&env)?;
 
         env.events().publish(
-            (symbol_short!("emunpause"),),
+            (symbol_short!("emunpausp"),),
             EmergencyPartyUnpausedEvent { client, freelancer },
         );
         Ok(())
     }
 
-    /// Override the emergency pause status to paused.
+    /// Deprecated alias for the admin pause; use `admin_pause_escrow`.
     ///
     /// # Effects
-    /// Sets the `DataKey::Ep` to `true`. Emits an `EmergencyPauseAdminOverrideEvent`.
+    /// Sets the single admin pause flag `DataKey::Paused` to `true`; lift it
+    /// with `admin_resume_escrow` or `emergency_unpause`. Emits an
+    /// `EmergencyPauseAdminOverrideEvent`.
     ///
     /// # Returns
     /// * `Ok(())` on a successful override of the emergency pause state.
     ///
     /// # Errors
     /// * `NotInitialized` - Admin key has never been stored.
-    /// * `Unauthorized` - Caller is not the verified admin.
+    /// * `Unauthorized` - `admin` is neither the `Operator` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `AlreadyPaused` - The contract is already paused.
     pub fn emergency_pause_admin_override(env: Env, admin: Address) -> Result<(), Error> {
         Self::require_role(&env, &admin, AdminRole::Operator)?;
 
         // Read the current state once; reject no-op transitions so the caller
         // can distinguish a successful override from a mistaken duplicate call.
-        let current = env
-            .storage()
-            .instance()
-            .get::<_, bool>(&DataKey::Ep)
-            .unwrap_or(false);
+        let current = Self::is_paused(&env);
 
         if current {
             return Err(Error::AlreadyPaused);
         }
 
         // Single write — no external call, no EmergencyPauseLock needed.
-        env.storage().instance().set(&DataKey::Ep, &true);
-        env.storage().instance().set(&DataKey::EpParty, &false);
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Self::start_pause_clock(&env);
 
         env.events().publish(
             (symbol_short!("emoverrid"),),
@@ -7318,7 +7493,8 @@ impl MilestoneEscrow {
         Ok(())
     }
 
-    /// Report whether the emergency-pause flag (`DataKey::Ep`) is set.
+    /// Report whether the escrow is paused: the party emergency pause
+    /// (`DataKey::Ep`) or the admin pause (`DataKey::Paused`).
     ///
     /// This is a **pure read**: it never writes to instance, persistent, or
     /// temporary storage, emits no events, and requires no authorisation, so
@@ -7327,8 +7503,8 @@ impl MilestoneEscrow {
     ///
     /// `initialize` writes `DataKey::Ep = false` as part of its state commit
     /// (see its rustdoc), so the key is present for every initialized contract
-    /// and the reported flag is always the value last written by
-    /// `emergency_pause`, `emergency_unpause`, or
+    /// and the reported value always reflects the last `emergency_pause`,
+    /// `emergency_unpause`, `admin_pause_escrow`, `admin_resume_escrow` or
     /// `emergency_pause_admin_override`.
     ///
     /// # Return values
@@ -7337,7 +7513,7 @@ impl MilestoneEscrow {
     /// |------------------------------------------------|--------------|
     /// | `initialize` never completed successfully       | `Err(Error::NotInitialized)` |
     /// | Initialized, never paused                       | `Ok(false)` |
-    /// | Initialized, frozen by `emergency_pause` / `emergency_pause_admin_override` | `Ok(true)` |
+    /// | Initialized, frozen by `emergency_pause` / `admin_pause_escrow` / `emergency_pause_admin_override` | `Ok(true)` |
     /// | Initialized, released by `emergency_unpause`    | `Ok(false)` |
     ///
     /// # Errors
@@ -7350,12 +7526,12 @@ impl MilestoneEscrow {
     ///
     /// No other error is possible: the function takes no arguments, touches no
     /// token balance, and does not inspect the pause-transition lock
-    /// (`DataKey::EpLk`) — a pause transition that is mid-execution in the
+    /// (`the former reentrancy guard`) — a pause transition that is mid-execution in the
     /// same transaction is still reported by whatever value is currently
     /// stored.
     ///
-    /// Read-only: exactly one instance-storage `get` on `DataKey::Ep`; the
-    /// whole ledger is byte-identical before and after the call (enforced by
+    /// Read-only: it reads only the instance entry; the whole ledger is
+    /// byte-identical before and after the call (enforced by
     /// `read_path_tests`).
     pub fn is_emergency_paused(env: Env) -> Result<bool, Error> {
         Self::load_emergency_paused(&env)
@@ -7370,36 +7546,86 @@ impl MilestoneEscrow {
     ///   `emergency_pause_claim_refund`) can share the same read path without
     ///   re-spelling the storage key or cloning `Env`.
     ///
-    /// Returns `Err(Error::NotInitialized)` when the pause flag has never been
-    /// written.  A single instance-storage read serves as both the
-    /// initialization guard and the value lookup, so the function touches
-    /// exactly one ledger entry.
+    /// Returns `Err(Error::NotInitialized)` when the emergency-pause flag has
+    /// never been written; otherwise the pause state from `is_paused`.  Both
+    /// reads land on the instance entry, so the function touches exactly one
+    /// ledger entry.
     ///
     /// **This function must contain only read operations.**
     fn load_emergency_paused(env: &Env) -> Result<bool, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Ep)
-            .ok_or(Error::NotInitialized)
+        if !env.storage().instance().has(&DataKey::Ep) {
+            return Err(Error::NotInitialized);
+        }
+        Ok(Self::is_paused(env))
     }
 
-    /// Infallible read of the emergency-pause flag for internal guards
-    /// (`ensure_not_paused`): absent → `false`, so a guard on an
-    /// uninitialized contract falls through to its own initialization check.
+    /// The one pause-state check: `true` while the admin pause
+    /// (`DataKey::Paused`) or the party emergency pause (`DataKey::Ep`) is
+    /// active.  Absent flags read as `false`, so a guard on an uninitialized
+    /// contract falls through to its own initialization check.
     ///
     /// **This function must contain only read operations.**
-    fn read_emergency_paused(env: &Env) -> bool {
+    fn is_paused(env: &Env) -> bool {
+        let instance = env.storage().instance();
+        instance.get::<_, bool>(&DataKey::Paused).unwrap_or(false)
+            || instance.get::<_, bool>(&DataKey::Ep).unwrap_or(false)
+    }
+
+    /// Propose a treasury address change. It takes effect only after
+    /// `TREASURY_UPDATE_DELAY_SECONDS`, giving clients time to react.
+    pub fn propose_treasury_update(
+        env: Env,
+        admin: Address,
+        treasury: Address,
+    ) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        Self::validate_address(&env, &treasury)?;
+        let effective_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(TREASURY_UPDATE_DELAY_SECONDS)
+            .ok_or(Error::ArithmeticOverflow)?;
+        env.storage().instance().set(
+            &DataKey::PendingTreasury,
+            &PendingTreasury {
+                address: treasury,
+                effective_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Apply a treasury change once its timelock has elapsed.
+    pub fn apply_treasury_update(env: Env, admin: Address) -> Result<(), Error> {
+        Self::ensure_migrated(&env)?;
+        Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        let pending: PendingTreasury = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingTreasury)
+            .ok_or(Error::NotInitialized)?;
+        if env.ledger().timestamp() < pending.effective_at {
+            return Err(Error::InvalidStatus);
+        }
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::Ep)
-            .unwrap_or(false)
+            .set(&DataKey::Treasury, &pending.address);
+        env.storage().instance().remove(&DataKey::PendingTreasury);
+        env.events().publish(
+            (symbol_short!("treasury"),),
+            TreasuryUpdatedEvent {
+                treasury: pending.address,
+            },
+        );
+        Ok(())
     }
 
     /// Sets the global platform fee allocation in basis points (BPS).
     ///
     /// # Effects
     /// Updates the `PlatformFeeAllocation` stored at `DataKey::PlatformFeeAllocation`.
-    /// Sets the `DataKey::PlatformFeeAllocationLock` to prevent re-entrant or concurrent updates.
+    /// Sets the `the former reentrancy guard` to prevent re-entrant or concurrent updates.
     /// Emits a `PlatformFeeAllocationSetEvent`.
     ///
     /// ## Storage-footprint note
@@ -7407,7 +7633,7 @@ impl MilestoneEscrow {
     /// This function uses `require_admin_from_instance` rather than the
     /// standard `require_admin` helper so that the admin verification read
     /// (`DataKey::Admin`, instance) and all subsequent instance reads/writes
-    /// (`PlatformFeeAllocationLock`, `PlatformFeeAllocation`, `EpLk`) touch
+    /// (the former reentrancy guard, `PlatformFeeAllocation`, the former reentrancy guard) touch
     /// the **same single ledger entry** (instance storage) instead of two
     /// (persistent + instance).
     ///
@@ -7416,9 +7642,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` - Admin key has never been stored.
-    /// * `Unauthorized` - Caller is not the verified admin.
-    /// * `PlatformFeeAllocationInProgress` - A platform fee update lock is currently active.
-    /// * `EmergencyPauseInProgress` - An emergency pause lock is currently active.
+    /// * `Unauthorized` - `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidRatio` - The sum of the BPS values does not equal 10,000 (BPS_SCALE).
     /// * `FeeTooHigh` - The treasury or client BPS exceeds the maximum allowed limits.
     /// * `InvalidStatus` - The allocation is locked.
@@ -7433,8 +7658,7 @@ impl MilestoneEscrow {
         // Both the Admin read and all subsequent instance reads/writes touch
         // instance storage only, so the whole function uses a single ledger entry.
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
+        Self::require_fee_allocation_change_allowed(&env)?;
         // Precondition: validate illegal source state (locked allocation) before any ledger write
         // Ensures InvalidStatus is returned with no storage mutation when allocation is locked
         if let Ok(current) = Self::load_platform_fee_allocation(&env) {
@@ -7444,11 +7668,7 @@ impl MilestoneEscrow {
         }
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &true);
-
-        let result = (|| {
+        (|| {
             let current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
             if current.locked {
@@ -7478,13 +7698,7 @@ impl MilestoneEscrow {
             );
 
             Ok(())
-        })();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &false);
-
-        result
+        })()
     }
 
     /// Lock the current platform-fee allocation, preventing further non-override
@@ -7495,7 +7709,8 @@ impl MilestoneEscrow {
     ///
     /// # Returns
     /// * `Ok(())` – the allocation was successfully locked.
-    /// * `Err(Error::Unauthorized)` – the caller is not the contract admin.
+    /// * `Err(Error::Unauthorized)` – `admin` is neither the `FeeManager` delegate nor, if none is
+    ///   set, the stored admin.
     /// * `Err(Error::PlatformFeeAllocationInProgress)` – a platform-fee
     ///   allocation is already locked.
     /// * `Err(Error::EmergencyPauseInProgress)` – an emergency-pause transition
@@ -7503,7 +7718,8 @@ impl MilestoneEscrow {
     /// * `Err(Error::NotInitialized)` – the contract has not been initialized.
     ///
     /// # Errors
-    /// * `Error::Unauthorized` – caller is not the admin (via `require_admin`).
+    /// * `Error::Unauthorized` – `admin` is neither the `FeeManager` delegate nor, if none is set,
+    ///   the stored admin.
     /// * `Error::PlatformFeeAllocationInProgress` – lock is already set (via
     ///   `assert_platform_fee_allocation_not_locked`).
     /// * `Error::EmergencyPauseInProgress` – emergency pause is in progress (via
@@ -7516,8 +7732,6 @@ impl MilestoneEscrow {
         // so unauthorized callers and illegal source states are rejected without
         // mutating any storage entry.
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
 
         // Load the current allocation early to validate it exists
         let mut current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
@@ -7527,11 +7741,8 @@ impl MilestoneEscrow {
         }
 
         // All checks passed; now proceed with mutation under re-entrancy guard
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &true);
 
-        let result = (|| {
+        (|| {
             // Emit a structured event so downstream indexers can track
             // lock state changes without polling storage.
             env.events().publish(
@@ -7549,22 +7760,19 @@ impl MilestoneEscrow {
                 .persistent()
                 .set(&DataKey::PlatformFeeAllocation, &current);
             Ok(())
-        })();
-
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformFeeAllocationLock, &false);
-
-        result
+        })()
     }
 
     /// Admin override that replaces a *locked* platform-fee allocation and
     /// unlocks it in the same step.
     ///
+    /// `Unauthorized`: `admin` is neither the `FeeManager` delegate nor, if
+    /// none is set, the stored admin.
+    ///
     /// Storage footprint: the call writes exactly one instance-storage map
     /// key, `DataKey::PlatformFeeAllocation`. Unlike `set_platform_fee_allocation`
     /// / `lock_platform_fee_allocation`, it does not take the
-    /// `PlatformFeeAllocationLock` re-entrancy guard: the body performs a
+    /// the former reentrancy guard re-entrancy guard: the body performs a
     /// single unconditional `set` with no external or cross-contract calls
     /// between validation and the write, so there is no re-entrancy window to
     /// protect, and omitting the guard's set-true / set-false pair keeps the
@@ -7578,6 +7786,9 @@ impl MilestoneEscrow {
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
+        // An admin who locked the allocation cannot unlock and rewrite it
+        // alone once the escrow is funded (issue #694).
+        Self::require_fee_allocation_change_allowed(&env)?;
 
         let current: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
 
@@ -7585,8 +7796,6 @@ impl MilestoneEscrow {
             return Err(Error::InvalidStatus);
         }
 
-        Self::assert_platform_fee_allocation_not_locked(&env)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
         Self::validate_fee_allocation(client_bps, freelancer_bps, treasury_bps)?;
 
         env.storage().persistent().set(
@@ -7723,18 +7932,6 @@ impl MilestoneEscrow {
         let allocation: PlatformFeeAllocation = Self::load_platform_fee_allocation(&env)?;
         let distribution = Self::allocate_platform_fee(total_amount, &allocation)?;
 
-        // Emit a structured event so downstream indexers can audit the
-        // per-party split without re-querying contract storage.
-        env.events().publish(
-            (symbol_short!("pf_split"),),
-            PlatformFeeSplitCalculatedEvent {
-                total_amount,
-                client_amount: distribution.client_amount,
-                freelancer_amount: distribution.freelancer_amount,
-                treasury_amount: distribution.treasury_amount,
-            },
-        );
-
         Ok(distribution)
     }
 
@@ -7786,12 +7983,7 @@ impl MilestoneEscrow {
         // Reject illegal source states — a split already mid-execution or a
         // paused escrow — before any further ledger access, so a mistaken
         // call never mutates storage.
-        Self::assert_payment_streaming_not_locked(&env)?;
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Authorization and precondition checks run BEFORE any ledger entry is
         // written. Both the client and the freelancer must have signed the
@@ -7806,9 +7998,6 @@ impl MilestoneEscrow {
 
         // Acquire execution lock so concurrent state mutations observe the
         // in-progress status while the successful calculation is published.
-        env.storage()
-            .instance()
-            .set(&DataKey::PaymentStreamingExecutionLock, &true);
 
         env.events().publish(
             (symbol_short!("p_stream"),),
@@ -7820,10 +8009,6 @@ impl MilestoneEscrow {
                 client_refund: split.second,
             },
         );
-
-        env.storage()
-            .instance()
-            .remove(&DataKey::PaymentStreamingExecutionLock);
 
         Ok(split)
     }
@@ -7863,12 +8048,7 @@ impl MilestoneEscrow {
     ) -> Result<RatioSplit, Error> {
         Self::ensure_migrated(&env)?;
         // Reject illegal source state before any further ledger access.
-        Self::assert_payment_streaming_not_locked(&env)?;
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Collect both signatures; returns NotInitialized before any
         // lock write if Job metadata is missing.
@@ -7896,11 +8076,7 @@ impl MilestoneEscrow {
         // Validate ratio inputs before touching storage.
         Self::validate_streaming_ratio(remaining, numerator, denominator)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PaymentStreamingExecutionLock, &true);
-
-        let result = (|| {
+        (|| {
             let split = Self::split_round_nearest(remaining, numerator, denominator)?;
 
             let token_client = token::Client::new(&env, &meta.token);
@@ -7917,9 +8093,8 @@ impl MilestoneEscrow {
 
             if milestone.released_amount >= milestone.amount {
                 milestone.status = MilestoneStatus::Released;
-                Self::store_milestone_released(&env, milestone_index);
-                Self::increment_reputation(&env, &meta.client);
-                Self::increment_reputation(&env, &meta.freelancer);
+                Self::increment_reputation(&env, &meta.client, milestone_index);
+                Self::increment_reputation(&env, &meta.freelancer, milestone_index);
             } else {
                 milestone.status = MilestoneStatus::PartiallyReleased;
             }
@@ -7942,13 +8117,7 @@ impl MilestoneEscrow {
             );
 
             Ok(split)
-        })();
-
-        env.storage()
-            .instance()
-            .remove(&DataKey::PaymentStreamingExecutionLock);
-
-        result
+        })()
     }
 
     /// Allocate a milestone's escrowed amount between two parties (typically
@@ -7970,7 +8139,7 @@ impl MilestoneEscrow {
     /// share rather than always the floor, preventing systematic value loss
     /// through repeated rounding.  The two halves always sum to `amount` exactly.
     ///
-    /// While the split runs, `TimeExtExecutionLock` is held so
+    /// While the split runs, the former reentrancy guard is held so
     /// concurrent state-modifying endpoints observe the in-progress status and
     /// reject rather than interleave mutations.
     ///
@@ -8035,11 +8204,7 @@ impl MilestoneEscrow {
             return Err(Error::InvalidRatio);
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::TimeExtExecutionLock, &true);
-
-        let result = (|| {
+        (|| {
             // Delegate to the single shared high-precision split primitive.
             // split_round_nearest(total, numerator, denominator) computes:
             //   first  = round_nearest(total × numerator / denominator)
@@ -8059,13 +8224,7 @@ impl MilestoneEscrow {
             );
 
             Ok(split)
-        })();
-
-        env.storage()
-            .instance()
-            .remove(&DataKey::TimeExtExecutionLock);
-
-        result
+        })()
     }
 
     /// Extend the auto-release deadline for a Delivered milestone with
@@ -8099,12 +8258,6 @@ impl MilestoneEscrow {
         // Reject illegal source state before collecting signatures so a
         // mistaken call never mutates storage.
         Self::assert_not_paused(&env)?;
-        Self::assert_time_ext_not_locked(&env)?;
-        Self::assert_payment_streaming_not_locked(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Collect both signatures; returns NotInitialized before any
         // lock write if Job metadata is missing.
@@ -8129,8 +8282,7 @@ impl MilestoneEscrow {
         let new_extension = current_extension
             .checked_add(extra_seconds)
             .ok_or(Error::InvalidExtension)?;
-        let delivered_at =
-            Self::load_delivered_at(&env, milestone_index).unwrap_or(milestone.delivered_at);
+        let delivered_at = milestone.delivered_at;
         let new_deadline = Self::auto_release_deadline(&meta, delivered_at, new_extension)?;
 
         env.storage()
@@ -8299,7 +8451,7 @@ impl MilestoneEscrow {
     /// report `NotInitialized` for an existing multisig regime.  The legacy
     /// keys live in the contract-instance entry, which every call loads
     /// anyway, so the fallback adds no ledger entry to the footprint.
-    /// `migrate_cold_config` folds them into the persistent
+    /// `migrate` folds them into the persistent
     /// `MultiSigConfig` (issue #772).
     ///
     /// **This function must contain only read operations.**
@@ -8315,6 +8467,9 @@ impl MilestoneEscrow {
 
     /// Initialise a multisig approval regime with a fixed set of signers and
     /// the required approval threshold.  Must be called exactly once.
+    ///
+    /// `Unauthorized`: `admin` is neither the `Resolver` delegate nor, if none
+    /// is set, the stored admin.
     ///
     /// On success the call publishes a `MultisigApprovalInitEvent` under the
     /// `msiginit` topic carrying the acting admin and the values that were
@@ -8646,7 +8801,7 @@ impl MilestoneEscrow {
         new_address: Address,
     ) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
-        Self::require_admin_from_instance(&env, &admin)?;
+        Self::require_admin(&env, &admin)?;
         Self::validate_address(&env, &new_address)?;
 
         let instance = env.storage().instance();
@@ -8708,10 +8863,10 @@ impl MilestoneEscrow {
         new_admin: Address,
     ) -> Result<u32, Error> {
         Self::ensure_migrated(&env)?;
-        // Storage-footprint note: `DataKey::Version` (instance) and
-        // `DataKey::Admin` (persistent) are only ever written together, in a
-        // single atomic `initialize` call — a failed `initialize` reverts the
-        // whole invocation, so one can never be present without the other.
+        // Storage-footprint note: `DataKey::Version` and `DataKey::Admin`
+        // (both instance) are only ever written together in a single atomic
+        // `initialize` call — a failed `initialize` reverts the whole
+        // invocation, so one can never be present without the other.
         // `load_admin` alone is therefore a complete "is this contract
         // initialised" check (it already backs this same guarantee in
         // `execute_admin_transfer`), so a separate `require_initialized`
@@ -8848,11 +9003,7 @@ impl MilestoneEscrow {
         // rewrite the Admin ledger entry; it still emits the event and clears
         // the pending proposal.
         if old_admin != pending.new_admin {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Admin, &pending.new_admin);
-            // Keep the instance copy read by `require_admin_from_instance`
-            // in sync with the persistent one.
+            // Single source of truth: instance storage only (#679).
             env.storage()
                 .instance()
                 .set(&DataKey::Admin, &pending.new_admin);
@@ -9177,37 +9328,25 @@ impl MilestoneEscrow {
         Ok(None)
     }
 
-    /// Return the contract's code version.
+    /// Return the version of the code that is actually running.
     ///
-    /// # Returns
-    /// The `u32` stored under the instance key `DataKey::Version`:
-    /// * `1` after `initialize` (which writes the marker `1u32`).
-    /// * Incremented by exactly one on every successful `upgrade`.
-    /// * `1` when the key is absent (the contract has not been initialized),
-    ///   i.e. the version of the code that shipped before any upgrade.
+    /// The value is the compile-time `CONTRACT_VERSION` from Cargo.toml and is
+    /// also embedded in the WASM as `contractmeta!(key = "version", ...)`.
+    /// Unlike the old implementation it does not read the `DataKey::Version`
+    /// storage marker: that marker counted upgrades (and even incremented on a
+    /// downgrade), so two deployments of identical code could report different
+    /// values. `DataKey::Version` is retained solely as a migration marker.
     ///
     /// # Guarantees
-    /// * **Read-only.**  Performs a single instance-storage `get` and nothing
-    ///   else: no `set`, `remove`, `extend_ttl`, or event publish in instance,
-    ///   persistent, or temporary storage.  The whole ledger is byte-identical
-    ///   before and after the call (enforced by `version_tests`).
+    /// * **Read-only.** No storage access at all: no `set`, `remove`,
+    ///   `extend_ttl`, or event publish in any storage durability.
     /// * Requires no authorization and is safe to call on an uninitialized
     ///   contract.
     ///
     /// # Errors
-    /// None.  `version` is infallible: it returns a bare `u32`, and the only
-    /// absent-state case (uninitialized contract) maps to the default `1`
-    /// rather than an error.
-    pub fn version(env: Env) -> u32 {
-        Self::read_version(&env)
-    }
-
-    /// Read path behind `version`.  Takes `&Env` and returns a plain value so
-    /// callers cannot thread a mutation through it.
-    ///
-    /// **This function must contain only read operations.**
-    fn read_version(env: &Env) -> u32 {
-        env.storage().instance().get(&DataKey::Version).unwrap_or(1)
+    /// None. `version` is infallible.
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, CONTRACT_VERSION)
     }
 
     /// Return the storage layout version (see `SCHEMA_VERSION`).
@@ -9248,6 +9387,41 @@ impl MilestoneEscrow {
     pub fn get_job(env: Env) -> Result<Job, Error> {
         let meta = Self::load_job_meta(&env)?;
         Self::assemble_job(&env, &meta)
+    }
+
+    /// Acceptance state as `(freelancer, arbiter)` (issue #971).
+    ///
+    /// Both flags default to `false` before the corresponding `accept_job` /
+    /// `accept_arbiter` call. This is a pure read: no write, TTL extension or
+    /// event.
+    pub fn get_acceptance(env: Env) -> (bool, bool) {
+        let mask = Self::load_acceptance(&env);
+        (mask & 1 != 0, mask & 2 != 0)
+    }
+
+    /// Ledger timestamp at which `withdraw_unaccepted` becomes available, or
+    /// `None` while the escrow has not been funded (issue #971).
+    ///
+    /// Mirrors the deadline used by `withdraw_unaccepted`: `FundedAt` plus
+    /// `ACCEPTANCE_WINDOW_SECONDS`. Returns `None` on overflow as well as when
+    /// `FundedAt` is absent, so an unreadable deadline is never reported as a
+    /// past one. This is a pure read.
+    pub fn get_acceptance_deadline(env: Env) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get::<_, u64>(&DataKey::FundedAt)?
+            .checked_add(ACCEPTANCE_WINDOW_SECONDS)
+    }
+
+    /// Configured dispute-escalation timeout in seconds (issue #971).
+    ///
+    /// Falls back to `DISPUTE_TIMEOUT_SECONDS` when no override was stored at
+    /// initialization. This is a pure read.
+    pub fn get_dispute_timeout(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DisputeTimeout)
+            .unwrap_or(DISPUTE_TIMEOUT_SECONDS)
     }
 
     /// Return one milestone without assembling the rest of the job (issue
@@ -9319,8 +9493,7 @@ impl MilestoneEscrow {
             // Auto-release only applies to Delivered milestones
             // (claim_auto_release), so only they have a deadline.
             let deadline = if milestone.status == MilestoneStatus::Delivered {
-                let delivered_at =
-                    Self::load_delivered_at(&env, index).unwrap_or(milestone.delivered_at);
+                let delivered_at = milestone.delivered_at;
                 Some(Self::auto_release_deadline(
                     &meta,
                     delivered_at,
@@ -9350,7 +9523,7 @@ impl MilestoneEscrow {
                 treasury_bps: 0,
                 locked: false,
             }),
-            version: Self::read_version(&env),
+            version: String::from_str(&env, CONTRACT_VERSION),
         })
     }
 
@@ -9388,7 +9561,11 @@ impl MilestoneEscrow {
 
         token_client.transfer(&env.current_contract_address(), &meta.client, &excess);
         env.events().publish(
-            (symbol_short!("sweep"),),
+            (
+                symbol_short!("sweep"),
+                meta.client.clone(),
+                meta.freelancer.clone(),
+            ),
             ExcessSweptEvent {
                 token,
                 amount: excess,
@@ -9458,7 +9635,7 @@ impl MilestoneEscrow {
     ///    has been set up, so the estimator is always anchored to a real job.
     ///
     /// # Parameters
-    /// * `admin`             – Caller; must be the stored contract admin.
+    /// * `admin`             – Caller; must hold the `FeeManager` role (root admin by default).
     /// * `principal`         – Balance (token stroops) on which interest is
     ///                         calculated. Must be > 0.
     /// * `annual_rate_bps`   – Annual interest rate in basis points
@@ -9474,10 +9651,14 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Contract has never been initialised.
-    /// * `Unauthorized`    – `admin` does not match the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidAmount`   – Zero/negative principal, rate, or duration, or an
     ///                       intermediate checked multiplication overflows.
     /// * `InvalidRatio`   – `annual_rate_bps` exceeds 10_000 (unsupported).
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn escrow_interest_yield(
         env: Env,
         admin: Address,
@@ -9485,12 +9666,13 @@ impl MilestoneEscrow {
         annual_rate_bps: i128,
         duration_seconds: i128,
     ) -> Result<i128, Error> {
-        // Authorization: admin.require_auth() runs inside require_admin, so a
+        // Authorization: admin.require_auth() runs inside require_role, so a
         // transaction missing the admin signature is rejected by the host
-        // before this body executes at all. The equality check then rejects a
-        // validly-signed non-admin. Both guards run before any calculation or
-        // event publish, so an unauthorized caller learns nothing about the
-        // configuration.
+        // before this body executes at all. The role check then rejects a
+        // validly-signed caller that is neither the `FeeManager` delegate nor,
+        // if none is set, the stored admin. Both guards run before any
+        // calculation or event publish, so an unauthorized caller learns
+        // nothing about the configuration.
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
 
         // Precondition: the escrow must be initialized so the estimator is
@@ -9512,18 +9694,6 @@ impl MilestoneEscrow {
         let yield_amount = numerator
             .checked_div(denominator)
             .ok_or(Error::InvalidAmount)?;
-
-        // Publish exactly once on the success path (after validation and the
-        // checked arithmetic), so every error path returns before emitting.
-        env.events().publish(
-            (symbol_short!("intyield"),),
-            EscrowInterestYieldEvent {
-                principal,
-                annual_rate_bps,
-                duration_seconds,
-                yield_amount,
-            },
-        );
 
         Ok(yield_amount)
     }
@@ -9577,11 +9747,15 @@ impl MilestoneEscrow {
     /// Listed in evaluation order; a call that violates more than one guard
     /// fails with the first match.
     /// * `NotInitialized` – Contract admin key is missing.
-    /// * `Unauthorized`   – Caller is not the stored admin.
+    /// * `Unauthorized`   – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `AlreadyFunded`  – The escrow has been funded; use
     ///   `set_interest_yield_consent` instead.
     /// * `EscrowLocked`   – Configuration is locked for execution.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10_000 bps.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn set_escrow_interest_yield(
         env: Env,
         admin: Address,
@@ -9653,9 +9827,13 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Contract admin key or job metadata missing.
-    /// * `Unauthorized`   – `admin` does not match the stored admin.
+    /// * `Unauthorized`   – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidRatio`   – Shares do not sum to exactly 10 000 bps.
     /// * `EscrowLocked`   – Configuration is locked for execution.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn set_interest_yield_consent(
         env: Env,
         admin: Address,
@@ -9757,8 +9935,12 @@ impl MilestoneEscrow {
     /// Listed in evaluation order; a call that violates more than one guard
     /// fails with the first match.
     /// * `NotInitialized` – Contract admin key or interest/yield state missing.
-    /// * `Unauthorized`    – `admin` does not match the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidStatus`   – The interest/yield configuration is already locked.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn lock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         // Guard 1 — authorization. `admin.require_auth()` inside the helper makes
@@ -9803,8 +9985,12 @@ impl MilestoneEscrow {
     /// # Errors
     /// * `NotInitialized` - Contract admin key, job metadata or interest/yield
     ///   state missing.
-    /// * `Unauthorized` - Caller is not the stored admin.
+    /// * `Unauthorized` - `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidStatus` - Interest/yield lock is not active (already unlocked).
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn unlock_escrow_interest_yield(env: Env, admin: Address) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
@@ -9830,6 +10016,9 @@ impl MilestoneEscrow {
     }
 
     /// Return whether the interest/yield share configuration is locked.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn is_escrow_interest_yield_locked(env: Env) -> Result<bool, Error> {
         Ok(Self::load_interest_yield_state(&env)?.locked)
     }
@@ -9857,6 +10046,9 @@ impl MilestoneEscrow {
     /// * `EscrowLocked`  – Interest yield state is locked.
     /// * `InvalidRatio`  – Ratios do not sum to `BPS_SCALE`.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn interest_yield_split_refund(
         env: Env,
         total_amount: i128,
@@ -9865,10 +10057,6 @@ impl MilestoneEscrow {
     ) -> Result<RefundAllocation, Error> {
         // Precondition: reject illegal source state if contract is paused.
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
         // Precondition: reject illegal source state if interest yield state is locked.
         if Self::cold_has(&env, &DataKey::InterestYieldState) {
@@ -9899,16 +10087,6 @@ impl MilestoneEscrow {
             client_refund_bps,
             freelancer_payout_bps,
         };
-
-        env.events().publish(
-            (symbol_short!("iyspltref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -9942,6 +10120,9 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Configuration has never been set.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn get_escrow_interest_yield(env: Env) -> Result<EscrowInterestYieldState, Error> {
         Self::load_interest_yield_state(&env)
     }
@@ -10058,8 +10239,8 @@ impl MilestoneEscrow {
     /// Set the annual yield rate for the escrow in basis points (1 bp = 0.01 %).
     ///
     /// # Parameters
-    /// * `admin`       – Must match `DataKey::Admin`; a fresh signature is
-    ///                   required on every call.
+    /// * `admin`       – Must hold the `FeeManager` role (root admin by default);
+    ///                   a fresh signature is required on every call.
     /// * `rate_bps`    – New annual rate.  Capped at 10 000 (= 100 %).
     ///                   Pass `0` to disable yield accrual.
     ///
@@ -10068,8 +10249,12 @@ impl MilestoneEscrow {
     ///                      absent); checked before any auth or storage access.
     /// * `Paused`         – Contract is currently paused; yield-rate mutations
     ///                      are rejected while operations are suspended.
-    /// * `Unauthorized`   – `admin` does not match the stored admin key.
+    /// * `Unauthorized`   – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidRatio`   – `rate_bps` exceeds 10 000.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn admin_set_yield_rate(env: Env, admin: Address, rate_bps: u32) -> Result<(), Error> {
         Self::ensure_migrated(&env)?;
         // Precondition 1: contract must be fully initialised (job metadata
@@ -10082,20 +10267,10 @@ impl MilestoneEscrow {
         // yield-rate is part of the active financial configuration; mutating
         // it while operations are suspended could silently affect the next
         // accrual cycle once the pause is lifted.
-        //
-        // Both pause flags count. `assert_not_paused` only reads
-        // `DataKey::Paused`, which `admin_pause_escrow` sets; the emergency
-        // pause is a separate, stronger freeze recorded under `DataKey::Ep`.
-        // Letting a yield-rate change through during an emergency pause would
-        // make the weaker of the two freezes the stricter one.
         Self::assert_not_paused(&env)?;
-        let emergency_paused: bool = env.storage().instance().get(&DataKey::Ep).unwrap_or(false);
-        if emergency_paused {
-            return Err(Error::Paused);
-        }
 
-        // Authorization: `require_admin` performs `admin.require_auth()` plus
-        // the stored-key equality check.  Placed after the stateless
+        // Authorization: `require_role` performs `admin.require_auth()` plus
+        // the `FeeManager` role check.  Placed after the stateless
         // preconditions so that an unauthorized caller on an uninitialised or
         // paused contract receives the precondition error, not Unauthorized,
         // which would leak information about the admin key.
@@ -10152,16 +10327,20 @@ impl MilestoneEscrow {
     /// so authorizing against the instance copy cannot accept a stale admin.
     ///
     /// # Parameters
-    /// * `admin`           – Must match `DataKey::Admin`.
+    /// * `admin`           – Must hold the `FeeManager` role (root admin by default).
     /// * `milestone_index` – Index of the milestone to which yield is attributed.
     /// * `accrued_amount`  – Interest amount to book; must be > 0.
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
-    /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidAmount`   – `accrued_amount` ≤ 0 or the running total would
     ///                       overflow `i128`.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn admin_accrue_yield(
         env: Env,
         admin: Address,
@@ -10223,12 +10402,13 @@ impl MilestoneEscrow {
     /// executed to the freelancer.
     ///
     /// # Parameters
-    /// * `admin`           – Must match `DataKey::Admin`.
+    /// * `admin`           – Must hold the `Resolver` role (root admin by default).
     /// * `milestone_index` – Target milestone.
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
-    /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `Paused`          – Contract is administratively paused.
     /// * `NotFunded`       – Escrow has not been funded; nothing to release.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
@@ -10300,7 +10480,6 @@ impl MilestoneEscrow {
             .persistent()
             .remove(&DataKey::DisputeInfo(milestone_index));
         Self::clear_time_ext(&env, milestone_index);
-        Self::store_milestone_released(&env, milestone_index);
 
         // Reset accrued yield on emergency override
         if env
@@ -10316,7 +10495,7 @@ impl MilestoneEscrow {
         }
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &remaining)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &remaining)?;
 
         env.events().publish(
             (symbol_short!("admovrls"),),
@@ -10345,12 +10524,13 @@ impl MilestoneEscrow {
     /// executed back to the client.
     ///
     /// # Parameters
-    /// * `admin`           – Must match `DataKey::Admin`.
+    /// * `admin`           – Must hold the `Resolver` role (root admin by default).
     /// * `milestone_index` – Target milestone.
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
-    /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `Paused`          – Contract is paused.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
@@ -10464,14 +10644,15 @@ impl MilestoneEscrow {
     /// single settlement.
     ///
     /// # Parameters
-    /// * `admin`           – Must match `DataKey::Admin`.
+    /// * `admin`           – Must hold the `Resolver` role (root admin by default).
     /// * `milestone_index` – Target milestone; must currently be `Disputed`.
     /// * `elapsed_seconds` – Portion of the extension window already elapsed.
     /// * `total_seconds`   – Full length of the extension window.
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
-    /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `NotFunded`       – Escrow has not been funded.
     /// * `InvalidMilestone`– `milestone_index` is out of range.
     /// * `InvalidStatus`   – Milestone is not currently `Disputed`.
@@ -10523,7 +10704,7 @@ impl MilestoneEscrow {
             Self::pay_or_credit(&env, &token_client, &meta.client, &client_refund)?;
         }
         if freelancer_payout > 0 {
-            Self::pay_or_credit(&env, &token_client, &meta.freelancer, &freelancer_payout)?;
+            Self::pay_freelancer_with_fee(&env, &meta, &token_client, &freelancer_payout)?;
         }
 
         milestone.released_amount = milestone
@@ -10537,9 +10718,8 @@ impl MilestoneEscrow {
             milestone.status = MilestoneStatus::Split;
         } else {
             milestone.status = MilestoneStatus::Released;
-            Self::store_milestone_released(&env, milestone_index);
-            Self::increment_reputation(&env, &meta.client);
-            Self::increment_reputation(&env, &meta.freelancer);
+            Self::increment_reputation(&env, &meta.client, milestone_index);
+            Self::increment_reputation(&env, &meta.freelancer, milestone_index);
         }
 
         Self::store_milestone(&env, milestone_index, &milestone);
@@ -10582,24 +10762,24 @@ impl MilestoneEscrow {
     /// redundant call for having taken fresh action.
     ///
     /// # Parameters
-    /// * `admin` – Must match `DataKey::Admin`.
+    /// * `admin` – Must hold the `Operator` role (root admin by default).
     ///
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
-    /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `Unauthorized`   – `admin` is neither the `Operator` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `AlreadyPaused`  – The escrow is already paused.
     /// * `EmergencyPauseInProgress` – A pause/resume transition is already
     ///   in flight; the escrow cannot be re-paused mid-transition.
     pub fn admin_pause_escrow(env: Env, admin: Address) -> Result<(), Error> {
-        // Authorization: only the stored admin may pause the escrow.  Any
-        // other caller is rejected with `Unauthorized`, and a contract that
-        // has never been initialised with `NotInitialized`, before any ledger
-        // entry is read or written.
+        // Authorization: only the `Operator` delegate (or, if none is set, the
+        // stored admin) may pause the escrow.  Any other caller is rejected
+        // with `Unauthorized`, and a contract that has never been initialised
+        // with `NotInitialized`, before any ledger entry is read or written.
         Self::require_role(&env, &admin, AdminRole::Operator)?;
 
         // Precondition: reject an illegal source state — an emergency
         // pause/resume transition already in flight — before any write.
-        Self::assert_emergency_pause_not_locked(&env)?;
 
         // Reject redundant pause calls so an operator cannot mistake a
         // redundant call for having taken fresh action.
@@ -10613,6 +10793,7 @@ impl MilestoneEscrow {
         }
 
         env.storage().instance().set(&DataKey::Paused, &true);
+        Self::start_pause_clock(&env);
 
         env.events()
             .publish((symbol_short!("pause"),), EscrowPausedEvent { admin });
@@ -10637,11 +10818,12 @@ impl MilestoneEscrow {
     ///    (`EmergencyPauseInProgress`).
     ///
     /// # Parameters
-    /// * `admin` – Must match `DataKey::Admin`.
+    /// * `admin` – Must hold the `Operator` role (root admin by default).
     ///
     /// # Errors
     /// * `NotInitialized`           – Contract has not been initialised.
-    /// * `Unauthorized`             – `admin` is not the stored admin.
+    /// * `Unauthorized`             – `admin` is neither the `Operator` delegate nor, if none is
+    ///   set, the stored admin.
     /// * `NotPaused`                – The escrow is not currently paused.
     /// * `EmergencyPauseInProgress` – A pause transition is already running.
     pub fn admin_resume_escrow(env: Env, admin: Address) -> Result<(), Error> {
@@ -10650,7 +10832,7 @@ impl MilestoneEscrow {
         // probing the persistent copy twice (`has` + `load_admin`'s `get`).
         // `initialize` writes both copies atomically and every admin-transfer
         // path keeps them in sync, so this is the same logical check — but now
-        // the admin read and every `Paused` / `EpLk` read and write below land
+        // the admin read and every `Paused` / the former reentrancy guard read and write below land
         // on the single instance ledger entry, reducing the call from two
         // distinct ledger entries touched to one.
         Self::require_role(&env, &admin, AdminRole::Operator)?;
@@ -10664,12 +10846,9 @@ impl MilestoneEscrow {
             return Err(Error::NotPaused);
         }
 
-        Self::assert_emergency_pause_not_locked(&env)?;
-
-        env.storage().instance().set(&DataKey::EpLk, &true);
-
-        let result = (|| {
+        (|| {
             env.storage().instance().set(&DataKey::Paused, &false);
+            Self::end_pause_clock(&env)?;
 
             env.events().publish(
                 (symbol_short!("resume"),),
@@ -10679,11 +10858,7 @@ impl MilestoneEscrow {
             );
 
             Ok(())
-        })();
-
-        env.storage().instance().set(&DataKey::EpLk, &false);
-
-        result
+        })()
     }
 
     // ── tax recipient configuration (issue #788) ──────────────────────────────
@@ -10697,22 +10872,13 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Contract not initialised.
-    /// * `Unauthorized`    – Caller is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidAddress`  – `recipient` is a zero address.
     pub fn set_tax_recipient(env: Env, admin: Address, recipient: Address) -> Result<(), Error> {
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
 
-        let zero_account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        let zero_contract = Address::from_str(
-            &env,
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-        );
-        if recipient == zero_account || recipient == zero_contract {
-            return Err(Error::InvalidAddress);
-        }
+        Self::validate_address(&env, &recipient)?;
 
         env.storage()
             .persistent()
@@ -10887,7 +11053,6 @@ impl MilestoneEscrow {
         tax_rate_bps: u32,
     ) -> Result<TaxWithholdingRecord, Error> {
         Self::ensure_migrated(&env)?;
-        Self::assert_tax_withholding_not_locked(&env)?;
         let meta = Self::load_job_meta(&env)?;
 
         meta.client.require_auth();
@@ -11107,7 +11272,7 @@ impl MilestoneEscrow {
     /// * `InvalidRatio`  – `client_refund_bps + freelancer_payout_bps ≠ 10_000`,
     ///   or the `u32` addition overflows.
     pub fn tax_withholding_split_refund(
-        env: Env,
+        _env: Env,
         gross_amount: i128,
         tax_amount: i128,
         client_refund_bps: u32,
@@ -11119,23 +11284,6 @@ impl MilestoneEscrow {
             client_refund_bps,
             freelancer_payout_bps,
         )?;
-
-        let net_amount = gross_amount
-            .checked_sub(tax_amount)
-            .ok_or(Error::InvalidAmount)?;
-
-        env.events().publish(
-            (symbol_short!("twspltref"),),
-            TaxWithholdingSplitRefundEvent {
-                gross_amount,
-                tax_amount,
-                net_amount,
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -11151,7 +11299,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`   – Contract not initialised.
-    /// * `Unauthorized`     – Caller is not the verified admin.
+    /// * `Unauthorized`     – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `NotFunded`        – Escrow not yet funded.
     /// * `InvalidMilestone` – `milestone_index` is out of range.
     /// * `InvalidStatus`    – No tax-withholding lock exists for this milestone,
@@ -11243,7 +11392,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`   – Contract not initialised.
-    /// * `Unauthorized`     – Caller is not the verified admin.
+    /// * `Unauthorized`     – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `NotFunded`        – Escrow not yet funded.
     /// * `InvalidMilestone` – `milestone_index` is out of range.
     /// * `InvalidStatus`    – No tax-withholding lock exists for this milestone,
@@ -11341,7 +11491,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`   – Contract not initialised.
-    /// * `Unauthorized`     – Caller is not the verified admin.
+    /// * `Unauthorized`     – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `NotFunded`        – Escrow not yet funded.
     /// * `InvalidMilestone` – `milestone_index` is out of range.
     /// * `InvalidStatus`    – No tax-withholding lock exists for this milestone,
@@ -11459,8 +11610,7 @@ impl MilestoneEscrow {
     ///
     /// # Read-only
     /// This is a pure query: it only *reads* the persistent `DataKey::YieldConfig`
-    /// and `DataKey::YieldAccrued` entries and the instance `DataKey::Paused`
-    /// entry. It must never `set`, `remove`, or `extend_ttl` any instance,
+    /// and `DataKey::YieldAccrued` entries and the instance pause flags. It must never `set`, `remove`, or `extend_ttl` any instance,
     /// persistent, or temporary entry, and must never publish an event — a
     /// read that wrote state could silently rewrite the ledger or shorten the
     /// TTL of the entries it inspects. `get_yield_info_no_mutation_tests` pins
@@ -11477,6 +11627,9 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
+    /// Kept only for the legacy unit-test suite; the yield subsystem is not
+    /// part of the shipped ABI (issue #693).
+    #[cfg(test)]
     pub fn get_yield_info(env: Env) -> Result<(u32, i128, bool), Error> {
         // Verify the contract is initialized before returning state.
         Self::load_job_meta(&env)?;
@@ -11494,11 +11647,7 @@ impl MilestoneEscrow {
             .get(&DataKey::YieldAccrued)
             .unwrap_or(0);
 
-        let is_paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
+        let is_paused = Self::is_paused(&env);
 
         Ok((rate_bps, total_accrued, is_paused))
     }
@@ -11512,7 +11661,7 @@ impl MilestoneEscrow {
     /// `TaxWithholdingRecord` and emits `TaxWithholdingDeductionsEvent`.
     ///
     /// # Parameters
-    /// * `admin`           – Must match `DataKey::Admin`.
+    /// * `admin`           – Must hold the `FeeManager` role (root admin by default).
     /// * `milestone_index` – Target milestone for tax calculation.
     /// * `tax_rate_bps`    – Tax rate in basis points (1 bp = 0.01 %).
     ///                       Must be ≤ 10 000 (≤ 100 %).
@@ -11522,7 +11671,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`   – Contract has not been initialised.
-    /// * `Unauthorized`     – `admin` does not match the stored admin key.
+    /// * `Unauthorized`     – `admin` is neither the `FeeManager` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `NotFunded`        – Escrow has not been funded.
     /// * `InvalidMilestone` – `milestone_index` is out of range.
     /// * `InvalidRatio`     – `tax_rate_bps` exceeds 10 000.
@@ -11534,10 +11684,11 @@ impl MilestoneEscrow {
         milestone_index: u32,
         tax_rate_bps: u32,
     ) -> Result<(i128, i128, i128), Error> {
-        // Authorization: only the stored admin may invoke this endpoint.  Any
-        // caller that is not the stored admin is rejected with `Unauthorized`,
-        // and a contract that has never been initialised is rejected with
-        // `NotInitialized`, before any ledger entry is read or written.
+        // Authorization: only the `FeeManager` delegate (or, if none is set,
+        // the stored admin) may invoke this endpoint.  Any other caller is
+        // rejected with `Unauthorized`, and a contract that has never been
+        // initialised is rejected with `NotInitialized`, before any ledger
+        // entry is read or written.
         Self::require_role(&env, &admin, AdminRole::FeeManager)?;
 
         let meta = Self::load_job_meta(&env)?;
@@ -11620,12 +11771,13 @@ impl MilestoneEscrow {
     /// 6. Milestone must not already be terminal (`InvalidStatus`).
     ///
     /// # Parameters
-    /// * `admin`           – Must match `DataKey::Admin`.
+    /// * `admin`           – Must hold the `Resolver` role (root admin by default).
     /// * `milestone_index` – Target milestone.
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
-    /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidStatus`   – `MultisigLocked` is not active, or the milestone
     ///                       is already `Released` / `Refunded`.
     /// * `NotFunded`       – Escrow has not been funded.
@@ -11684,14 +11836,8 @@ impl MilestoneEscrow {
         }
 
         // CEI: commit state before external call. Only `Milestone(index)`
-        // (persistent) is written here. Unlike the normal approval path, we
-        // deliberately skip the `MilestoneReleased(index)` temporary flag:
-        // nothing reads it on this override path (`is_milestone_released_flag`
-        // is dead code), and the terminal `Released` status already persisted on
-        // the milestone is the authoritative completion signal. Skipping it
-        // keeps the ledger footprint of this call to two distinct keys
-        // (`Milestone(index)` + `MultisigLocked`), matching the already-lean
-        // `multisig_admin_override_refund` path.
+        // (persistent) is written here; the terminal `Released` status is the
+        // authoritative completion signal.
         milestone.released_amount = milestone.amount;
         milestone.status = MilestoneStatus::Released;
         Self::store_milestone(&env, milestone_index, &milestone);
@@ -11702,7 +11848,7 @@ impl MilestoneEscrow {
             .set(&DataKey::MultisigLocked, &false);
 
         let token_client = token::Client::new(&env, &meta.token);
-        Self::pay_or_credit(&env, &token_client, &meta.freelancer, &remaining)?;
+        Self::pay_freelancer_with_fee(&env, &meta, &token_client, &remaining)?;
 
         env.events().publish(
             (symbol_short!("msadmrel"),),
@@ -11744,12 +11890,13 @@ impl MilestoneEscrow {
     /// 7. Remaining balance must be > 0 (`InvalidAmount`).
     ///
     /// # Parameters
-    /// * `admin`           – Must match `DataKey::Admin`.
+    /// * `admin`           – Must hold the `Resolver` role (root admin by default).
     /// * `milestone_index` – Target milestone.
     ///
     /// # Errors
     /// * `NotInitialized`  – Contract has not been initialised.
-    /// * `Unauthorized`    – `admin` is not the stored admin.
+    /// * `Unauthorized`    – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidStatus`   – Multisig workflow is not locked, or the
     ///                       milestone is already `Released` / `Refunded`.
     /// * `NotFunded`       – Escrow has not been funded.
@@ -11844,7 +11991,7 @@ impl MilestoneEscrow {
     ///
     /// # Parameters
     /// * `env`                  – Soroban environment.
-    /// * `admin`                – Must match `DataKey::Admin`.
+    /// * `admin`                – Must hold the `Resolver` role (root admin by default).
     /// * `total_amount`         – Total amount to split.
     /// * `client_refund_bps`    – Client's refund share in basis points.
     /// * `freelancer_payout_bps`– Freelancer's payout share in basis points.
@@ -11855,7 +12002,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`– Contract has not been initialized.
-    /// * `Unauthorized`  – `admin` is not the verified admin.
+    /// * `Unauthorized`  – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidStatus` – Multisig workflow is not locked.
     /// * `InvalidRatio`  – Ratios do not sum to `BPS_SCALE`.
     /// * `InvalidAmount` – `total_amount` ≤ 0 or arithmetic overflow.
@@ -11902,16 +12050,6 @@ impl MilestoneEscrow {
             client_refund_bps,
             freelancer_payout_bps,
         };
-
-        env.events().publish(
-            (symbol_short!("splitref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -11971,23 +12109,12 @@ impl MilestoneEscrow {
         }
 
         // ── source state: a settled emergency pause, not a transition
-        Self::assert_emergency_pause_not_locked(&env)?;
-        if !Self::read_emergency_paused(&env) {
+        if !Self::is_paused(&env) {
             return Err(Error::NotPaused);
         }
 
         let allocation =
             Self::emergency_split_exact(total_amount, client_refund_bps, freelancer_payout_bps)?;
-
-        env.events().publish(
-            (symbol_short!("epspltref"),),
-            SplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -12070,8 +12197,8 @@ impl MilestoneEscrow {
     /// entry and mutates nothing:
     /// 1. `EscrowLocked` – a cancellation is already in flight
     ///   (`DataKey::CancelLock`), so the refund split it will settle is not yet
-    ///   knowable; also covers an emergency pause (`DataKey::Ep`).
-    /// 2. `Paused` – an `admin_pause_escrow` pause (`DataKey::Paused`) is in
+    ///   knowable.
+    /// 2. `Paused` – the admin pause or the party emergency pause is in
     ///   force, so no cancellation-path figure should be produced.
     ///
     /// Both guards read a missing key as "not set", so an uninitialised
@@ -12127,16 +12254,6 @@ impl MilestoneEscrow {
 
         let allocation =
             Self::split_refund_allocation(total_amount, client_refund_bps, freelancer_payout_bps)?;
-
-        env.events().publish(
-            (symbol_short!("cxlspref"),),
-            CancelSplitRefundCalculatedEvent {
-                client_refund: allocation.client_refund,
-                freelancer_payout: allocation.freelancer_payout,
-                client_refund_bps: allocation.client_refund_bps,
-                freelancer_payout_bps: allocation.freelancer_payout_bps,
-            },
-        );
 
         Ok(allocation)
     }
@@ -12206,7 +12323,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized` – No admin key has ever been stored, or no job.
-    /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `Unauthorized`   – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidStatus`  – No cancellation is currently in flight.
     /// * `NotFunded`      – The escrow has not been funded.
     /// * `EmptyBalance`   – The contract holds no tokens to distribute.
@@ -12277,7 +12395,7 @@ impl MilestoneEscrow {
     ///    `total_amount` (`InsufficientBalance`).
     ///
     /// # Storage footprint
-    /// The endpoint is read-only.  Every key it reads — `Admin`, `EpLk`, `Ep`
+    /// The endpoint is read-only.  Every key it reads — `Admin`, the former reentrancy guard, `Ep`
     /// and `Job` — lives in **instance** storage, so the whole call touches a
     /// single contract ledger entry (plus the token balance read).  The admin
     /// check uses `require_admin_from_instance` rather than `require_admin`,
@@ -12294,7 +12412,8 @@ impl MilestoneEscrow {
     ///
     /// # Errors
     /// * `NotInitialized`           – Admin key has never been stored.
-    /// * `Unauthorized`             – `admin` is not the stored admin.
+    /// * `Unauthorized`             – `admin` is neither the `Resolver` delegate nor, if none is
+    ///   set, the stored admin.
     /// * `EmergencyPauseInProgress` – A pause transition is already running.
     /// * `NotPaused`                – The contract is not frozen.
     /// * `InvalidAmount`            – `total_amount` ≤ 0.
@@ -12313,7 +12432,6 @@ impl MilestoneEscrow {
     ) -> Result<RefundAllocation, Error> {
         // ── preconditions (#532): auth and contract state before anything else
         Self::require_role(&env, &admin, AdminRole::Resolver)?;
-        Self::assert_emergency_pause_not_locked(&env)?;
 
         // `require_admin` already proved an admin key is stored, so the
         // pause-flag read cannot miss here.
@@ -12482,8 +12600,7 @@ impl MilestoneEscrow {
         }
 
         // ── source state: a settled emergency pause, not a transition
-        Self::assert_emergency_pause_not_locked(&env)?;
-        if !Self::read_emergency_paused(&env) {
+        if !Self::is_paused(&env) {
             return Err(Error::NotPaused);
         }
 
@@ -12598,11 +12715,12 @@ impl MilestoneEscrow {
     /// ledger entries.
     ///
     /// # Parameters
-    /// * `admin` – Must match `DataKey::Admin` (instance storage).
+    /// * `admin` – Must hold the `Resolver` role (root admin by default).
     ///
     /// # Errors
     /// * `NotInitialized` – Contract has not been initialised.
-    /// * `Unauthorized`   – `admin` is not the stored admin.
+    /// * `Unauthorized`   – `admin` is neither the `Resolver` delegate nor, if none is set, the
+    ///   stored admin.
     /// * `InvalidStatus`  – The multisig workflow is already locked.
     /// * `EmergencyPauseInProgress` – An emergency pause lock is currently active.
     pub fn multisig_lock(env: Env, admin: Address) -> Result<(), Error> {
@@ -12619,7 +12737,6 @@ impl MilestoneEscrow {
         {
             return Err(Error::InvalidStatus);
         }
-        Self::assert_emergency_pause_not_locked(&env)?;
         // Both the Admin read and the MultisigLocked write are in instance
         // storage, so the whole function touches a single ledger entry.
         env.storage()

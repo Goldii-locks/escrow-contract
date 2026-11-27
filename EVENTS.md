@@ -9,7 +9,9 @@ row here, and a row here must correspond to a topic in the source.
 
 `topic[0]` is always the event name below. These events also carry party
 addresses as further topics, so RPC `getEvents` can filter by participant
-(issue #739):
+(issues #739, #1019). The actor comes first, then the counterparty; for
+`withdraw`, `cancel`, `cxlappr` and `cancelrev` the counterparty is the
+freelancer when the client acts and the client otherwise:
 
 | Event      | Topics after the name                 |
 | ---------- | ------------------------------------- |
@@ -20,6 +22,23 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `approve`  | `client`                              |
 | `dispute`  | `caller`                              |
 | `freerot`  | `new_freelancer`                      |
+| `acceptjob`| `freelancer`, `client`                |
+| `acceptarb`| `arbiter`, `client`                   |
+| `msfund`   | `client`, `freelancer`                |
+| `withdraw` | `caller`, counterparty (`recipient` in the body) |
+| `sweep`    | `client`, `freelancer`                |
+| `overdue`  | `client`, `freelancer`                |
+| `unaccref` | `client`, `freelancer`                |
+| `msrev`    | `client`, `freelancer`                |
+| `extend`   | `client`, `freelancer`                |
+| `ms_add`   | `client`, `freelancer`                |
+| `ms_reduce`| `client`, `freelancer`                |
+| `ms_incr`  | `client`, `freelancer`                |
+| `cancel`   | `caller`, counterparty                |
+| `cxlappr`  | `caller`, counterparty                |
+| `cancelrev`| `caller`, counterparty                |
+| `arbchg`   | `new_arbiter`                         |
+| `duedates` | `client`                              |
 
 ## Events
 
@@ -38,11 +57,13 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `msfund`   | `MilestoneFundedEvent`           | state change      |
 | `ms_add`   | `MilestoneAddedEvent`            | state change      |
 | `ms_reduce`| `MilestoneReducedEvent`          | state change      |
+| `ms_incr`  | `MilestoneIncreasedEvent`        | state change      |
 | `deliver`  | `DeliveredEvent`                 | state change      |
 | `msrev`    | `RevisionRequestedEvent`         | state change      |
 | `approve`  | `ApprovedEvent`                  | state change      |
 | `claim`    | `ClaimedEvent`                   | state change      |
 | `extend`   | `DeadlineExtendedEvent`          | state change      |
+| `duedates` | `MilestoneDueDatesSetEvent`      | state change      |
 | `dispute`  | `DisputeRaisedEvent`             | state change      |
 | `evidence` | `EvidenceSubmittedEvent`         | state change      |
 | `dispescal`| `DisputeEscalatedEvent`          | state change      |
@@ -59,6 +80,7 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `resume`   | `EscrowResumedEvent`             | state change      |
 | `empause`  | `EmergencyPausedEvent`           | state change      |
 | `emunpause`| `EmergencyUnpausedEvent`         | state change      |
+| `emunpausp`| `EmergencyPartyUnpausedEvent`    | state change      |
 | `emoverrid`| `EmergencyPauseAdminOverrideEvent` | state change    |
 | `epalloc`  | `EmergencyPauseAllocationEvent`  | calculation       |
 | `epclaim`  | `EmergencyPauseClaimRefundEvent` | state change      |
@@ -75,6 +97,7 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `adtxrfd`  | `AdminOverrideTaxRefundEvent`    | state change      |
 | `adtwsplt` | `AdminOverrideTaxSplitRefundEvent` | calculation     |
 | `arbsplit` | `ArbitrationSplitAppliedEvent`   | calculation       |
+| `rep`      | `ReputationChangedEvent`         | state change      |
 | `msiginit` | `MultisigApprovalInitEvent`      | state change      |
 | `msigcfgp` | `MultiSigConfigProposedEvent`    | state change      |
 | `msigcfg`  | `MultiSigConfigChangedEvent`     | state change      |
@@ -83,7 +106,6 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `mslock`   | `MultisigLockedEvent`            | state change      |
 | `msadmrel` | `MultisigAdminOverrideReleaseEvent` | state change   |
 | `msadmref` | `MultisigAdminOverrideRefundEvent`  | state change   |
-| `intyield` | `EscrowInterestYieldEvent`       | calculation       |
 | `yldset`   | `EscrowInterestYieldSetEvent`    | state change      |
 | `yldcons`  | `EscrowInterestYieldConsentSetEvent` | state change  |
 | `yldrate`  | `YieldRateSetEvent`              | state change      |
@@ -93,7 +115,8 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `pf_set`   | `PlatformFeeAllocationSetEvent`  | state change      |
 | `pf_lock`  | `PlatformFeeAllocationLockedEvent` | state change    |
 | `pf_ovr`   | `PlatformFeeAllocationOverrideEvent` | state change  |
-| `pf_split` | `PlatformFeeSplitCalculatedEvent`| calculation       |
+| `treasury` | `TreasuryUpdatedEvent`           | state change      |
+| `pf_charge`| `PlatformFeeChargedEvent`        | payout fee        |
 | `p_stream` | `PaymentStreamingEvent`          | calculation       |
 | `p_strcns` | `PaymentStreamingConsentEvent`   | state change      |
 | `m_ext`    | `MilestoneTimeExtensionEvent`    | state change      |
@@ -102,24 +125,157 @@ addresses as further topics, so RPC `getEvents` can filter by participant
 | `taxrcpt`  | `TaxRecipientSetEvent`           | state change      |
 | `taxpaid`  | `TaxPaidEvent`                   | state change      |
 | `taxwh`    | `TaxWithholdingDeductionsEvent`  | calculation       |
-| `twspltref`| `TaxWithholdingSplitRefundEvent` | calculation       |
-| `splitref` | `SplitRefundCalculatedEvent`     | calculation       |
-| `iyspltref`| `SplitRefundCalculatedEvent`     | calculation       |
-| `epspltref`| `SplitRefundCalculatedEvent`     | calculation       |
 | `cxlspref` | `CancelSplitRefundCalculatedEvent` | calculation     |
-| `sprefnet` | `SplitRefundNetDistributionEvent`| calculation       |
+
+## Dispute records
+
+`dispute` is emitted with `caller` as its topic and the same `caller` in its
+data. The persistent `DisputeInfo` record that `get_dispute_info` returns also
+carries `raised_by` (#997), the party that called `raise_dispute`, so the
+raiser can be read from contract state without replaying events. For disputes
+that were already open when an escrow migrated from schema 3 to 4, `raised_by`
+is the job's client as a placeholder because the raiser was never stored; the
+original `dispute` event's `caller` topic is authoritative for those. `migrate`
+emits `migrate` with `from_version` 3 and `to_version` 4 when it stamps them.
 
 ## Notes
 
 - **Kind** distinguishes events that record a durable state change from those
   that report a derived calculation (fee/tax/split math). Indexers should treat
   calculation events as advisory and reconcile against persisted state.
-- Several split-refund paths share the `SplitRefundCalculatedEvent` struct but
-  use distinct topics (`arbsplit`, `epspltref`, `iyspltref`, `splitref`) so
-  consumers can tell the originating workflow apart.
+- **`resolve` and `arbsplit` carry the arbiter's decision commitment (#1015).**
+  `DisputeResolvedEvent.decision_hash`, echoed in `ArbitrationSplitAppliedEvent`
+  by `apply_dispute_arbitration_split`, is the 32-byte hash of the written
+  decision the arbiter relied on. The document itself stays off-chain in
+  escrow-backend storage, keyed by that hash; because resolution deletes the
+  `DisputeInfo` record, the event is the only on-chain anchor for it.
+- Unauthenticated calculation previews (`calculate_platform_fee_split`,
+  `escrow_interest_yield` and the `*_split_refund` calculators) publish no
+  events, so indexers never record caller-supplied numbers as activity (#676).
+- Each topic carries exactly one payload struct, enforced by
+  `event_docs_sync_tests`. The admin unpause publishes `emunpause`; the joint
+  party unpause publishes `emunpausp`.
 - **Cancel approvals expire.** `cxlappr` carries `approved_at`, the ledger
   timestamp at which the approval round started. An approval older than
   `CANCEL_APPROVAL_TTL_SECONDS` (7 days) is treated as absent by
   `cancel_escrow`, so `cancel` only ever follows two approvals recorded within
   the same 7-day window — a stale `cxlappr` without a matching `cancel` should
   be treated as lapsed.
+
+## Escrow factory events
+
+The `escrow-factory` contract (`contracts/escrow-factory`) emits the events
+below from the **factory's** contract address, not from any escrow's. Subscribe
+to the factory address to discover new escrows through `created`. This section
+is kept in sync with `contracts/escrow-factory/src/lib.rs` by the factory's
+`event_docs_sync` tests (#1086), just as `event_docs_sync_tests` does for the
+escrow.
+
+| Topic       | Event struct            | Kind         |
+| ----------- | ----------------------- | ------------ |
+| `created`   | `EscrowCreatedEvent`    | state change |
+| `tokallow`  | `TokenAllowedEvent`     | state change |
+| `disallowd` | `()`                    | state change |
+| `whashprp`  | `WasmHashProposedEvent` | state change |
+| `whashcxl`  | `WasmHashCancelledEvent`| state change |
+| `whashact`  | `WasmHashActivatedEvent`| state change |
+| `paused`    | `()`                    | state change |
+| `unpaused`  | `()`                    | state change |
+
+### `created`
+
+Emitted by `create_escrow` after the escrow has been deployed and its
+constructor has run.
+
+**Topics:** `created`, `client`, `freelancer`, `arbiter`. The party addresses
+are indexed so RPC `getEvents` can filter by participant, as for the escrow's
+`init` event.
+
+**Data (`EscrowCreatedEvent`):**
+
+| Field                  | Type             | Meaning                                                    |
+| ---------------------- | ---------------- | ---------------------------------------------------------- |
+| `escrow`               | `Address`        | The newly deployed escrow contract.                        |
+| `index`                | `u64`            | Zero-based registry index of this escrow; `escrow_at(index)` returns the address, and a gap between consecutive events means a creation reverted (#934). |
+| `token`                | `Address`        | Escrow token (must be on the factory allow-list).          |
+| `total_amount`         | `i128`           | Sum of all milestone amounts, in the token's smallest unit.|
+| `milestone_count`      | `u32`            | Number of milestones the escrow was created with.          |
+| `auto_release_seconds` | `u64`            | Auto-release window passed to the escrow constructor.      |
+| `settings`             | `EscrowSettings` | `funding_mode`, `dispute_timeout_seconds`, `arbiter_fee_bps` exactly as passed to the constructor. |
+| `wasm_hash`            | `BytesN<32>`     | Escrow WASM hash the factory used for this deployment.     |
+
+**Breaking change for indexers.** Before this change the event had one topic
+(`created`) and data `{ escrow, client, freelancer, arbiter, token }`. The
+party addresses moved from the data into topics 1 to 3, and `total_amount`,
+`milestone_count`, `auto_release_seconds`, `settings` and `wasm_hash` were
+added. Consumers that decoded `client`, `freelancer` or `arbiter` from the data
+must read them from the topics instead. `wasm_hash` lets an indexer tell which
+escrow build an address runs without calling the factory, which matters because
+`set_wasm_hash` changes the hash for later escrows.
+
+The `index` field (#934) was added before the first mainnet deploy: consumers
+that decode the event structurally should ignore unknown fields, and new
+consumers should read `index` to detect gaps between creations.
+
+### `tokallow`
+
+Emitted by `allow_token` when a new token is added to the allow-list. Adding a
+token that is already allowed is a no-op and emits nothing.
+
+**Topics:** `tokallow`.
+
+**Data (`TokenAllowedEvent`):** `{ token: Address }` — the token that was
+added. Indexers that previously watched `allowed` should watch `tokallow`;
+its payload moved from the topic into the event data.
+
+### `disallowd`
+
+Emitted by `disallow_token`, whether or not the token was on the allow-list
+(removal is idempotent).
+
+**Topics:** `disallowd`, `token`.
+
+**Data:** `()` (empty).
+
+### `whashprp`
+
+Emitted by `propose_wasm_hash` after the WASM bytes have been uploaded and
+their hash verified.
+
+**Topics:** `whashprp`.
+
+**Data (`WasmHashProposedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+`effective_at` is the ledger timestamp at which the proposal may first be
+used. It is `WASM_HASH_DELAY` (7 days) after the proposal.
+
+### `whashcxl`
+
+Emitted by `cancel_wasm_hash_proposal` when a pending proposal is withdrawn.
+The currently active hash is unchanged.
+
+**Topics:** `whashcxl`.
+
+**Data (`WasmHashCancelledEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`
+— the cancelled proposal.
+
+### `whashact`
+
+Emitted by `create_escrow` on the first deployment at or after a proposal's
+`effective_at`. The proposal is applied to the stored hash and removed, and
+that same deployment uses the new code.
+
+**Topics:** `whashact`.
+
+**Data (`WasmHashActivatedEvent`):** `{ hash: BytesN<32>, effective_at: u64 }`.
+The `created` event emitted later in the same invocation carries the same
+`hash` in its `wasm_hash` field.
+
+### `paused` and `unpaused`
+
+Emitted by `pause` and `unpause` when the factory's incident switch changes.
+Both have a single topic and empty data. Repeated calls that do not change the
+flag emit nothing.
+
+While paused, `create_escrow` returns `Error::Paused` before deploying or
+emitting `created`. Existing escrows keep running: the switch only blocks new
+deployments through the factory. `is_paused` exposes the current flag.

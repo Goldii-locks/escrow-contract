@@ -225,7 +225,7 @@ fn test_cancel_escrow_split_refund_success_path_unchanged() {
     assert_eq!(alloc.client_refund + alloc.freelancer_payout, 1_001);
     assert_eq!(alloc.client_refund_bps, 2_500);
     assert_eq!(alloc.freelancer_payout_bps, 7_500);
-    assert_eq!(cxlspref_count(&env), 1);
+    assert_eq!(cxlspref_count(&env), 0);
 }
 
 // ── the admin-gated claim counterpart ─────────────────────────────────────────

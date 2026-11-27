@@ -161,7 +161,7 @@ fn is_emergency_paused_emits_no_events() {
 // ── #502: single read, identical results ─────────────────────────────────────
 
 /// `is_emergency_paused` and the internal `ensure_not_paused` guard now share
-/// `read_emergency_paused`; both must agree in every state.
+/// `is_paused`; both must agree in every state.
 #[test]
 fn is_emergency_paused_matches_stored_flag_in_every_state() {
     let env = Env::default();
@@ -180,9 +180,7 @@ fn is_emergency_paused_matches_stored_flag_in_every_state() {
             None => assert_eq!(public, Err(Ok(Error::NotInitialized))),
             Some(_) => assert_eq!(public, Ok(Ok(expected))),
         }
-        let helper = env.as_contract(&contract_id, || {
-            MilestoneEscrow::read_emergency_paused(&env)
-        });
+        let helper = env.as_contract(&contract_id, || MilestoneEscrow::is_paused(&env));
         assert_eq!(helper, expected);
         let guard = env.as_contract(&contract_id, || MilestoneEscrow::ensure_not_paused(&env));
         if expected {
@@ -249,24 +247,6 @@ fn emergency_paused_is_false_after_unpause() {
     escrow.emergency_pause_admin_override(&admin);
     escrow.emergency_unpause(&admin);
     assert!(!escrow.is_emergency_paused());
-}
-
-/// Only the committed `Ep` flag is reported; a held transition lock does not
-/// change the result either way.
-#[test]
-fn emergency_paused_ignores_transition_lock() {
-    let env = Env::default();
-    let (contract_id, _, escrow) = initialized_escrow(&env);
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::EpLk, &true);
-    });
-    assert!(!escrow.is_emergency_paused());
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Ep, &true);
-    });
-    assert!(escrow.is_emergency_paused());
 }
 
 // ── #504: is_multisig_approved performs zero state mutation ──────────────────

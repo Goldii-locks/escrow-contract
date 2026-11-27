@@ -1,0 +1,12 @@
+[package]
+name = "escrow-types"
+version = "0.1.0"
+edition = "2021"
+# Shared by the two contracts in this workspace, never published independently.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }

@@ -21,6 +21,69 @@ See "Verifying the deployed contract" in the README.
 WASM: build with `scripts/build-reproducible.sh <commit>`; CI publishes the
 hash for every commit in the `reproducible-wasm` job summary.
 
+### Changed (escrow-factory, wire format — before first mainnet deploy)
+
+- **Factory error codes renumbered into a dedicated 1001+ range (#1082).**
+  The factory's `NotInitialized`, `AlreadyInitialized`, `Unauthorized`,
+  `TokenNotAllowed`, `InvalidAmount` and `InvalidDisputeTimeout` previously
+  used codes 1-6, which collide with `milestone-escrow`'s codes (1 =
+  `AlreadyInitialized`, 2 = `NotInitialized`, ...) and invert the meaning of 1
+  and 2 for any client that maps a bare `Error(Contract, #)`. They are now
+  1001-1006, with new `InvalidToken` = 1007 and `EscrowNotFound` = 1008. Done
+  before the first mainnet deploy, so no deployed client depends on the old
+  numbers; regenerate TypeScript bindings after this change. See "Factory
+  error codes" in the README.
+- The `created` event now carries a zero-based `index` field, the escrow's
+  position in the factory's registry, so indexers can detect gaps where a
+  creation reverted mid-transaction (#934).
+
+### Added (escrow-factory)
+
+- Escrow registry (#934): `create_escrow` records every deployed escrow in
+  on-chain storage, and two new views expose it — `escrow_count()` and
+  `escrow_at(index)` — plus `client_escrows(client)` returning the client's
+  most recent escrows (capped at 10, newest last). Previously, finding a
+  client's escrows required indexing `created` events, which public RPCs
+  retain for only about a week. Registry entries get explicit TTL extensions
+  on write.
+- `allow_token` now proves the address is a token contract with a read-only
+  `decimals()` call and rejects accounts and mistyped ids with the new
+  `InvalidToken` (1007) at the point of the mistake (#1084). The check runs
+  only on this admin path, never in `create_escrow`, where it would cost every
+  deployment.
+
+### Added (CI)
+
+- A `shellcheck` job lints `scripts/*.sh` and verifies every script is
+  executable (#1083); `build-reproducible.sh` and `e2e.sh` were marked
+  executable.
+
+### Fixed
+
+- `sweep_excess` no longer counts unfunded `PerMilestone` milestones as escrow
+  obligations (#943). Previously stray tokens sent to a job with one funded
+  milestone and later unfunded ones could not be recovered until every
+  milestone was funded (`InsufficientBalance`); only milestones that actually
+  hold tokens (or an Upfront-funded job) are now counted.
+- `raise_dispute` now performs zero-address check, `require_auth`, and
+  identity validation **before** writing the re-entrancy lock (#566), matching
+  the authorization pattern used by `fund`, `approve_milestone`, and
+  `resolve_dispute`.
+- `lock_escrow_interest_yield` now rejects unauthorized callers with
+  `Unauthorized` and an illegal source state with `InvalidStatus` **before** it
+  reads or writes the ledger entry (#464); authorization runs first via
+  `require_admin_from_instance`, so a non-admin cannot probe whether an escrow
+  is locked.
+- `cancel_escrow` single-party approvals now expire after
+  `CANCEL_APPROVAL_TTL_SECONDS` (7 days, #713): an approval older than that is
+  treated as absent, so the counter-party's call records a fresh first approval
+  instead of locking the escrow. `CancelApprovalRecordedEvent` (`cxlappr`)
+  carries `approved_at` so indexers can track the same window.
+- `__constructor` rejects empty milestone lists, zero/negative amounts, zero
+  addresses, zero auto-release windows, and party collisions (`admin == client`,
+  `admin == freelancer`, `arbiter == client`, `arbiter == freelancer`,
+  `client == freelancer`) with explicit contract errors.
+
 ### Security
 
 - `propose_admin_transfer` and `transfer_admin` reject the contract's own
@@ -30,22 +93,62 @@ hash for every commit in the `reproducible-wasm` job summary.
   through `set_interest_yield_consent`, which the client and freelancer must
   sign. `unlock_escrow_interest_yield` now requires the admin, the client and
   the freelancer, so the admin cannot undo its own lock (#776).
+- `raise_dispute` and `request_revision` return the new `ReviewWindowClosed`
+  error on a `Delivered` milestone once its auto-release deadline has passed,
+  and `escalate_dispute` restores the original deadline instead of starting a
+  fresh window, so the client cannot undo an expired review window (#991).
+- `dispute_timeout_seconds` is bounded to `MIN_DISPUTE_TIMEOUT_SECONDS` (1 day)
+  through `MAX_DISPUTE_TIMEOUT_SECONDS` (180 days); the escrow constructor and
+  the factory's `create_escrow` return `InvalidDisputeTimeout` outside that
+  range, so disputed funds cannot be locked by an unbounded timeout (#992).
 
 ### Changed
 
+- **Breaking**: `resolve_dispute` and `apply_dispute_arbitration_split` take a
+  trailing `decision_hash: BytesN<32>` — a tamper-evident commitment to the
+  arbiter's written decision (#1015). The hash is echoed verbatim in the
+  `resolve` event and, for a split, also in `arbsplit`. Outcomes, fund
+  distribution, permissions and dispute storage are unchanged; the written
+  decision stays off-chain in escrow-backend storage, keyed by the hash.
+  Clients must pass the new argument (regenerate the TypeScript bindings to
+  pick up the new signatures).
+- `DisputeInfo` gains `raised_by: Address`, the party that called `raise_dispute`; `SCHEMA_VERSION` is now 4 and `migrate` adds the field to open disputes, using the job's client as a placeholder because the raiser was not stored (#997). Run `migrate` after upgrading an existing escrow.
+- `fund_milestone` no longer rescans every milestone: a new `FundedCount` instance counter, kept up to date by `fund`, `fund_milestone` and `add_milestone`, decides when the job is fully funded in O(1). Escrows created before the counter fall back to counting once (#999).
+- Factory `created` event now has topics `created`, `client`, `freelancer`, `arbiter` and data `{ escrow, token, total_amount, milestone_count, auto_release_seconds, settings, wasm_hash }`; party addresses moved out of the data. **Breaking for indexers**; see "Escrow factory events" in `EVENTS.md` (#1007).
+- `context.md` removed; its useful history now lives under "Project history" below (#1005).
+- `emergency_unpause_parties` publishes its `EmergencyPartyUnpausedEvent` under
+  the new `emunpausp` topic instead of `emunpause`, which now carries only
+  `EmergencyUnpausedEvent` from the admin unpause (#993).
+- One admin pause flag (`Paused`) and the party emergency pause (`Ep`), both
+  checked through one `is_paused` helper (#994).
+  `emergency_pause_admin_override` is a deprecated alias that sets `Paused`;
+  `emergency_unpause` lifts either pause; `is_emergency_paused`,
+  `get_yield_info` and the emergency refund endpoints see both pauses;
+  `cancel_escrow`, `extend_milestone_deadline` and the admin overrides are
+  blocked by either pause. `SCHEMA_VERSION` is 5: `migrate` moves an
+  admin-set `Ep` to `Paused`.
 - `WhitelistedTokens`, `MultiSigConfig`, `InterestYieldState` and
   `PlatformFeeAllocation` moved from instance storage to persistent keys, so
   calls that do not use them stop loading them. With a 50-token whitelist and a
   32-signer multisig, the instance entry `approve_milestone` loads shrinks from
   4,212 to 644 bytes and its metered instructions drop by about 15 % (#772).
+- `msfund`, `withdraw`, `sweep`, `overdue`, `unaccref`, `msrev`, `extend`,
+  `ms_add`, `ms_reduce`, `cancel`, `cxlappr`, `cancelrev`, `acceptjob` and
+  `acceptarb` carry the party addresses as topics after the event name, actor
+  first, so `getEvents` can filter them by participant (#1019).
 
 ### Added
 
+- `increase_milestone(client, freelancer, milestone_index, new_amount)`:
+  raise a `Pending` milestone's amount with both parties' consent. On a
+  funded milestone the client deposits the difference in the same call; in
+  per-milestone mode an unfunded milestone only has its amount changed.
+  Updates `total_amount` and emits `ms_incr` with the old and new amounts
+  (#1020).
 - Property-based tests (`proptest`) for conservation of funds, terminal state immutability,
   and failed-call balance isolation across arbitrary operation sequences (#722).
-- `migrate_cold_config(admin)`: run once after upgrading an existing deployment
-  to move the configuration above out of instance storage. Reads fall back to
-  the old location until then (#772).
+- `migrate(admin)` moves the configuration above out of instance storage when
+  an existing deployment is upgraded from schema 1 (#772).
 - Reproducible WASM builds: `scripts/build-reproducible.sh`, the pinned
   `build/reproducible.Dockerfile`, a CI job that publishes the hash per commit,
   and `deployments/testnet.json` (#773).
@@ -62,6 +165,11 @@ hash for every commit in the `reproducible-wasm` job summary.
   build (artifact) and published as the versioned GitHub Package
   `@goldii-locks/milestone-escrow-bindings` on `v*` tags; consumption guide in
   `docs/typescript-bindings.md` (#744).
+- `withdraw_to(caller, recipient)`: pay the amount owed to `caller` to a
+  different `recipient` when `caller` can no longer receive the token (for
+  example after the issuer deauthorized it). `recipient` must not be a zero
+  address or the contract (`InvalidAddress`). Emits `withdraw` with `caller`
+  as an extra topic (#1012).
 
 ## [0.2.0] - 2026-06-20
 
@@ -109,3 +217,35 @@ hash for every commit in the `reproducible-wasm` job summary.
   - `raise_dispute`: freeze milestone and request arbiter intervention.
   - `resolve_dispute`: arbiter release or refund resolution.
   - `get_job`: view current job state.
+
+## Project history (migrated from `context.md`)
+
+`context.md` was a running session log and has been removed. The facts that are
+still useful are kept here; the per-day frontend and backend notes are in the
+git history of that file.
+
+### Testnet contract ID lineage
+
+| Contract ID | Period | Notes |
+|---|---|---|
+| `CBBRYWY6ROXCM6AHP4COM3AL6UDPTY66FXF43Q7PNEIPU53RZOGHBYP3` | 0.1.0 (2026-06-13) | First testnet deployment. |
+| `CDD5WKK3WT3QVKXMXTJNDIXE4T73FK6GGXDSD6UTJAH6YYZU52SQ4MUH` | 0.2.0 (2026-06-20) | Superseded. Older docs and `escrow-backend/.env.example` may still list it. |
+| `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA` | Current | Confirmed from production `/health` and the frontend `CONTRACT_ID` variable. |
+
+The current deployment record is `deployments/testnet.json`.
+
+### Campaigns
+
+- **Drips Wave (2026-09-21 to 2026-10-03):** about 348 issues across `escrow-contract`, `escrow-backend` and `escrow-frontend`; 1,092 of 1,101 closed by the end.
+- **Stellar Wave (2026-10-15 to 2026-10-27):** audit-based batch of 375 issues (125 per repo). Contract issues #664-#788. Each issue carries a `p1`/`p2`/`p3` priority and the `Stellar Wave` label. By 2026-10-27, 107 of 125 contract issues were closed.
+
+### Platform and infrastructure notes
+
+- **Event indexer:** the SQLite-backed indexer in `escrow-backend` indexes all contract events by ledger sequence (first added 2026-06-22).
+- **Protocol 30 (2026-11-03):** CAP-88 changed the ledger header format and broke the indexer (`unknown StellarValueType member for value 3`). Fixed by upgrading `@stellar/stellar-sdk` in `escrow-backend` from `^15.1.0` to `^16.4.1`.
+- **Production hosting:** milestonepay.app serves HTTPS, CORS is restricted to the `ALLOWED_ORIGINS` allowlist, and deploys run through `deploy.yml`. A deploy failed on 2026-11-09 because the host disk was full of old Docker images; `docker image prune -af` fixed it.
+
+### Known gaps recorded at the time of removal
+
+- The frontend sends CSP reports to `/api/csp-report` and the backend has no handler (frontend #685).
+- The frontend's batched deadline call needs a backend `GET /api/jobs/:id/deadlines` route (frontend #671).

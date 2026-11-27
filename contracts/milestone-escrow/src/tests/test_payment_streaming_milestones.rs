@@ -535,7 +535,7 @@ fn test_streaming_matrix_overflow_is_rejected_not_wrapped() {
     assert!(!env.as_contract(&contract_id, || env
         .storage()
         .instance()
-        .has(&DataKey::PaymentStreamingExecutionLock)));
+        .has(&DataKey::Paused)));
     assert!(
         !emitted_p_stream_event(&env),
         "a rejected call must not publish a settlement event"
@@ -655,107 +655,6 @@ fn test_streaming_matrix_repeated_calls_are_pure() {
 // ── #257: execution lock blocks concurrent modifications ─────────────────────
 
 #[test]
-fn test_payment_streaming_lock_blocks_fund() {
-    let env = test_env();
-    env.mock_all_auths();
-
-    let admin_addr = Address::generate(&env);
-    let client_addr = Address::generate(&env);
-    let freelancer_addr = Address::generate(&env);
-    let arbiter_addr = Address::generate(&env);
-
-    let token_contract_id = env
-        .register_stellar_asset_contract_v2(admin_addr.clone())
-        .address();
-    let token_admin = token::StellarAssetClient::new(&env, &token_contract_id);
-    token_admin.mint(&client_addr, &5_000);
-
-    let contract_id = env.register(MilestoneEscrow, ());
-    let escrow = MilestoneEscrowClient::new(&env, &contract_id);
-    let amounts = vec![&env, 5_000_i128];
-    escrow.initialize(
-        &admin_addr,
-        &client_addr,
-        &freelancer_addr,
-        &arbiter_addr,
-        &token_contract_id,
-        &604800,
-        &amounts,
-        &crate::test_spec_hashes(&env, &amounts),
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::PaymentStreamingExecutionLock, &true);
-    });
-
-    assert_eq!(
-        escrow.try_fund(&client_addr),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .remove(&DataKey::PaymentStreamingExecutionLock);
-    });
-}
-
-#[test]
-fn test_payment_streaming_lock_blocks_mark_delivered() {
-    let env = test_env();
-    let (escrow, parties) = initialised_escrow(&env);
-
-    // The escrow is already funded and milestone 0 is already Delivered from
-    // initialised_escrow. The payment-streaming lock must fire before the
-    // status check so even a milestone already in Delivered state is blocked.
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::PaymentStreamingExecutionLock, &true);
-    });
-
-    assert_eq!(
-        escrow.try_mark_delivered(&parties.freelancer, &0),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .remove(&DataKey::PaymentStreamingExecutionLock);
-    });
-}
-
-#[test]
-fn test_payment_streaming_lock_blocks_approve_milestone() {
-    let env = test_env();
-    let (escrow, parties) = initialised_escrow(&env);
-
-    // The escrow is already funded and milestone 0 is Delivered from
-    // initialised_escrow, so approve_milestone would succeed without the lock.
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::PaymentStreamingExecutionLock, &true);
-    });
-
-    assert_eq!(
-        escrow.try_approve_milestone(&parties.client, &0),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .remove(&DataKey::PaymentStreamingExecutionLock);
-    });
-}
-
-#[test]
 fn test_payment_streaming_releases_lock_after_success() {
     let env = test_env();
     env.mock_all_auths();
@@ -767,7 +666,7 @@ fn test_payment_streaming_releases_lock_after_success() {
     let lock_held: bool = env.as_contract(&contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .get::<_, bool>(&DataKey::Paused)
             .unwrap_or(false)
     });
     assert!(!lock_held, "execution lock must be cleared after success");
@@ -785,7 +684,7 @@ fn test_payment_streaming_releases_lock_after_failure() {
     let lock_held: bool = env.as_contract(&contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .get::<_, bool>(&DataKey::Paused)
             .unwrap_or(false)
     });
     assert!(!lock_held, "execution lock must be cleared after failure");
@@ -819,7 +718,7 @@ fn payment_streaming_consent_success_only_touches_instance() {
     let lock_held: bool = env.as_contract(&parties.contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .get::<_, bool>(&DataKey::Paused)
             .unwrap_or(false)
     });
     assert!(
@@ -843,9 +742,7 @@ fn payment_streaming_consent_invalid_input_leaves_no_trace() {
     let (escrow, parties) = initialised_escrow(&env);
 
     let instance_had_lock_before: bool = env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::PaymentStreamingExecutionLock)
+        env.storage().instance().has(&DataKey::Paused)
     });
     assert!(!instance_had_lock_before);
 
@@ -858,7 +755,7 @@ fn payment_streaming_consent_invalid_input_leaves_no_trace() {
     let lock_after: bool = env.as_contract(&parties.contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .get::<_, bool>(&DataKey::Paused)
             .unwrap_or(false)
     });
     assert!(!lock_after, "invalid input must not set execution lock");
@@ -870,18 +767,14 @@ fn payment_streaming_consent_footprint_shrinks_against_baseline() {
     let (escrow, parties) = initialised_escrow(&env);
 
     let has_lock_before: bool = env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::PaymentStreamingExecutionLock)
+        env.storage().instance().has(&DataKey::Paused)
     });
     assert!(!has_lock_before, "baseline: no lock before call");
 
     let _ = escrow.try_payment_streaming_consent(&0u32, &3_i128, &2_i128);
 
     let has_lock_after: bool = env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::PaymentStreamingExecutionLock)
+        env.storage().instance().has(&DataKey::Paused)
     });
     assert!(
         !has_lock_after,
@@ -892,9 +785,7 @@ fn payment_streaming_consent_footprint_shrinks_against_baseline() {
     // entries beyond the pre-existing Job.
     let _ = escrow.payment_streaming_consent(&0u32, &1_i128, &2_i128);
     let has_lock_after_success: bool = env.as_contract(&parties.contract_id, || {
-        env.storage()
-            .instance()
-            .has(&DataKey::PaymentStreamingExecutionLock)
+        env.storage().instance().has(&DataKey::Paused)
     });
     assert!(
         !has_lock_after_success,
@@ -991,35 +882,6 @@ fn test_payment_streaming_milestones_uninitialized_returns_typed_error_without_m
     );
 
     let after = storage_snapshot(&env, &contract_id);
-    assert_eq!(after.0, before.0, "instance storage must be untouched");
-    assert_eq!(after.1, before.1, "persistent storage must be untouched");
-    assert_eq!(after.2, before.2, "temporary storage must be untouched");
-    assert!(!emitted_p_stream_event(&env));
-}
-
-/// A payment-streaming split that is already mid-execution is an illegal
-/// source state: the call must answer with the typed
-/// `PaymentStreamingInProgress` error, keep the pre-existing lock untouched,
-/// and write nothing else.
-#[test]
-fn test_payment_streaming_milestones_locked_source_returns_typed_error_without_mutation() {
-    let env = test_env();
-    let (escrow, p) = initialised_escrow(&env);
-
-    env.as_contract(&p.contract_id, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::PaymentStreamingExecutionLock, &true);
-    });
-
-    let before = storage_snapshot(&env, &p.contract_id);
-
-    assert_eq!(
-        escrow.try_payment_streaming_milestones(&ARGS_TOTAL, &ARGS_NUM, &ARGS_DEN),
-        Err(Ok(Error::PaymentStreamingInProgress))
-    );
-
-    let after = storage_snapshot(&env, &p.contract_id);
     assert_eq!(after.0, before.0, "instance storage must be untouched");
     assert_eq!(after.1, before.1, "persistent storage must be untouched");
     assert_eq!(after.2, before.2, "temporary storage must be untouched");

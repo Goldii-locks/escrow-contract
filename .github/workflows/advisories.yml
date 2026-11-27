@@ -1,0 +1,44 @@
+name: Advisories
+
+# RUSTSEC advisories are published against crates that are already locked, so
+# the `dependencies` job in ci.yml only catches them on the next push. This
+# re-checks Cargo.lock weekly and opens (or comments on) a tracking issue when
+# it fails, so the result does not sit unseen in the Actions tab (#1013).
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays at 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: cargo-deny advisories
+        uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
+        with:
+          command: check advisories
+
+      - name: Open or update tracking issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Scheduled cargo-deny advisories check failed"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="The scheduled \`cargo-deny check advisories\` run failed: $RUN_URL"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$TITLE\" in:title" --json number,title \
+            --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi

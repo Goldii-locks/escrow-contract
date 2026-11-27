@@ -321,21 +321,13 @@ fn test_split_refund_net_distribution_emits_structured_event_exactly_once() {
     let dist =
         client.split_refund_net_distribution(&1000_i128, &6000_u32, &4000_u32, &fee_allocation);
 
-    let events = sprefnet_events(&env);
+    // A preview publishes no event an indexer could mistake for activity (#676).
+    assert!(dist.client_net_refund >= 0);
     assert_eq!(
-        events.len(),
-        1,
-        "Expected exactly one sprefnet event on success path"
+        sprefnet_events(&env).len(),
+        0,
+        "the preview publishes no sprefnet event"
     );
-
-    let event = &events[0];
-    assert_eq!(event.total_amount, 1000);
-    assert_eq!(event.client_refund_bps, 6000);
-    assert_eq!(event.freelancer_payout_bps, 4000);
-    assert_eq!(event.client_net_refund, dist.client_net_refund);
-    assert_eq!(event.client_fee_share, dist.client_fee_share);
-    assert_eq!(event.freelancer_net_payout, dist.freelancer_net_payout);
-    assert_eq!(event.treasury_fee_share, dist.treasury_fee_share);
 }
 
 #[test]

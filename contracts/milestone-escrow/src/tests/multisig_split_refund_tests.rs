@@ -21,8 +21,8 @@
 //!    with matching payload.
 
 use super::*;
-use crate::{Error, SplitRefundCalculatedEvent};
-use soroban_sdk::{symbol_short, vec, Address, Env, FromVal, IntoVal, Symbol, TryIntoVal, Val};
+use crate::Error;
+use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Val};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,15 +38,6 @@ fn splitref_event_count(env: &Env) -> u32 {
         }
     }
     count
-}
-
-/// Extract the payload of the last `"splitref"` event.
-fn last_splitref_event(env: &Env) -> SplitRefundCalculatedEvent {
-    let events = crate::all_event_tuples(env);
-    let last = events.last().unwrap();
-    let topic: Symbol = last.1.get(0).unwrap().try_into_val(env).unwrap();
-    assert_eq!(topic, Symbol::new(env, "splitref"));
-    SplitRefundCalculatedEvent::from_val(env, &last.2)
 }
 
 // ── 1. Auth / source-state guards ────────────────────────────────────────────
@@ -210,7 +201,7 @@ fn split_refund_i128_max_with_zero_client_bps_succeeds() {
         allocation.client_refund + allocation.freelancer_payout,
         i128::MAX
     );
-    assert_eq!(splitref_event_count(&env), 1);
+    assert_eq!(splitref_event_count(&env), 0);
 }
 
 /// Large but non-overflowing amount: `i64::MAX` as `total_amount` with a
@@ -236,7 +227,7 @@ fn split_refund_i64_max_even_split_succeeds() {
         (allocation.client_refund - allocation.freelancer_payout).abs() <= 1,
         "halves must differ by at most 1 (rounding)"
     );
-    assert_eq!(splitref_event_count(&env), 1);
+    assert_eq!(splitref_event_count(&env), 0);
 }
 
 // ── 5. Valid-amount regression ────────────────────────────────────────────────
@@ -318,10 +309,10 @@ fn split_refund_regression_extreme_bps_preserves_total_unchanged() {
 
 // ── 6. Event emission ─────────────────────────────────────────────────────────
 
-/// A successful call emits exactly one `"splitref"` event whose payload
-/// matches the returned `RefundAllocation`.
+/// A successful call returns the allocation and emits no `"splitref"` event:
+/// it is a calculation, not an action (#676).
 #[test]
-fn split_refund_success_emits_exactly_one_splitref_event_with_matching_payload() {
+fn split_refund_success_emits_no_splitref_event() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -330,13 +321,9 @@ fn split_refund_success_emits_exactly_one_splitref_event_with_matching_payload()
 
     let allocation = client.multisig_split_refund(&admin_addr, &1_000_i128, &6_000_u32, &4_000_u32);
 
-    assert_eq!(splitref_event_count(&env), 1);
-
-    let event = last_splitref_event(&env);
-    assert_eq!(event.client_refund, allocation.client_refund);
-    assert_eq!(event.freelancer_payout, allocation.freelancer_payout);
-    assert_eq!(event.client_refund_bps, 6_000);
-    assert_eq!(event.freelancer_payout_bps, 4_000);
+    assert_eq!(allocation.client_refund_bps, 6_000);
+    assert_eq!(allocation.freelancer_payout_bps, 4_000);
+    assert_eq!(splitref_event_count(&env), 0);
 }
 
 /// Failed calls (overflow, invalid amount, invalid ratio) must not emit any

@@ -7,7 +7,7 @@
 //!      for the initialisation guard, then again via `load_admin`'s
 //!      `.get(..)` for the authorization comparison.
 //!   2. The contract's single **instance** entry — the instance copy
-//!      of `DataKey::Admin`, `DataKey::Paused` and `DataKey::EpLk` all live
+//!      of `DataKey::Admin`, `DataKey::Paused` and `DataKey::Ep` all live
 //!      inside the `contract_instance` ledger entry.
 //!
 //! `initialize` writes both copies of the admin address atomically, and every
@@ -65,7 +65,7 @@ fn is_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::EpLk)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false)
     })
 }
@@ -388,7 +388,7 @@ fn test_admin_resume_escrow_clears_pause_and_resumes_normal_operation() {
     let payload = EscrowResumedEvent::from_val(&env, &last.2);
     assert_eq!(payload.admin, admin);
 
-    // Pause state cleared, lock released, persisted admin untouched.
+    // Pause state cleared, lock released, no persistent admin copy.
     assert!(!is_paused(&env, &contract_id), "pause flag must be cleared");
     assert!(!is_lock_held(&env, &contract_id), "EpLk must be released");
     let (_, _, paused) = escrow.get_yield_info();
@@ -396,10 +396,11 @@ fn test_admin_resume_escrow_clears_pause_and_resumes_normal_operation() {
     let persistent_admin: Option<Address> = env.as_contract(&contract_id, || {
         env.storage().persistent().get(&DataKey::Admin)
     });
+    // The admin lives in instance storage only (#679): no persistent copy is
+    // written at initialisation, and resuming does not create one.
     assert_eq!(
-        persistent_admin,
-        Some(admin.clone()),
-        "persistent::Admin must be unchanged by the resume"
+        persistent_admin, None,
+        "persistent::Admin must not be created by the resume"
     );
 
     // Normal operation resumed: the same endpoint that was rejected above

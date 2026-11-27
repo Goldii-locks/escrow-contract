@@ -3,7 +3,10 @@
 extern crate std;
 use std::println;
 
-use crate::{test::dispute_reason_hash, MilestoneEscrow, MilestoneEscrowClient};
+use crate::{
+    test::{decision_hash, dispute_reason_hash},
+    MilestoneEscrow, MilestoneEscrowClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, EnvTestConfig, Ledger as _},
     token, vec, Address, Env,
@@ -51,15 +54,22 @@ struct Cost {
 /// costs instructions but no extra ledger write. Write bytes raised by 60 for
 /// every flow that stores a milestone once milestones carry their 32-byte
 /// `deliverable` hash (a 20-byte `deliverable` key plus a 40-byte value); no
-/// flow gained a ledger write.
+/// flow gained a ledger write. Write entries lowered by one for
+/// `mark_delivered`, `approve_milestone` and `raise_dispute` once the
+/// write-only `DeliveredAt`, `MilestoneReleased` and `DisputeFlag` temporary
+/// keys were retired (#1001).
+/// `submit_evidence` raised to 215k instructions / 600 write bytes once it
+/// runs the schema guard and `DisputeInfo` carries `raised_by` (#997).
+/// `mark_delivered` gained one ledger write when the review window began
+/// recording its pause baseline (#972).
 const BUDGETS: [(&str, i64, u32, u32); 8] = [
-    ("initialize", 235_000, 7, 1_910),
+    ("initialize", 245_000, 7, 1_910),
     ("fund", 362_000, 4, 1_530),
-    ("mark_delivered", 224_000, 3, 650),
-    ("approve_milestone", 490_000, 7, 1_440),
+    ("mark_delivered", 234_000, 3, 650),
+    ("approve_milestone", 490_000, 6, 1_440),
     ("claim_auto_release", 517_000, 6, 1_315),
-    ("raise_dispute", 316_000, 5, 950),
-    ("submit_evidence", 201_000, 2, 580),
+    ("raise_dispute", 316_000, 4, 950),
+    ("submit_evidence", 215_000, 2, 600),
     ("resolve_dispute", 558_000, 7, 1_315),
 ];
 
@@ -199,7 +209,9 @@ fn main_entrypoint_cost_baselines() {
     setup
         .escrow
         .raise_dispute(&setup.client_addr, &0, &dispute_reason_hash(&env));
-    setup.escrow.resolve_dispute(&setup.arbiter_addr, &0, &true);
+    setup
+        .escrow
+        .resolve_dispute(&setup.arbiter_addr, &0, &true, &decision_hash(&env));
     let resolve_dispute_cost = measure("resolve_dispute", &env);
 
     let costs = [

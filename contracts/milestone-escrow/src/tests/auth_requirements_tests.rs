@@ -894,11 +894,11 @@ fn resolve_dispute_wrong_signer_fails() {
         invoke: &MockAuthInvoke {
             contract: &contract_id,
             fn_name: "resolve_dispute",
-            args: (arbiter.clone(), 0u32, true).into_val(&env),
+            args: (arbiter.clone(), 0u32, true, decision_hash(&env)).into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    let res = escrow.try_resolve_dispute(&arbiter, &0u32, &true);
+    let res = escrow.try_resolve_dispute(&arbiter, &0u32, &true, &decision_hash(&env));
     assert!(
         res.is_err(),
         "resolve_dispute must fail when arbiter auth is missing"
@@ -917,11 +917,11 @@ fn resolve_dispute_correct_signer_succeeds_and_auths_match() {
         invoke: &MockAuthInvoke {
             contract: &contract_id,
             fn_name: "resolve_dispute",
-            args: (arbiter.clone(), 0u32, true).into_val(&env),
+            args: (arbiter.clone(), 0u32, true, decision_hash(&env)).into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    escrow.resolve_dispute(&arbiter, &0u32, &true);
+    escrow.resolve_dispute(&arbiter, &0u32, &true, &decision_hash(&env));
     let auths = env.auths();
     assert_eq!(auths[0].0, arbiter);
     assert_eq!(
@@ -929,7 +929,7 @@ fn resolve_dispute_correct_signer_succeeds_and_auths_match() {
         AuthorizedFunction::Contract((
             contract_id.clone(),
             Symbol::new(&env, "resolve_dispute"),
-            (arbiter.clone(), 0u32, true).into_val(&env),
+            (arbiter.clone(), 0u32, true, decision_hash(&env)).into_val(&env),
         ))
     );
 }
@@ -949,11 +949,16 @@ fn apply_dispute_arbitration_split_wrong_signer_fails() {
         invoke: &MockAuthInvoke {
             contract: &contract_id,
             fn_name: "apply_dispute_arbitration_split",
-            args: (arbiter.clone(), 0u32, 5_000u32).into_val(&env),
+            args: (arbiter.clone(), 0u32, 5_000u32, decision_hash(&env)).into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    let res = escrow.try_apply_dispute_arbitration_split(&arbiter, &0u32, &5_000u32);
+    let res = escrow.try_apply_dispute_arbitration_split(
+        &arbiter,
+        &0u32,
+        &5_000u32,
+        &decision_hash(&env),
+    );
     assert!(
         res.is_err(),
         "apply_dispute_arbitration_split must fail when arbiter auth is missing"
@@ -972,11 +977,11 @@ fn apply_dispute_arbitration_split_correct_signer_succeeds_and_auths_match() {
         invoke: &MockAuthInvoke {
             contract: &contract_id,
             fn_name: "apply_dispute_arbitration_split",
-            args: (arbiter.clone(), 0u32, 5_000u32).into_val(&env),
+            args: (arbiter.clone(), 0u32, 5_000u32, decision_hash(&env)).into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    escrow.apply_dispute_arbitration_split(&arbiter, &0u32, &5_000u32);
+    escrow.apply_dispute_arbitration_split(&arbiter, &0u32, &5_000u32, &decision_hash(&env));
     let auths = env.auths();
     assert_eq!(auths[0].0, arbiter);
     assert_eq!(
@@ -984,7 +989,7 @@ fn apply_dispute_arbitration_split_correct_signer_succeeds_and_auths_match() {
         AuthorizedFunction::Contract((
             contract_id.clone(),
             Symbol::new(&env, "apply_dispute_arbitration_split"),
-            (arbiter.clone(), 0u32, 5_000u32).into_val(&env),
+            (arbiter.clone(), 0u32, 5_000u32, decision_hash(&env)).into_val(&env),
         ))
     );
 }

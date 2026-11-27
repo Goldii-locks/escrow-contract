@@ -62,6 +62,8 @@ After a milestone is `Delivered`, the authorized client may call
 - `revision_count` increments by one. `MAX_REVISIONS` is 3.
 - Further revision requests after the cap return `MaxRevisions`; the client
   must approve, partially approve, or dispute.
+- Once the auto-release deadline has passed, `request_revision` returns
+  `ReviewWindowClosed`.
 - The on-chain event `msrev` carries `milestone_index`, `note_hash`, and
   `revision_count`. The note itself is not stored.
 - A later `mark_delivered` writes a fresh `delivered_at` and starts a new
@@ -94,8 +96,12 @@ are not required to settle the escrow.
   to lift a pause **they jointly created**. One party acting alone is
   `Unauthorized`. This path cannot lift an admin pause.
 - `emergency_unpause(admin)`: admin recovery for any pause.
-- `emergency_pause_admin_override(admin, paused)`: admin-only force pause or
-  unpause. Clears `EpParty` so a later party unpause cannot undo an admin freeze.
+- `admin_pause_escrow(admin)` / `admin_resume_escrow(admin)`: the single admin
+  pause (`Paused`). A party unpause cannot lift it.
+- `emergency_pause_admin_override(admin)`: deprecated alias that sets the admin
+  pause (`Paused`).
+- There are two pauses, admin and party, and every entry point checks them
+  through one helper; either one blocks the guarded endpoints.
 - Unpausing a running escrow returns `NotPaused`.
 - Pause state is per contract instance; unpausing one escrow does not affect
   another.
@@ -152,19 +158,29 @@ Notes:
   - `resolve_dispute(release_to_freelancer = false)` → `Refunded`
   - `apply_dispute_arbitration_split(client_refund_bps)` → `Split` (full
     refund becomes `Refunded`, full freelancer award becomes `Released`).
+  Both closing calls also take a 32-byte `decision_hash`, a commitment to the
+  arbiter's written decision that stays off-chain in escrow-backend storage,
+  keyed by that hash. The hash is echoed in the `resolve` event (and `arbsplit`
+  for a split); it changes neither the outcome nor the fund distribution
+  (#1015).
 - While a milestone is `Disputed`, either party may anchor evidence with
   `submit_evidence(caller, milestone_index, evidence_hash)`. Each hash is
   appended to the dispute record (at most `MAX_DISPUTE_EVIDENCE_ENTRIES` = 10,
   then `EvidenceLimitReached`), timestamped, and published as an `evidence`
-  event. `get_dispute_info` returns the reason hash, `disputed_at`, the
-  pre-dispute status and every evidence entry; the record is deleted when the
+  event. `get_dispute_info` returns the reason hash, `raised_by` (the party
+  that called `raise_dispute`, #997), `disputed_at`, the pre-dispute status
+  and every evidence entry; the record is deleted when the
   dispute closes, so evidence never outlives the dispute it belongs to (#712).
 - The dispute timeout is set by the constructor's
   `settings.dispute_timeout_seconds` (non-zero; 30 days is the usual value).
 - If the arbiter has not acted within the escrow's dispute timeout (30 days
   by default, set with `initialize_with_dispute_timeout`), either party may
   call `escalate_dispute` to return the milestone to its pre-dispute status;
-  a restored `Delivered` milestone gets a fresh auto-release window.
+  a restored `Delivered` milestone keeps its original auto-release deadline
+  (`delivered_at` is not reset), so a dispute → escalate → dispute loop cannot
+  extend the review window.
+- Once a `Delivered` milestone's auto-release deadline has passed,
+  `raise_dispute` returns `ReviewWindowClosed`; the freelancer may claim.
 - A freelancer who never delivers is handled by the escrow delivery deadline
   and the cancellation / auto-release paths — `raise_dispute` is not the
   mechanism for non-delivery.

@@ -2,7 +2,7 @@
 use super::*;
 use soroban_sdk::{token, vec, Address, Env};
 
-fn setup_unfunded(
+pub(crate) fn setup_unfunded(
     env: &Env,
     amounts: soroban_sdk::Vec<i128>,
     mode: FundingMode,
@@ -129,7 +129,7 @@ fn unfunded_milestone_cannot_be_settled() {
         Err(Ok(Error::NotFunded))
     );
     assert_eq!(
-        escrow.try_resolve_dispute(&arbiter_addr, &1u32, &true),
+        escrow.try_resolve_dispute(&arbiter_addr, &1u32, &true, &decision_hash(&env)),
         Err(Ok(Error::NotFunded))
     );
     assert_eq!(
@@ -190,7 +190,7 @@ fn conservation_invariant() {
     escrow.mark_delivered(&freelancer_addr, &0u32);
     escrow.approve_partial(&client_addr, &0u32, &40_i128);
     escrow.raise_dispute(&client_addr, &0u32, &dispute_reason_hash(&env));
-    escrow.resolve_dispute(&arbiter_addr, &0u32, &false);
+    escrow.resolve_dispute(&arbiter_addr, &0u32, &false, &decision_hash(&env));
     let token_client = token::Client::new(&env, &token);
     assert_eq!(token_client.balance(&escrow.address), 0);
     let job = escrow.get_job();

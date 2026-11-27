@@ -200,21 +200,6 @@ fn test_split_refund_rejects_after_unpause() {
     assert_rejected(&env, &fx, &fx.client_addr, Error::NotPaused);
 }
 
-/// A half-applied pause transition (`EpLk` held) is refused with its own
-/// error, whether or not the `Ep` flag has been committed yet.
-#[test]
-fn test_split_refund_rejects_pause_transition_in_progress() {
-    for committed in [false, true] {
-        let env = Env::default();
-        let fx = funded(&env);
-        env.as_contract(&fx.contract_id, || {
-            env.storage().instance().set(&DataKey::EpLk, &true);
-            env.storage().instance().set(&DataKey::Ep, &committed);
-        });
-        assert_rejected(&env, &fx, &fx.admin, Error::EmergencyPauseInProgress);
-    }
-}
-
 /// Argument validation still yields its own typed errors once every guard
 /// passes, and still mutates nothing.
 #[test]
@@ -250,7 +235,7 @@ fn test_split_refund_success_mutates_no_contract_storage() {
     let before = storage_snapshot(&env, &fx.contract_id);
 
     escrow.emergency_pause_split_refund(&fx.freelancer, &1_001_i128, &2_500_u32, &7_500_u32);
-    assert_eq!(epspltref_count(&env), 1);
+    assert_eq!(epspltref_count(&env), 0);
     assert_eq!(storage_snapshot(&env, &fx.contract_id), before);
 }
 

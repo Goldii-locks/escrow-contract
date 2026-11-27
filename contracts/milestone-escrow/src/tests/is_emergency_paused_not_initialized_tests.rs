@@ -106,7 +106,7 @@ fn capture_ledger(env: &Env, contract_id: &Address) -> LedgerSnapshot {
             job_exists: env.storage().instance().has(&DataKey::Job),
             admin_instance: env.storage().instance().get(&DataKey::Admin),
             admin_persistent: env.storage().persistent().get(&DataKey::Admin),
-            ep_lock: env.storage().instance().get(&DataKey::EpLk),
+            ep_lock: env.storage().instance().get(&DataKey::Ep),
         }
     })
 }
@@ -134,7 +134,7 @@ fn assert_storage_unchanged(before: &LedgerSnapshot, after: &LedgerSnapshot) {
     );
     assert_eq!(
         after.ep_lock, before.ep_lock,
-        "DataKey::EpLk must not be mutated by a read"
+        "DataKey::Ep must not be mutated by a read"
     );
 }
 
@@ -430,9 +430,9 @@ fn test_is_emergency_paused_repeated_reads_are_idempotent_and_read_only() {
     }
 }
 
-/// The endpoint is a read of `DataKey::Ep` and nothing else: whatever value is
-/// stored under that key is exactly what the endpoint reports, at every point
-/// of the pause lifecycle.
+/// The endpoint reports the stored pause flags and nothing else: the party
+/// pause (`DataKey::Ep`) or the admin pause (`DataKey::Paused`), at every
+/// point of the pause lifecycle.
 #[test]
 fn test_is_emergency_paused_always_matches_stored_flag() {
     let env = Env::default();
@@ -443,10 +443,18 @@ fn test_is_emergency_paused_always_matches_stored_flag() {
 
     let assert_matches_stored = |contract_id: &Address, client: &MilestoneEscrowClient| {
         let stored = capture_ledger(&env, contract_id).ep;
+        let admin_paused: bool = env.as_contract(contract_id, || {
+            env.storage()
+                .instance()
+                .get(&DataKey::Paused)
+                .unwrap_or(false)
+        });
         let reported = client.try_is_emergency_paused();
         assert_eq!(
             reported,
-            Ok(Ok(stored.expect("flag must exist once initialized")))
+            Ok(Ok(
+                stored.expect("flag must exist once initialized") || admin_paused
+            ))
         );
     };
 

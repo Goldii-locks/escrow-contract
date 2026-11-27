@@ -501,30 +501,6 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Admin"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-              "key": {
-                "vec": [
-                  {
                     "symbol": "Milestone"
                   },
                   {
@@ -867,6 +843,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "FundedCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 2
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "FundingMode"
                           }
                         ]
@@ -968,12 +956,24 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "PausedSeconds"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "SchemaVersion"
                           }
                         ]
                       },
                       "val": {
-                        "u32": 3
+                        "u32": 6
                       }
                     },
                     {

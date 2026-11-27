@@ -8,3 +8,4 @@ issue.md
 dist/
 bindings/
 contracts/milestone-escrow/test_snapshots/
+contracts/escrow-factory/test_snapshots/

@@ -163,7 +163,8 @@ log "Resolving dispute as refund to client"
 invoke arbiter resolve_dispute \
   --arbiter "${ARBITER}" \
   --milestone_index 0 \
-  --release_to_freelancer false
+  --release_to_freelancer false \
+  --decision_hash 3333333333333333333333333333333333333333333333333333333333333333
 
 log "Asserting final milestone status is Refunded"
 JOB="$(invoke admin get_job)"

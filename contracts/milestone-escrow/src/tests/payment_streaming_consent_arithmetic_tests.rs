@@ -89,7 +89,7 @@ fn execution_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::PaymentStreamingExecutionLock)
+            .get::<_, bool>(&DataKey::Paused)
             .unwrap_or(false)
     })
 }

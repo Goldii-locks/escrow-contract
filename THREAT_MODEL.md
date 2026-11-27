@@ -30,7 +30,7 @@ The admin is the platform. It is set by `initialize` and can be replaced with
 
 | Capability | Entry points | Mitigation or status |
 |---|---|---|
-| Upgrade the contract code instantly | `upgrade` | No timelock or delay; blocked only while emergency paused or cancel locked. The admin can therefore replace the logic holding every escrowed token. See [#668](https://github.com/Goldii-locks/escrow-contract/issues/668), [#718](https://github.com/Goldii-locks/escrow-contract/issues/718), [#773](https://github.com/Goldii-locks/escrow-contract/issues/773). |
+| Upgrade the contract code instantly | `upgrade` | No timelock or delay, and pause/cancel-lock state is intentionally not a guard so an incident can be paused and then patched (#973). The admin can therefore replace the logic holding every escrowed token. See [#668](https://github.com/Goldii-locks/escrow-contract/issues/668), [#718](https://github.com/Goldii-locks/escrow-contract/issues/718), [#773](https://github.com/Goldii-locks/escrow-contract/issues/773). |
 | Override any milestone | `admin_override_release`, `admin_override_refund`, `admin_override_streaming_release`, `admin_override_cancel_release`, `admin_override_cancel_refund`, `multisig_admin_override_release`, `multisig_admin_override_refund`, `admin_override_tax_release`, `admin_override_tax_refund`, `admin_override_tax_split_refund` | Releases to the freelancer or refunds to the client on any milestone that is not `Released` or `Refunded`, with no dispute, cancellation or delay required. Funds can only go to the recorded client or freelancer, never to the admin. Every override publishes an event. See [#687](https://github.com/Goldii-locks/escrow-contract/issues/687), [#691](https://github.com/Goldii-locks/escrow-contract/issues/691), [#684](https://github.com/Goldii-locks/escrow-contract/issues/684), [#689](https://github.com/Goldii-locks/escrow-contract/issues/689). |
 | Change fees after funding | `set_platform_fee_allocation`, `lock_platform_fee_allocation`, `pf_alloc_admin_override` | No funded check, and the lock can be undone by the admin override. The allocation is not applied to any payout today, so changing it moves no funds. See [#694](https://github.com/Goldii-locks/escrow-contract/issues/694), [#674](https://github.com/Goldii-locks/escrow-contract/issues/674). |
 | Pause and unpause | `admin_pause_escrow`, `admin_resume_escrow`, `emergency_unpause`, `emergency_pause_admin_override` | The admin pause does not block the normal workflow endpoints; the admin can set or clear the emergency pause at will, and only the admin can clear a pause the parties set. See [#664](https://github.com/Goldii-locks/escrow-contract/issues/664), [#726](https://github.com/Goldii-locks/escrow-contract/issues/726), [#759](https://github.com/Goldii-locks/escrow-contract/issues/759). |
@@ -89,6 +89,36 @@ The admin is the platform. It is set by `initialize` and can be replaced with
    ([#676](https://github.com/Goldii-locks/escrow-contract/issues/676)).
 5. **`initialize` is called by the intended admin immediately after deployment**
    ([#665](https://github.com/Goldii-locks/escrow-contract/issues/665)).
+
+## Factory-created escrow admin pinning
+
+`create_escrow` pins each escrow to the factory's admin address at deploy time.
+After that, each escrow's admin is independent: rotating the factory admin does
+not affect existing escrows, and incident response after a key compromise
+requires one `propose_admin_transfer → approvals → execute_admin_transfer`
+sequence per escrow.
+
+**Decision (adopted, see [ADMIN_MULTISIG_DECISION.md](ADMIN_MULTISIG_DECISION.md)):**
+Use a classic Stellar M-of-N account as the platform admin address. Rotating
+the signer set on that account (via `stellar transaction sign` with the new
+key set, or the account's own multisig) updates all existing escrows at once
+without touching any escrow contract, because every escrow's `require_auth()`
+call is satisfied by the same account address. No on-chain escrow transaction
+is needed for a key rotation.
+
+Operational runbook for key compromise:
+
+1. Revoke the compromised signing key on the M-of-N Stellar account.
+2. Add a replacement key with at least the same threshold weight.
+3. Verify the new key set on testnet before updating mainnet.
+4. No escrow contract calls are needed; all existing escrows immediately
+   recognise the updated signer set.
+
+The alternative — storing the factory address in each escrow and reading the
+current admin via a cross-contract call — was not chosen because it adds a
+cross-contract read on every admin call, makes escrows dependent on factory
+liveness, and complicates the existing `require_auth()` pattern. The M-of-N
+account approach achieves the same rotation effect with no contract changes.
 
 ## Out of scope
 

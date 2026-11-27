@@ -94,7 +94,7 @@ fn is_lock_held(env: &Env, contract_id: &Address) -> bool {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()
-            .get::<_, bool>(&DataKey::EpLk)
+            .get::<_, bool>(&DataKey::Ep)
             .unwrap_or(false)
     })
 }
@@ -126,27 +126,6 @@ fn pause_rejects_non_admin_caller() {
         client.try_admin_pause_escrow(&attacker),
         Err(Ok(Error::Unauthorized))
     );
-    assert_eq!(pause_event_count(&env), 0);
-}
-
-#[test]
-fn pause_rejects_when_emergency_lock_held() {
-    let env = test_env();
-    let (client, admin) = initialised_escrow(&env);
-    let contract_id = client.address.clone();
-
-    // Manually set the emergency-pause lock to simulate a mid-flight transition.
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::EpLk, &true);
-    });
-
-    assert_eq!(
-        client.try_admin_pause_escrow(&admin),
-        Err(Ok(Error::EmergencyPauseInProgress))
-    );
-    // No mutation: paused flag remains false, lock still held.
-    assert!(!is_paused(&env, &contract_id));
-    assert!(is_lock_held(&env, &contract_id));
     assert_eq!(pause_event_count(&env), 0);
 }
 
@@ -436,7 +415,8 @@ fn admin_pause_escrow_blocks_resolve_dispute_and_resumes() {
     let freelancer_before = token_client.balance(&f.freelancer);
 
     assert_eq!(
-        f.escrow.try_resolve_dispute(&f.arbiter, &0, &true),
+        f.escrow
+            .try_resolve_dispute(&f.arbiter, &0, &true, &decision_hash(&env)),
         Err(Ok(Error::Paused))
     );
 
@@ -445,7 +425,8 @@ fn admin_pause_escrow_blocks_resolve_dispute_and_resumes() {
 
     f.escrow.admin_resume_escrow(&f.admin);
     assert_eq!(
-        f.escrow.try_resolve_dispute(&f.arbiter, &0, &true),
+        f.escrow
+            .try_resolve_dispute(&f.arbiter, &0, &true, &decision_hash(&env)),
         Ok(Ok(()))
     );
     assert_eq!(token_client.balance(&f.freelancer), 1_000_i128);
@@ -469,7 +450,7 @@ fn admin_pause_escrow_blocks_apply_dispute_arbitration_split_and_resumes() {
 
     assert_eq!(
         f.escrow
-            .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000),
+            .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000, &decision_hash(&env)),
         Err(Ok(Error::Paused))
     );
 
@@ -480,7 +461,7 @@ fn admin_pause_escrow_blocks_apply_dispute_arbitration_split_and_resumes() {
     f.escrow.admin_resume_escrow(&f.admin);
     assert!(f
         .escrow
-        .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000)
+        .try_apply_dispute_arbitration_split(&f.arbiter, &0, &5000, &decision_hash(&env))
         .is_ok());
     assert_eq!(token_client.balance(&f.client), client_before + 500_i128);
     assert_eq!(

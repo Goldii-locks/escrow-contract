@@ -66,7 +66,8 @@ fn resolve_dispute_pays_the_fee_and_the_rest_to_the_winner() {
     let env = test_env();
     let f = disputed_escrow(&env, 500);
 
-    f.escrow.resolve_dispute(&f.arbiter, &0u32, &true);
+    f.escrow
+        .resolve_dispute(&f.arbiter, &0u32, &true, &decision_hash(&env));
 
     assert_eq!(f.token.balance(&f.arbiter), 50);
     assert_eq!(f.token.balance(&f.freelancer), 950);
@@ -82,7 +83,8 @@ fn resolve_dispute_refund_also_pays_the_fee() {
     let env = test_env();
     let f = disputed_escrow(&env, 500);
 
-    f.escrow.resolve_dispute(&f.arbiter, &0u32, &false);
+    f.escrow
+        .resolve_dispute(&f.arbiter, &0u32, &false, &decision_hash(&env));
 
     assert_eq!(f.token.balance(&f.arbiter), 50);
     assert_eq!(f.token.balance(&f.client_addr), 950);
@@ -94,9 +96,12 @@ fn arbitration_split_divides_what_is_left_after_the_fee() {
     let env = test_env();
     let f = disputed_escrow(&env, 500);
 
-    let allocation = f
-        .escrow
-        .apply_dispute_arbitration_split(&f.arbiter, &0u32, &6_000u32);
+    let allocation = f.escrow.apply_dispute_arbitration_split(
+        &f.arbiter,
+        &0u32,
+        &6_000u32,
+        &decision_hash(&env),
+    );
 
     assert_eq!(f.token.balance(&f.arbiter), 50);
     assert_eq!(allocation.client_refund, 570);
@@ -111,7 +116,8 @@ fn zero_fee_leaves_resolution_unchanged() {
     let env = test_env();
     let f = disputed_escrow(&env, 0);
 
-    f.escrow.resolve_dispute(&f.arbiter, &0u32, &true);
+    f.escrow
+        .resolve_dispute(&f.arbiter, &0u32, &true, &decision_hash(&env));
 
     assert_eq!(f.token.balance(&f.arbiter), 0);
     assert_eq!(f.token.balance(&f.freelancer), 1_000);

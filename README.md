@@ -28,7 +28,7 @@ role each function requires.
 
 | Role | Permissions |
 |---|---|
-| `Upgrader` | `upgrade`, `migrate`, `migrate_cold_config`. Use a cold key. |
+| `Upgrader` | `upgrade`, `migrate`. Use a cold key. |
 | `Operator` | Pause and resume, including the emergency pause controls. |
 | `FeeManager` | Fees, yield, tax settings and the token whitelist. |
 | `Resolver` | Admin overrides of stuck payouts, and multisig lock and setup. A cancel override (`admin_override_cancel_release` / `_refund`) is refused with `DisputeTimeoutNotReached` while any milestone's dispute is younger than the dispute timeout. |
@@ -68,6 +68,7 @@ The contract exposes **94 public functions** grouped by category below.
 | `withdraw_unaccepted` | Client | Reclaim funds if job not accepted within 7 days |
 | `add_milestone` | Client + Freelancer | Append a new Pending milestone to a funded job; the client deposits its amount in the same call (capped at `MAX_MILESTONES` = 50) |
 | `reduce_milestone` | Client + Freelancer | Lower a Pending milestone's amount and refund the difference to the client |
+| `increase_milestone` | Client + Freelancer | Raise a Pending milestone's amount; the client deposits the difference if the milestone is funded |
 | `rotate_freelancer` | Client + Freelancer | Move the freelancer role and future payouts to a new address |
 | `replace_arbiter` | Client + Freelancer | Appoint a new arbiter when the sitting one is unavailable; refused while a dispute is open |
 | `get_job` | Anyone | View current job state |
@@ -97,11 +98,11 @@ The contract exposes **94 public functions** grouped by category below.
 |---|---|---|
 | `raise_dispute` | Client or Freelancer | Freeze a milestone for arbitration, committing a 32-byte `reason_hash` |
 | `submit_evidence` | Client or Freelancer | Anchor an evidence hash on an open dispute (max 10 per dispute) |
-| `get_dispute_info` | Anyone | Read the dispute reason hash, timestamps and evidence trail |
+| `get_dispute_info` | Anyone | Read who raised the dispute, the reason hash, timestamps and evidence trail |
 | `escalate_dispute` | Client or Freelancer | After timeout, restore milestone to pre-dispute status |
-| `resolve_dispute` | Arbiter | Release to freelancer or refund to client, after any arbiter fee |
+| `resolve_dispute` | Arbiter | Release to freelancer or refund to client, after any arbiter fee, committing a 32-byte `decision_hash` of the written decision |
 | `dispute_arbitration_split` | Arbiter | Propose a split between client/freelancer |
-| `apply_dispute_arbitration_split` | Arbiter | Apply the proposed arbitration split |
+| `apply_dispute_arbitration_split` | Arbiter | Apply the proposed arbitration split, committing a 32-byte `decision_hash` of the written decision |
 
 ### Cancellation
 
@@ -114,12 +115,18 @@ The contract exposes **94 public functions** grouped by category below.
 
 ### Emergency Pause
 
+There are two pauses: the **admin pause** (`admin_pause_escrow` /
+`admin_resume_escrow`, flag `Paused`) and the **party pause**
+(`emergency_pause` / `emergency_unpause_parties`, flag `Ep`). Either one blocks
+every pause-guarded endpoint, and `is_emergency_paused` reports `true` while
+either is set. `emergency_unpause` lets the admin lift both.
+
 | Function | Caller | Description |
 |---|---|---|
 | `emergency_pause` | Client & Freelancer | Jointly pause the contract |
-| `emergency_unpause` | Admin | Admin unpause the contract |
+| `emergency_unpause` | Admin | Admin lifts any pause (party or admin) |
 | `emergency_unpause_parties` | Client & Freelancer | Jointly lift a party-initiated pause |
-| `emergency_pause_admin_override` | Admin | Admin override pause state |
+| `emergency_pause_admin_override` | Admin | Deprecated alias of `admin_pause_escrow` |
 | `is_emergency_paused` | Anyone | Check if contract is paused |
 | `emergency_pause_split_refund` | Admin/Client/Freelancer | Compute split while paused (read-only) |
 | `emergency_pause_claim_refund` | Admin | Settle emergency refund (claim) |
@@ -137,7 +144,7 @@ The contract exposes **94 public functions** grouped by category below.
 | `is_token_whitelisted` | Anyone | Check if token is whitelisted |
 | `get_whitelisted_tokens` | Anyone | List all whitelisted tokens |
 | `upgrade` | Admin | Upgrade contract WASM |
-| `migrate_cold_config` | Admin | Migrate config out of instance storage |
+| `migrate` | Admin | Bring storage up to `SCHEMA_VERSION` after an upgrade |
 | `admin_pause_escrow` | Admin | Admin pause (blocks user endpoints) |
 | `admin_resume_escrow` | Admin | Admin resume |
 | `propose_admin_transfer` | Admin | Propose multisig admin transfer |
@@ -223,6 +230,19 @@ The contract exposes **94 public functions** grouped by category below.
 Events carry party addresses as extra topics for `getEvents` filtering; see
 [EVENTS.md](EVENTS.md#indexed-topics).
 
+### Which events represent state changes
+
+Only endpoints that actually change ledger state publish events. Pure
+calculation endpoints are side-effect free: they return their result and emit
+nothing. This covers `escrow_interest_yield`, `split_refund_net_distribution`,
+`calculate_platform_fee_split`, `dispute_arbitration_split`, and the
+`*_split_refund` calculators (`interest_yield_split_refund`,
+`tax_withholding_split_refund`, `multisig_split_refund`,
+`emergency_pause_split_refund`, `cancel_escrow_split_refund`). Use
+`simulateTransaction` to preview them. Consequently, any event emitted by an
+escrow contract ID reflects a real state change or an explicit administrative
+action — never a caller-supplied calculation.
+
 ## Contract Errors
 
 | Code | Error | Meaning |
@@ -264,7 +284,7 @@ Events carry party addresses as extra topics for `getEvents` filtering; see
 | 35 | `FeeTooHigh` | A platform-fee allocation exceeded its per-party cap: treasury above `MAX_TREASURY_FEE_BPS` or client above `MAX_CLIENT_FEE_BPS` |
 | 36 | `ArithmeticOverflow` | A checked `i128` operation inside a ratio/allocation computation would have overflowed or underflowed |
 | 37 | `InsufficientBalance` | A settlement asked to distribute more than the contract currently holds in the escrowed token |
-| 38 | `InvalidDisputeTimeout` | A dispute timeout must be greater than zero |
+| 38 | `InvalidDisputeTimeout` | The dispute timeout is outside `MIN_DISPUTE_TIMEOUT_SECONDS` (1 day) to `MAX_DISPUTE_TIMEOUT_SECONDS` (180 days) |
 | 39 | `DisputeTimeoutNotReached` | The configured dispute timeout has not elapsed yet |
 | 40 | `InvalidFundingMode` | `fund` was called on a PerMilestone escrow, or `fund_milestone` was called on an Upfront escrow |
 | 41 | `MaxRevisions` | `request_revision` was called after `MAX_REVISIONS` revisions |
@@ -282,6 +302,8 @@ Events carry party addresses as extra topics for `getEvents` filtering; see
 | 53 | `MultiSigConfigPending` | `propose_multisig_config` was called while another signer-set change is pending |
 | 54 | `NoPendingMultiSigConfig` | `execute_multisig_config` / `cancel_multisig_config_proposal` found no pending signer-set change |
 | 55 | `DisputePending` | `replace_arbiter` was called while a milestone is `Disputed` |
+| 56 | `ReviewWindowClosed` | `raise_dispute` or `request_revision` was called on a `Delivered` milestone after its auto-release deadline |
+| 57 | `InvalidDeadline` | `set_milestone_due_dates` got a non-zero due date at or before the current ledger timestamp |
 
 ## Milestone States
 
@@ -320,13 +342,22 @@ Anything that will be deployed must come from the reproducible build instead:
 scripts/build-reproducible.sh
 ```
 
-It compiles a clean export of `HEAD` (or of the commit given as the first
-argument) inside a pinned container (`build/reproducible.Dockerfile`: Rust
-1.96.0 by image digest, stellar-cli 28.0.0 by release checksum, linux/amd64)
-and writes `dist/milestone_escrow.wasm`, its SHA-256 and `dist/build-info.json`.
-The same commit gives the same hash on any machine. CI runs the same script on
-every commit and publishes the hash in the job summary and the wasm as an
-artifact.
+It compiles a clean export of `HEAD` (or of the commit given as an argument)
+inside a pinned container (`build/reproducible.Dockerfile`: Rust 1.96.0 by image
+digest, stellar-cli 28.0.0 by release checksum, linux/amd64) and writes both
+`dist/milestone_escrow.wasm` and `dist/escrow_factory.wasm`, a `.sha256` file
+for each, and `dist/build-info.json`. That file records `source_commit`,
+`wasm_sha256`, `factory_wasm`, `factory_sha256` and the pinned tool versions;
+older readers can keep using the original `wasm`/`wasm_sha256` keys. The same
+commit gives the same hashes on any machine. CI runs the same script on every
+commit and publishes both hashes in the job summary and both wasm files as
+artifacts.
+
+`scripts/build-reproducible.sh --check-testdata` additionally rebuilds the
+committed upgrade-test fixture `contracts/milestone-escrow/testdata/escrow_v2.wasm`
+from the commit that last updated that fixture and `cmp`s it against the
+committed binary. CI runs this check so the fixture stays reproducible without
+being silently invalidated by unrelated escrow changes.
 
 ### TypeScript bindings
 
@@ -336,11 +367,13 @@ versioned GitHub Package `@goldii-locks/milestone-escrow-bindings` on `v*`
 tags, so clients stop hand-encoding ScVals. See
 [docs/typescript-bindings.md](docs/typescript-bindings.md).
 
-The `test` job also builds the optimized wasm, prints its size and SHA-256,
-uploads it as an artifact, and fails when it is larger than
-`WASM_BUDGET_BYTES` (set in `.github/workflows/ci.yml` to a measured size plus
-5%). If a change legitimately needs more room, raise the
-budget in the same PR and say why.
+The `test` job also builds the optimized wasm for **both** contracts, prints
+each size and SHA-256, uploads each as an artifact, and fails when it is larger
+than its budget. `WASM_BUDGET_BYTES` (escrow) is a measured size plus 5%;
+`FACTORY_WASM_BUDGET_BYTES` is 64 KiB, a generous half of the 131,072-byte
+network code cap for a contract with no escrow state machine. Both are set in
+`.github/workflows/ci.yml`. If a change legitimately needs more room, raise the
+relevant budget in the same PR and say why.
 
 ## Test
 
@@ -350,35 +383,116 @@ From the repository root:
 cargo test -p milestone-escrow
 ```
 
-Contract tests live under `contracts/milestone-escrow/src/tests`. Soroban's per-test `test_snapshots/` are gitignored; three golden end-to-end snapshots (fund → deliver → approve, dispute → resolve, cancel → override) are committed in `contracts/milestone-escrow/golden_snapshots` and CI fails when a run changes them. After an intended change, rerun `cargo test golden_snapshot_tests` and commit the updated files.
+Test files live under `contracts/milestone-escrow/src/tests`. Soroban's
+per-test `test_snapshots/` are gitignored; three golden end-to-end snapshots
+(fund → deliver → approve, dispute → resolve, cancel → override) are committed
+in `contracts/milestone-escrow/golden_snapshots` and CI fails when a run
+changes them. After an intended change, rerun
+`cargo test golden_snapshot_tests` and commit the updated files.
 
 ## Project Status
 
-The milestone escrow contract is implemented in `contracts/milestone-escrow` and covers milestone delivery, approval, dispute, and arbitration flows. The admin authorization direction and migration decision are recorded in [ADMIN_MULTISIG_DECISION.md](ADMIN_MULTISIG_DECISION.md).
-Mainnet release gates are tracked in the [mainnet readiness checklist](MAINNET.md).
-Behavioural details are specified in [SPEC.md](SPEC.md), and changes are recorded in the [changelog](CHANGELOG.md).
+The contract implementation is complete. Mainnet release gates are tracked in
+[MAINNET.md](MAINNET.md). The admin authorization decision and migration plan
+are in [ADMIN_MULTISIG_DECISION.md](ADMIN_MULTISIG_DECISION.md). A full
+history of behavioural changes is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Escrow factory
 
 `contracts/escrow-factory` deploys one escrow per job (issue #666). It is
 deployed with `--admin <platform-admin> --wasm_hash <escrow-wasm-hash>`
-constructor arguments. The admin allows tokens with `allow_token` and can
-point the factory at a new escrow build with `set_wasm_hash`.
+constructor arguments. Like the escrow, its release wasm is built and hashed by
+`scripts/build-reproducible.sh` (issue #941). The admin allows tokens with
+`allow_token`, removes them again with `disallow_token`, and can point the
+factory at a new escrow build with `set_wasm_hash`. Token allow/deny changes emit `allowed` and
+constructor arguments. The admin allows tokens with `allow_token`, removes
+them again with `disallow_token`, and can point the factory at a new escrow
+build with `set_wasm_hash`. `allow_token` first proves the address is a real
+token contract with a read-only `decimals()` call, so a pasted account address
+or a mistyped contract id fails with `InvalidToken` at the point of the
+mistake (#1084). Token allow/deny changes emit `allowed` and
+`disallowd` events (the token address is the second topic); removing an absent
+token is a no-op. Existing escrows keep their own token and are unaffected.
+The allow-list holds at most `MAX_ALLOWED_TOKENS` (50) tokens, the same cap as
+the escrow's whitelist: allowing a 51st token fails with `TooManyTokens`
+(error 7), while re-allowing a token already on the list still succeeds.
+constructor arguments. `FundingMode` and `EscrowSettings` live in the shared
+`contracts/escrow-types` crate and are re-exported by both contracts, so the
+factory cannot drift from the escrow constructor ABI. The admin allows tokens
+with `allow_token`, removes them again with `disallow_token`, and can point the
+factory at a new escrow
+build with `propose_wasm_hash(admin, hash, wasm)`, which uploads and verifies
+the bytecode and waits `WASM_HASH_DELAY` (7 days) before `create_escrow` uses
+it. `cancel_wasm_hash_proposal` withdraws a pending change and
+`get_pending_wasm_hash` exposes it. Token allow/deny changes emit `tokallow`
+(the token is in the `TokenAllowedEvent` data, not a topic) and `disallowd`
+(the token is the second topic); removing an absent token is a no-op. Existing
+escrows keep their own token and are unaffected.
+
+For incident response, `pause` blocks new `create_escrow` calls with
+`Error::Paused`; `unpause` re-enables them and `is_paused` reports the current
+flag. Only the admin can toggle the switch, and existing escrows keep running.
+Changes emit `paused` and `unpaused` events.
 
 `create_escrow(client, freelancer, arbiter, token, auto_release_seconds,
 milestone_amounts, milestone_spec_hashes, settings, salt)` needs only the
 client's signature. It deploys the escrow with the platform admin as its
-admin and emits `created` with the new escrow's address.
+admin and emits `created` (topics: `created`, client, freelancer, arbiter) with the
+new escrow's address, registry index, token, total amount, milestone count,
+auto-release window, settings and the escrow WASM hash. See "Escrow factory
+events" in `EVENTS.md`.
+The deployment salt is `sha256(client.to_xdr() || salt)`, so the same `salt`
+used by different clients yields different escrow addresses and cannot be
+front-run; frontends should call the read-only `escrow_address(client, salt)`
+to predict the address.
+
+### Escrow registry
+
+The factory records every escrow it deploys (#934), so a frontend can list a
+client's jobs without an indexer (public RPCs keep only about a week of
+events, so `created` events cannot be backfilled):
+
+- `escrow_count()` — total number of escrows deployed.
+- `escrow_at(index)` — address of the escrow at `index` (`0..escrow_count()`),
+  `EscrowNotFound` (1008) outside that range.
+- `client_escrows(client)` — the client's most recent escrows, newest last,
+  capped at 10 entries; the by-index registry is the authoritative list.
+
+Each creation writes one registry entry and extends its TTL; the `created`
+event carries the escrow's index, so an indexer that sees a gap between
+consecutive events knows a creation reverted mid-transaction.
+
+### Factory error codes
+
+The factory's error codes start at 1001 (#1082), while the escrow's stay in
+1-43, so a bare `Error(Contract, #)` identifies which contract failed. The
+factory's codes:
+
+| Code | Error | Meaning |
+|---|---|---|
+| 1001 | `NotInitialized` | A required constructor value is missing |
+| 1002 | `AlreadyInitialized` | Reserved; the constructor is the only initialiser |
+| 1003 | `Unauthorized` | Caller is not the platform admin |
+| 1004 | `TokenNotAllowed` | Token is not on the factory allowlist |
+| 1005 | `InvalidAmount` | Milestone amounts empty or total overflows |
+| 1006 | `InvalidDisputeTimeout` | `dispute_timeout_seconds` outside 1-180 days |
+| 1007 | `InvalidToken` | `allow_token` address is not a token contract |
+| 1008 | `EscrowNotFound` | `escrow_at` index outside `0..escrow_count()` |
+
 
 ## Deploy (Testnet)
 
 ### Escrow factory (what the app uses)
 
 The app creates one escrow contract per job through `escrow-factory`'s
-`create_escrow`. `scripts/deploy-factory-testnet.sh` builds the reproducible
-escrow wasm and uploads it, deploys the factory with the platform admin and
-that wasm hash, allows each token for new escrows, and appends the deployment
-to `deployments/testnet-factory.json`:
+`create_escrow`. `scripts/deploy-factory-testnet.sh` builds both the escrow and
+factory wasms reproducibly, uploads the escrow wasm, deploys the factory from
+`dist/escrow_factory.wasm` with the platform admin and that escrow wasm hash,
+allows each token for new escrows, and appends the deployment to
+`deployments/testnet-factory.json`. The record includes `contract_id`,
+`wasm_sha256` (the factory wasm), `factory_sha256`, `source_commit`, the full
+`build` object from `dist/build-info.json` and `allowed_tokens`, so the factory
+is verifiable in the same way as the escrow:
 
 ```bash
 export SOURCE_ACCOUNT=testnet-deployer    # pays for the deployment
@@ -397,8 +511,10 @@ escrow wasm is over the network's 131,072-byte contract size limit.
 
 `scripts/deploy-testnet.sh` builds the reproducible wasm, uploads it, deploys
 with constructor arguments from environment variables, and appends
-`{date, network, wasm_hash, contract_id, admin}` to `deployments/testnet.json`
-(issue #745):
+`{date, network, wasm_hash, contract_id, admin, wasm_sha256, source_commit,
+build}` to `deployments/testnet.json` (issues #745 and #942). The last three
+fields come from `dist/build-info.json`, so a later reader can tie the
+installed code back to a reviewed commit:
 
 ```bash
 export SOURCE_ACCOUNT=testnet-deployer
@@ -434,8 +550,11 @@ stellar contract deploy \
   --settings '{"funding_mode":"Upfront","dispute_timeout_seconds":2592000,"arbiter_fee_bps":0}'
 ```
 
-Record the `source_commit` and `wasm_sha256` from `dist/build-info.json` with
-the deployment, and the hash in `CHANGELOG.md`.
+The script records `source_commit` and `wasm_sha256` from
+`dist/build-info.json` with the deployment; for a manual deploy, record them
+yourself along with the hash in `CHANGELOG.md`. No deployment was performed as
+part of issue #942 — a maintainer with funded testnet keys must run one of
+these scripts before any new record exists.
 
 ### Upgrading a deployment: upgrade, then migrate
 
@@ -458,13 +577,15 @@ existed are treated as schema 1.
 
 Schema 2 adds `spec_hash` to every stored `Milestone` (#767; old milestones
 get a zero hash) and moves the whitelist, multisig, yield and fee
-configuration out of instance storage (#772). A release that changes a stored
-type must bump `SCHEMA_VERSION` and add the step to `migrate`.
-`migrate_cold_config` remains for deployments that only need the #772 move.
+configuration out of instance storage (#772). Schema 3 added
+`Milestone::deliverable`. Schema 4 adds `DisputeInfo::raised_by` (#997); open
+disputes are stamped with the job's client because their raiser was never
+stored. A release that changes a stored type must bump `SCHEMA_VERSION` and add
+the step to `migrate`.
 
 ## Verifying the deployed contract
 
-Anyone can check which source a deployed contract was built from:
+Both the escrow and the factory are verifiable this way:
 
 1. Read the installed wasm hash:
 
@@ -474,16 +595,20 @@ Anyone can check which source a deployed contract was built from:
    ```
 
    (`stellar contract info` and the explorer show the same hash.)
-2. Look up `source_commit` for that contract in `deployments/<network>.json`.
-3. Rebuild that commit and compare:
+2. Look up `source_commit` for that contract in `deployments/<network>.json`
+   (`testnet.json` for the escrow, `testnet-factory.json` for the factory).
+3. Rebuild that commit and compare the matching hash:
 
    ```bash
    scripts/build-reproducible.sh <source_commit>
-   cat dist/milestone_escrow.wasm.sha256
+   cat dist/milestone_escrow.wasm.sha256   # escrow deployments
+   cat dist/escrow_factory.wasm.sha256     # factory deployments
    ```
 
 The two hashes must be identical. If they differ, the deployed code is not the
-reviewed source at that commit.
+reviewed source at that commit. The current testnet escrow record predates
+reproducible builds, so it has no `source_commit` to rebuild; it must be
+upgraded or redeployed from a reproducible build before it can be verified.
 
 ## License
 
@@ -491,13 +616,19 @@ MIT
 
 ## Deployed Contract
 
-| Network | Contract ID |
-|---|---|
-| Testnet | `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA` |
+| Network | Contract | Contract ID | wasm sha256 | source_commit / build |
+|---|---|---|---|---|
+| Testnet | milestone escrow | `CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA` | `67d0eb543aaa9ca99c1b23ba18a3f4713c899eba574bbef96540f2540b8b2f0e` | unknown (`null`) — predates reproducible builds |
+| Testnet | escrow factory | not yet published | unknown | unknown until a maintainer redeploys |
 
-Deployment records, including the installed wasm hash, are in
-[`deployments/`](deployments/). The current testnet deployment predates
-reproducible builds, so its source commit is unknown.
+Deployment records are in [`deployments/`](deployments/). The current escrow
+record predates reproducible builds (#773): `source_commit` and `build` are
+`null` and cannot be reconstructed from the installed hash. There is no factory
+record yet, so its `contract_id`, `wasm_sha256`, `source_commit`, `build` and
+`allowed_tokens` are all unknown until a maintainer with funded testnet keys
+runs `scripts/deploy-factory-testnet.sh` and commits the resulting
+`deployments/testnet-factory.json`. Do not infer any of these fields from CI
+artifacts — they only describe wasm that has not been deployed.
 
 Explorer: `https://stellar.expert/explorer/testnet/contract/CARZQMYKDGA4TTIE2XBDJ42EX27VYLLJGGG4WGUIXXWIVHPDTX3UCLJA`
  
